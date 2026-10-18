@@ -35,10 +35,19 @@ HTTP process. Readiness checks database connectivity and creates, writes,
 closes, reads, and removes a uniquely named private file in the report root.
 An unavailable dependency returns `503` with a stable JSON error, without
 revealing storage paths or connection details. Readiness responses have a
-deadline; at most one dependency check runs at once because portable filesystem
-calls cannot be forcibly interrupted. Symlinked report roots/parents and root
-replacement are rejected. Keep the root and its parents under trusted operator
-control; filesystem protection is not a substitute for ownership and ACLs.
+deadline; concurrent probes share one in-flight dependency check instead of
+failing because another probe is running. Each caller has its own deadline, and
+cancelling one caller does not cancel the shared check. At most one check runs
+at once, even after timeout, because portable filesystem calls cannot be forcibly
+interrupted.
+
+The report root is resolved to a canonical path at startup, allowing trusted
+symlinked roots and parents. File operations are confined to the opened
+directory using `os.Root`; replacement of the canonical root invalidates
+readiness. Changing the original symlink does not redirect active storage;
+restart to select a new target. Keep the canonical root and its parents under
+trusted operator control; filesystem protection is not a substitute for
+ownership and ACLs.
 
 Ctrl+C requests graceful shutdown, allowing in-flight requests to finish until
 the configured shutdown deadline. A deadline failure closes connections and

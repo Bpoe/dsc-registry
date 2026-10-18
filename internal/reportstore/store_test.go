@@ -51,7 +51,7 @@ func TestInvalidRoot(t *testing.T) {
 	}
 }
 
-func TestRejectSymlinkAndSymlinkParent(t *testing.T) {
+func TestAcceptSymlinkAndSymlinkParent(t *testing.T) {
 	root := t.TempDir()
 	target := filepath.Join(root, "target")
 	if err := os.MkdirAll(filepath.Join(target, "child"), 0o700); err != nil {
@@ -62,9 +62,54 @@ func TestRejectSymlinkAndSymlinkParent(t *testing.T) {
 		t.Skipf("directory symlinks unavailable: %v", err)
 	}
 	for _, path := range []string{link, filepath.Join(link, "child")} {
-		if store, err := Open(context.Background(), path); store != nil || err == nil {
-			t.Fatalf("symlink root %q accepted: %v", path, err)
+		store, err := Open(context.Background(), path)
+		if err != nil {
+			t.Fatalf("symlink root %q rejected: %v", path, err)
 		}
+		defer store.Close()
+		canonical, err := filepath.EvalSymlinks(path)
+		if err != nil || store.path != canonical {
+			t.Fatalf("root was not canonicalized: got=%q, want=%q, error=%v", store.path, canonical, err)
+		}
+		if err := store.Check(context.Background()); err != nil {
+			t.Fatalf("symlink root %q is not ready: %v", path, err)
+		}
+	}
+}
+
+func TestRetargetedSymlinkDoesNotRedirectStorage(t *testing.T) {
+	parent := t.TempDir()
+	first, second := filepath.Join(parent, "first"), filepath.Join(parent, "second")
+	for _, path := range []string{first, second} {
+		if err := os.Mkdir(path, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	link := filepath.Join(parent, "reports")
+	if err := os.Symlink(first, link); err != nil {
+		t.Skipf("directory symlinks unavailable: %v", err)
+	}
+	store, err := Open(context.Background(), link)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if err := os.Remove(link); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(second, link); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Check(context.Background()); err != nil {
+		t.Fatalf("retargeting an alias invalidated the original root: %v", err)
+	}
+	original, err := os.Stat(first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	opened, err := store.root.Stat(".")
+	if err != nil || !os.SameFile(original, opened) {
+		t.Fatalf("storage was redirected: %v", err)
 	}
 }
 

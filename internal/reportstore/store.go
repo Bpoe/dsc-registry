@@ -19,14 +19,15 @@ func Open(ctx context.Context, path string) (*Store, error) {
 	if err != nil {
 		return nil, fmt.Errorf("resolve report root: %w", err)
 	}
-	if err := validateParents(absolute); err != nil {
-		return nil, err
+	canonical, err := filepath.EvalSymlinks(absolute)
+	if err != nil {
+		return nil, fmt.Errorf("canonicalize report root: %w", err)
 	}
-	root, err := os.OpenRoot(absolute)
+	root, err := os.OpenRoot(canonical)
 	if err != nil {
 		return nil, fmt.Errorf("open report root: %w", err)
 	}
-	s := &Store{path: absolute, root: root}
+	s := &Store{path: canonical, root: root}
 	if err := s.Check(ctx); err != nil {
 		return nil, errors.Join(err, root.Close())
 	}
@@ -37,28 +38,8 @@ func (s *Store) Close() error {
 	return s.root.Close()
 }
 
-func validateParents(path string) error {
-	for {
-		info, err := os.Lstat(path)
-		if err != nil {
-			return fmt.Errorf("inspect report root: %w", err)
-		}
-		if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
-			return errors.New("report root and its parents must be directories without symlinks")
-		}
-		parent := filepath.Dir(path)
-		if parent == path {
-			return nil
-		}
-		path = parent
-	}
-}
-
 func (s *Store) Check(ctx context.Context) (err error) {
 	if err := ctx.Err(); err != nil {
-		return err
-	}
-	if err := validateParents(s.path); err != nil {
 		return err
 	}
 	current, err := os.Stat(s.path)
