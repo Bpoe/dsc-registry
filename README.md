@@ -209,5 +209,16 @@ The race detector requires a supported platform, `CGO_ENABLED=1`, and a suitable
 C toolchain even though normal builds use pure-Go SQLite. Tests requiring POSIX
 permissions, symlink privileges, or moving an open directory are explicitly
 skipped when the OS cannot support them.
-Production CI and deployment automation remain PR 5 work; any future CI
-formatting check must explicitly fail when `gofmt -l` produces output.
+
+[GitHub Actions CI](.github/workflows/ci.yml) runs on pull requests, pushes to
+`main`, and manual dispatch. It uses the Go version from `go.mod` and explicitly
+fails on unformatted Go files, verifies modules, runs `go vet`, and runs the
+normal and race suites on a non-root Linux host. Both suites configure
+`DSCREGISTRY_TEST_POSTGRES_DSN` against a disposable PostgreSQL 16 service, so
+the existing SQLite and PostgreSQL integration cases run together; missing
+PostgreSQL configuration fails CI rather than opting out. Separate builds
+check Linux amd64 and arm64 with CGO disabled. CI does not publish artifacts
+or deploy the server.
+
+This CI-only portion of PR 5 was moved forward after PR 2. Configuration delivery,
+report ingestion, and the remaining production-readiness work are still deferred.
