@@ -28,6 +28,13 @@ go.work.sum
 # env file
 .env
 
+# Local Registry runtime data
+/data/
+/reports/
+/registry.db
+/registry.db-wal
+/registry.db-shm
+
 # Editor/IDE
 # .idea/
 # .vscode/
