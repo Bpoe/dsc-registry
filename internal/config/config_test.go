@@ -51,7 +51,7 @@ func TestInvalidSettings(t *testing.T) {
 		"invalid port":            func(s *Settings) { s.ListenAddress = "127.0.0.1:65536" },
 		"negative port":           func(s *Settings) { s.ListenAddress = "127.0.0.1:-1" },
 		"service port":            func(s *Settings) { s.ListenAddress = "127.0.0.1:http" },
-		"engine":                  func(s *Settings) { s.DatabaseEngine = "postgres" },
+		"engine":                  func(s *Settings) { s.DatabaseEngine = "mysql" },
 		"empty dsn":               func(s *Settings) { s.DatabaseDSN = " " },
 		"memory":                  func(s *Settings) { s.DatabaseDSN = ":memory:" },
 		"uri":                     func(s *Settings) { s.DatabaseDSN = "file:test.db?mode=memory" },
@@ -95,6 +95,7 @@ func TestFlagErrorsAndHelp(t *testing.T) {
 		if _, err := Parse(args, io.Discard); err == nil {
 			t.Fatalf("accepted invalid args %q", args)
 		}
+
 	}
 	var help bytes.Buffer
 	if _, err := Parse([]string{"-h"}, &help); !errors.Is(err, flag.ErrHelp) || help.Len() == 0 {
@@ -102,5 +103,27 @@ func TestFlagErrorsAndHelp(t *testing.T) {
 	}
 	if _, err := Parse([]string{"-development-http", "-listen", "[::1]:0"}, io.Discard); err != nil {
 		t.Fatalf("IPv6 loopback: %v", err)
+	}
+}
+
+func TestPostgresSettingsAndBootstrap(t *testing.T) {
+	settings, err := Parse([]string{"-external-https", "-database-engine", "postgres",
+		"-database-dsn", "postgres://operator@localhost/registry?sslmode=verify-full"}, io.Discard)
+	if err != nil || settings.DatabaseEngine != "postgres" {
+		t.Fatal("PostgreSQL settings rejected")
+	}
+	parsed, name, err := ParseBootstrap([]string{"-database-engine", "postgres",
+		"-database-dsn", "host=localhost dbname=registry", "-name", "operator"}, io.Discard)
+	if err != nil || parsed.DatabaseEngine != "postgres" || name != "operator" {
+		t.Fatalf("bootstrap settings: %v", err)
+	}
+	for _, args := range [][]string{{"-name", ""}, {"-name", "bad\nname"}, {"extra"}, {"-unknown"}, {"-startup-timeout", "0s"}} {
+		if _, _, err := ParseBootstrap(args, io.Discard); err == nil {
+			t.Fatalf("invalid bootstrap arguments accepted: %v", args)
+		}
+	}
+	var help bytes.Buffer
+	if _, _, err := ParseBootstrap([]string{"-h"}, &help); !errors.Is(err, flag.ErrHelp) || help.Len() == 0 {
+		t.Fatal("bootstrap help unavailable")
 	}
 }

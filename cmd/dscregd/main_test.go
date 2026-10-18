@@ -15,6 +15,7 @@ import (
 
 	"github.com/Bpoe/dsc-registry/internal/config"
 	"github.com/Bpoe/dsc-registry/internal/database"
+	"github.com/Bpoe/dsc-registry/internal/testdb"
 )
 
 func testLogger() *slog.Logger {
@@ -138,11 +139,18 @@ func (h listeningLog) Handle(ctx context.Context, record slog.Record) error {
 }
 
 func TestRunStartupHealthShutdownAndRestart(t *testing.T) {
+	testdb.Engines(t, func(t *testing.T, engine, dsn string) {
+		testRunStartupHealthShutdownAndRestart(t, engine, dsn)
+	})
+}
+
+func testRunStartupHealthShutdownAndRestart(t *testing.T, engine, dsn string) {
 	root := t.TempDir()
 	settings := config.Defaults()
 	settings.DevelopmentHTTP = true
 	settings.ListenAddress = "127.0.0.1:0"
-	settings.DatabaseDSN = filepath.Join(root, "registry.db")
+	settings.DatabaseEngine = engine
+	settings.DatabaseDSN = dsn
 	settings.ReportRoot = filepath.Join(root, "reports")
 	if err := os.Mkdir(settings.ReportRoot, 0o700); err != nil {
 		t.Fatal(err)
@@ -173,11 +181,12 @@ func TestRunStartupHealthShutdownAndRestart(t *testing.T) {
 		if err := receive(t, done); err != nil {
 			t.Fatal(err)
 		}
-		db, err := database.Open(context.Background(), settings.DatabaseDSN, time.Second)
+		store, err := database.Connect(context.Background(), engine, dsn, time.Second)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := db.Exec("INSERT OR IGNORE INTO machines VALUES (?, ?, 0, ?)",
+		db := store.DB
+		if _, err := db.Exec("INSERT INTO machines VALUES ($1, $2, 0, $3) ON CONFLICT DO NOTHING",
 			"550e8400-e29b-41d4-a716-446655440000", "persisted", "2026-10-18T00:00:00Z"); err != nil {
 			db.Close()
 			t.Fatal(err)

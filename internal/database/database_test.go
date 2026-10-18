@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/Bpoe/dsc-registry/internal/testdb"
 )
 
 func openTestDB(t *testing.T, path string) *sql.DB {
@@ -35,7 +37,7 @@ func exec(t *testing.T, db *sql.DB, query string, args ...any) {
 func TestMigrationPersistsAndConfiguresConnections(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "registry # percent%.db")
 	db := openTestDB(t, path)
-	exec(t, db, "INSERT INTO machines VALUES (?, ?, ?, ?)",
+	exec(t, db, "INSERT INTO machines VALUES ($1, $2, $3, $4)",
 		"550e8400-e29b-41d4-a716-446655440000", "display only", 0, "2026-10-18T00:00:00Z")
 	if err := db.Close(); err != nil {
 		t.Fatal(err)
@@ -68,21 +70,27 @@ func TestMigrationPersistsAndConfiguresConnections(t *testing.T) {
 }
 
 func TestSchemaIntegrityAndCascade(t *testing.T) {
-	db := openTestDB(t, filepath.Join(t.TempDir(), "registry.db"))
+	testdb.Engines(t, func(t *testing.T, engine, dsn string) {
+		store := testStore(t, engine, dsn)
+		checkSchemaIntegrityAndCascade(t, store.DB)
+	})
+}
+
+func checkSchemaIntegrityAndCascade(t *testing.T, db *sql.DB) {
 	id := "550e8400-e29b-41d4-a716-446655440000"
 	now := "2026-10-18T00:00:00Z"
-	exec(t, db, "INSERT INTO machines VALUES (?, ?, ?, ?)", id, "duplicate name allowed", 0, now)
-	exec(t, db, "INSERT INTO machines VALUES (?, ?, ?, ?)", "second-id", "duplicate name allowed", 0, now)
-	exec(t, db, "INSERT INTO admins VALUES (?, ?, ?)", id, "admin", now)
-	keySQL := "INSERT INTO api_keys(key_id, owner_type, owner_id, secret_hash, created_at) VALUES (?, ?, ?, ?, ?)"
+	exec(t, db, "INSERT INTO machines VALUES ($1, $2, $3, $4)", id, "duplicate name allowed", 0, now)
+	exec(t, db, "INSERT INTO machines VALUES ($1, $2, $3, $4)", "second-id", "duplicate name allowed", 0, now)
+	exec(t, db, "INSERT INTO admins VALUES ($1, $2, $3)", id, "admin", now)
+	keySQL := "INSERT INTO api_keys(key_id, owner_type, owner_id, secret_hash, created_at) VALUES ($1, $2, $3, $4, $5)"
 	exec(t, db, keySQL, "machine-key", "machine", id, make([]byte, 32), now)
 	exec(t, db, keySQL, "admin-key", "admin", id, make([]byte, 32), now)
-	configSQL := "INSERT INTO configurations VALUES (?, ?, ?, ?, ?, ?, ?)"
+	configSQL := "INSERT INTO configurations VALUES ($1, $2, $3, $4, $5, $6, $7)"
 	exec(t, db, configSQL, id, "one", "content-revision", "{}", nil, make([]byte, 32), now)
 	exec(t, db, configSQL, id, "two", "another-revision", "{}", "{}", make([]byte, 32), now)
 	exec(t, db, `INSERT INTO configuration_status (
 		machine_id, name, configuration_revision, received_at, started_at, finished_at, outcome, report_path, last_upload_id
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`, id, "one", "content-revision", now, now, now, "failed", "uuid/report.json", "upload-id")
+	) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`, id, "one", "content-revision", now, now, now, "failed", "uuid/report.json", "upload-id")
 	for name, statement := range map[string]struct {
 		query string
 		args  []any
@@ -91,16 +99,16 @@ func TestSchemaIntegrityAndCascade(t *testing.T) {
 		"missing admin owner":   {keySQL, []any{"bad", "admin", "missing", make([]byte, 32), now}},
 		"owner type":            {keySQL, []any{"bad", "other", id, make([]byte, 32), now}},
 		"short digest":          {keySQL, []any{"bad", "machine", id, []byte("secret"), now}},
-		"owner update":          {"UPDATE api_keys SET owner_id = ? WHERE key_id = ?", []any{"missing", "machine-key"}},
-		"role update":           {"UPDATE api_keys SET owner_type = ? WHERE key_id = ?", []any{"other", "machine-key"}},
-		"immutable machine":     {"UPDATE machines SET id = ? WHERE id = ?", []any{"new-id", id}},
-		"immutable admin":       {"UPDATE admins SET id = ? WHERE id = ?", []any{"new-id", id}},
+		"owner update":          {"UPDATE api_keys SET owner_id = $1 WHERE key_id = $2", []any{"missing", "machine-key"}},
+		"role update":           {"UPDATE api_keys SET owner_type = $1 WHERE key_id = $2", []any{"other", "machine-key"}},
+		"immutable machine":     {"UPDATE machines SET id = $1 WHERE id = $2", []any{"new-id", id}},
+		"immutable admin":       {"UPDATE admins SET id = $1 WHERE id = $2", []any{"new-id", id}},
 		"foreign key":           {configSQL, []any{"missing", "three", "r", "{}", nil, make([]byte, 32), now}},
 		"duplicate name":        {configSQL, []any{id, "one", "r", "{}", nil, make([]byte, 32), now}},
 		"array template":        {configSQL, []any{id, "three", "r", "[]", nil, make([]byte, 32), now}},
 		"null parameters JSON":  {configSQL, []any{id, "three", "r", "{}", "null", make([]byte, 32), now}},
 		"bad JSON":              {configSQL, []any{id, "three", "r", "{", nil, make([]byte, 32), now}},
-		"orphan status":         {"UPDATE configuration_status SET name = ?", []any{"missing"}},
+		"orphan status":         {"UPDATE configuration_status SET name = $1", []any{"missing"}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			if _, err := db.Exec(statement.query, statement.args...); err == nil {
@@ -108,13 +116,13 @@ func TestSchemaIntegrityAndCascade(t *testing.T) {
 			}
 		})
 	}
-	exec(t, db, "DELETE FROM configurations WHERE machine_id = ? AND name = ?", id, "one")
+	exec(t, db, "DELETE FROM configurations WHERE machine_id = $1 AND name = $2", id, "one")
 	assertCount(t, db, "configuration_status", 0)
 	assertCount(t, db, "configurations", 1)
-	exec(t, db, "DELETE FROM machines WHERE id = ?", id)
+	exec(t, db, "DELETE FROM machines WHERE id = $1", id)
 	assertCount(t, db, "configurations", 0)
 	assertCount(t, db, "api_keys", 1)
-	exec(t, db, "DELETE FROM admins WHERE id = ?", id)
+	exec(t, db, "DELETE FROM admins WHERE id = $1", id)
 	assertCount(t, db, "api_keys", 0)
 }
 
@@ -143,7 +151,7 @@ func TestMigrationFailureRollsBack(t *testing.T) {
 		Scan(&count); err != nil || count != 0 {
 		t.Fatalf("migration did not roll back: count=%d, error=%v", count, err)
 	}
-	exec(t, raw, "INSERT INTO configurations VALUES (?)", "preserved")
+	exec(t, raw, "INSERT INTO configurations VALUES ($1)", "preserved")
 }
 
 func TestRejectFutureSchemaAndCanceledStartup(t *testing.T) {

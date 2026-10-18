@@ -2,9 +2,11 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"log/slog"
 	"net"
@@ -21,6 +23,13 @@ import (
 
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stderr, nil))
+	if len(os.Args) > 1 && os.Args[1] == "bootstrap" {
+		if err := bootstrap(context.Background(), os.Args[2:], os.Stdout); err != nil && !errors.Is(err, flag.ErrHelp) {
+			logger.Error("bootstrap failed", "error", err)
+			os.Exit(1)
+		}
+		return
+	}
 	settings, err := config.Parse(os.Args[1:], os.Stdout)
 	if errors.Is(err, flag.ErrHelp) {
 		return
@@ -48,17 +57,17 @@ func run(ctx context.Context, settings config.Settings, logger *slog.Logger) (er
 		return fmt.Errorf("validate report storage: %w", err)
 	}
 	defer func() { err = errors.Join(err, reports.Close()) }()
-	db, err := database.Open(startup, settings.DatabaseDSN, settings.SQLiteBusyTimeout)
+	db, err := database.Connect(startup, settings.DatabaseEngine, settings.DatabaseDSN, settings.SQLiteBusyTimeout)
 	if err != nil {
 		return err
 	}
-	defer func() { err = errors.Join(err, db.Close()) }()
+	defer func() { err = errors.Join(err, db.DB.Close()) }()
 	listener, err := (&net.ListenConfig{}).Listen(ctx, "tcp", settings.ListenAddress)
 	if err != nil {
 		return fmt.Errorf("listen HTTP: %w", err)
 	}
 	server := &http.Server{
-		Handler:           httpapi.New(db, reports, settings.ProbeTimeout, logger),
+		Handler:           httpapi.New(db, reports, settings.ProbeTimeout, settings.ReadTimeout, settings.MaxRequestBytes, logger),
 		ReadHeaderTimeout: settings.ReadHeaderTimeout,
 		ReadTimeout:       settings.ReadTimeout,
 		WriteTimeout:      settings.WriteTimeout,
@@ -68,6 +77,36 @@ func run(ctx context.Context, settings config.Settings, logger *slog.Logger) (er
 	}
 	logger.Info("server listening", "address", listener.Addr().String())
 	return serve(ctx, server, listener, settings, logger)
+}
+
+func bootstrap(ctx context.Context, args []string, output io.Writer) error {
+	settings, name, err := config.ParseBootstrap(args, output)
+	if err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(ctx, settings.StartupTimeout)
+	defer cancel()
+	db, err := database.Connect(ctx, settings.DatabaseEngine, settings.DatabaseDSN, settings.SQLiteBusyTimeout)
+	if err != nil {
+		return errors.New("bootstrap database initialization failed")
+	}
+	defer db.DB.Close()
+	result, err := db.Bootstrap(ctx, name)
+	if errors.Is(err, database.ErrAlreadyBootstrapped) {
+		return err
+	}
+	if err != nil {
+		return errors.New("bootstrap transaction failed")
+	}
+	if err := json.NewEncoder(output).Encode(result); err != nil {
+		recovery, cancel := context.WithTimeout(context.Background(), settings.StartupTimeout)
+		defer cancel()
+		if err := db.RevokeKey(recovery, "admin", result.AdminID, result.KeyID); err != nil {
+			return errors.New("bootstrap output and key revocation failed; revoke the local bootstrap key in SQL before retrying")
+		}
+		return errors.New("bootstrap output failed; the new key was revoked, rerun bootstrap with protected output")
+	}
+	return nil
 }
 
 func serve(ctx context.Context, server *http.Server, listener net.Listener, settings config.Settings, logger *slog.Logger) (err error) {

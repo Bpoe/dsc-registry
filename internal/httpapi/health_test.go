@@ -36,7 +36,7 @@ func testHandler(t *testing.T) (http.Handler, *sql.DB, *reportstore.Store, *byte
 	t.Cleanup(func() { db.Close() })
 	logs := &bytes.Buffer{}
 	logger := slog.New(slog.NewJSONHandler(logs, nil))
-	return New(db, reports, 100*time.Millisecond, logger), db, reports, logs
+	return New(&database.Store{DB: db, Engine: "sqlite"}, reports, 100*time.Millisecond, time.Second, 1<<20, logger), db, reports, logs
 }
 
 func request(handler http.Handler, method, path string) *httptest.ResponseRecorder {
@@ -59,7 +59,7 @@ func TestHealthRoutes(t *testing.T) {
 		{"GET", "/health/ready", 200, `{"status":"ready"}`},
 		{"POST", "/health/ready", 405, `"code":"method_not_allowed"`},
 		{"DELETE", "/health/live", 405, `"code":"method_not_allowed"`},
-		{"GET", "/v1/machines", 404, `"code":"not_found"`},
+		{"GET", "/v1/machines", 401, `"code":"unauthorized"`},
 		{"GET", "/unknown-sensitive?key=also-sensitive", 404, `"code":"not_found"`},
 	} {
 		response := request(handler, test.method, test.path)
@@ -143,7 +143,7 @@ func await[T any](t *testing.T, results <-chan T) T {
 
 func TestConcurrentReadinessRequestsAreHealthy(t *testing.T) {
 	_, db, reports, _ := testHandler(t)
-	handler := New(db, reports, 2*time.Second, slog.New(slog.NewJSONHandler(io.Discard, nil)))
+	handler := New(&database.Store{DB: db, Engine: "sqlite"}, reports, 2*time.Second, time.Second, 1<<20, slog.New(slog.NewJSONHandler(io.Discard, nil)))
 	connection, err := db.Conn(context.Background())
 	if err != nil {
 		t.Fatal(err)
