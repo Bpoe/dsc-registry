@@ -39,6 +39,42 @@ All routes below require an administrator key.
 
 Initial administrator identity/key creation is a **local bootstrap CLI** action. Creating arbitrary additional admin principals over HTTP is deferred. At least one usable administrator credential must remain after revocation, or the operator must be able to recover using the local bootstrap path.
 
+### PR 2 administration details
+
+PR 2 implements only machine and credential administration in this table; the
+configuration/status/report and agent routes remain deferred. All implemented
+administration routes authorize the administrator role before validating resource
+IDs or querying machine data. Machine keys receive `403` even for their own UUID;
+missing, malformed, forged-role, and revoked credentials receive `401` with
+`WWW-Authenticate: ApiKey`. Authentication is never bypassed in development mode.
+All administration responses use `Cache-Control: no-store`.
+
+Machine display names are 1-256 UTF-8 bytes. Optional credential descriptions are
+at most 1024 UTF-8 bytes; empty descriptions are allowed. Nonempty names and
+descriptions reject surrounding whitespace and control characters. Bodies must
+be single UTF-8 JSON objects with string-valued fields. Unknown or duplicate
+fields and null string values are rejected. `-max-request-bytes` bounds bodies.
+Resource UUIDs must use canonical lowercase hyphenated notation.
+
+Machine listing returns `{"machines":[...],"nextCursor":"..."}`; key listing
+returns `{"keys":[...],"nextCursor":"..."}`. Lists accept `limit` (default 100,
+1-1000) and `cursor` (the last returned machine UUID or key ID). Ordering is
+ascending by that ID, and `nextCursor` is omitted on the final page. Empty
+collections are arrays, not null. Pagination is not a snapshot across mutations.
+Key metadata contains `keyId`, `ownerType`, `ownerId`, `createdAt`, nullable
+`revokedAt`, and `description`, never `key` or a digest. Revoked entries remain
+visible; repeated revocation is a successful `204`. Unknown owners or keys not
+belonging to the URL owner return `404` (`machine_not_found` or `admin_not_found`)
+without revealing where the key belongs. Deleting a machine removes all its keys.
+Machine/key administration does not bump desired-state revisions.
+
+Administrator rotation issues an additional key for an existing identity, allows
+an overlap, and then revokes the previous key. Revoking the last administrator
+credential is permitted: local `dscregd bootstrap` recovers the oldest identity
+only when no unrevoked administrator key remains. It otherwise refuses to issue
+or redisplay credentials. See [bootstrap and recovery](../README.md#bootstrap-and-credential-rotation)
+for protected output and exceptional local recovery instructions.
+
 ### Machine registration
 
 ```http

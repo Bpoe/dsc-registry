@@ -10,6 +10,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 )
 
 type Settings struct {
@@ -51,20 +53,17 @@ func Parse(args []string, help io.Writer) (Settings, error) {
 	f.StringVar(&s.ListenAddress, "listen", s.ListenAddress, "HTTP listen IP and port")
 	f.BoolVar(&s.ExternalHTTPS, "external-https", false, "HTTPS is enforced by a trusted reverse proxy")
 	f.BoolVar(&s.DevelopmentHTTP, "development-http", false, "allow HTTP on a literal loopback IP only")
-	f.StringVar(&s.DatabaseEngine, "database-engine", s.DatabaseEngine, "database engine (sqlite; PostgreSQL deferred)")
-	f.StringVar(&s.DatabaseDSN, "database-dsn", s.DatabaseDSN, "local SQLite file path, not a URI")
+	databaseFlags(f, &s)
 	f.StringVar(&s.ReportRoot, "report-root", s.ReportRoot, "existing private report directory")
 	f.DurationVar(&s.PollMaxAge, "poll-max-age", s.PollMaxAge, "agent cache max age (whole seconds)")
-	f.Int64Var(&s.MaxRequestBytes, "max-request-bytes", s.MaxRequestBytes, "future configuration request limit")
+	f.Int64Var(&s.MaxRequestBytes, "max-request-bytes", s.MaxRequestBytes, "administration/configuration request limit")
 	f.Int64Var(&s.MaxReportBytes, "max-report-bytes", s.MaxReportBytes, "future report request limit")
 	f.DurationVar(&s.ReadHeaderTimeout, "read-header-timeout", s.ReadHeaderTimeout, "HTTP header read timeout")
 	f.DurationVar(&s.ReadTimeout, "read-timeout", s.ReadTimeout, "HTTP request read timeout")
 	f.DurationVar(&s.WriteTimeout, "write-timeout", s.WriteTimeout, "HTTP response write timeout")
 	f.DurationVar(&s.IdleTimeout, "idle-timeout", s.IdleTimeout, "HTTP keep-alive idle timeout")
-	f.DurationVar(&s.StartupTimeout, "startup-timeout", s.StartupTimeout, "database startup timeout")
 	f.DurationVar(&s.ShutdownTimeout, "shutdown-timeout", s.ShutdownTimeout, "graceful shutdown timeout")
 	f.DurationVar(&s.ProbeTimeout, "probe-timeout", s.ProbeTimeout, "readiness response timeout")
-	f.DurationVar(&s.SQLiteBusyTimeout, "sqlite-busy-timeout", s.SQLiteBusyTimeout, "SQLite lock wait (whole milliseconds, at most 1m)")
 	if err := f.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			f.SetOutput(help)
@@ -77,6 +76,47 @@ func Parse(args []string, help io.Writer) (Settings, error) {
 		return s, errors.New("unexpected positional arguments")
 	}
 	return s, s.Validate()
+}
+
+func databaseFlags(f *flag.FlagSet, s *Settings) {
+	f.StringVar(&s.DatabaseEngine, "database-engine", s.DatabaseEngine, "database engine (sqlite or postgres)")
+	f.StringVar(&s.DatabaseDSN, "database-dsn", s.DatabaseDSN, "local SQLite file path or PostgreSQL connection string")
+	f.DurationVar(&s.StartupTimeout, "startup-timeout", s.StartupTimeout, "database startup timeout")
+	f.DurationVar(&s.SQLiteBusyTimeout, "sqlite-busy-timeout", s.SQLiteBusyTimeout, "SQLite lock wait (whole milliseconds, at most 1m)")
+}
+
+func ParseBootstrap(args []string, help io.Writer) (Settings, string, error) {
+	s := Defaults()
+	s.DevelopmentHTTP = true
+	name := "administrator"
+	f := flag.NewFlagSet("dscregd bootstrap", flag.ContinueOnError)
+	f.SetOutput(io.Discard)
+	databaseFlags(f, &s)
+	f.StringVar(&name, "name", name, "initial administrator display name (recovery reuses the first identity)")
+	if err := f.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			f.SetOutput(help)
+			f.PrintDefaults()
+			return s, name, flag.ErrHelp
+		}
+		return s, name, errors.New("invalid bootstrap options; use bootstrap -h for help")
+	}
+	if f.NArg() != 0 || !ValidDisplayName(name, 256) {
+		return s, name, errors.New("invalid bootstrap arguments or administrator name")
+	}
+	return s, name, s.Validate()
+}
+
+func ValidDisplayName(value string, maxBytes int) bool {
+	if len(value) == 0 || len(value) > maxBytes || !utf8.ValidString(value) || strings.TrimSpace(value) != value {
+		return false
+	}
+	for _, r := range value {
+		if unicode.IsControl(r) {
+			return false
+		}
+	}
+	return true
 }
 
 func (s Settings) Validate() error {
@@ -94,24 +134,29 @@ func (s Settings) Validate() error {
 	if s.DevelopmentHTTP && !net.ParseIP(host).IsLoopback() {
 		return errors.New("development-http requires a loopback listen IP")
 	}
-	if s.DatabaseEngine != "sqlite" {
-		return errors.New("only the sqlite database engine is supported in this milestone")
+	if s.DatabaseEngine != "sqlite" && s.DatabaseEngine != "postgres" {
+		return errors.New("database-engine must be sqlite or postgres")
 	}
-	if strings.TrimSpace(s.DatabaseDSN) == "" || strings.HasPrefix(s.DatabaseDSN, "file:") ||
+	if strings.TrimSpace(s.DatabaseDSN) == "" {
+		return errors.New("database-dsn must not be empty")
+	}
+	if s.DatabaseEngine == "sqlite" && (strings.HasPrefix(s.DatabaseDSN, "file:") ||
 		s.DatabaseDSN == ":memory:" || strings.HasPrefix(s.DatabaseDSN, `\\`) ||
-		strings.HasPrefix(s.DatabaseDSN, "//") {
+		strings.HasPrefix(s.DatabaseDSN, "//")) {
 		return errors.New("database-dsn must be a persistent local SQLite file path, not a URI")
 	}
 	if strings.TrimSpace(s.ReportRoot) == "" {
 		return errors.New("report-root must not be empty")
 	}
-	dbPath, err := filepath.Abs(s.DatabaseDSN)
-	if err != nil {
-		return errors.New("invalid database path")
-	}
 	root, err := filepath.Abs(s.ReportRoot)
-	if err != nil || filepath.Clean(dbPath) == filepath.Clean(root) {
-		return errors.New("report-root must be a directory distinct from the database file")
+	if err != nil {
+		return errors.New("invalid report-root")
+	}
+	if s.DatabaseEngine == "sqlite" {
+		dbPath, err := filepath.Abs(s.DatabaseDSN)
+		if err != nil || filepath.Clean(dbPath) == filepath.Clean(root) {
+			return errors.New("report-root must be a directory distinct from the database file")
+		}
 	}
 	if s.PollMaxAge <= 0 || s.PollMaxAge%time.Second != 0 {
 		return errors.New("poll-max-age must be positive whole seconds")

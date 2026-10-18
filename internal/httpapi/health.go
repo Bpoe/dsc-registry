@@ -2,22 +2,22 @@ package httpapi
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"log/slog"
 	"net/http"
 	"sync"
 	"time"
 
+	"github.com/Bpoe/dsc-registry/internal/database"
 	"github.com/Bpoe/dsc-registry/internal/reportstore"
 )
 
 const unavailable = `{"error":{"code":"not_ready","message":"Service dependencies are unavailable"}}` + "\n"
 
-func New(db *sql.DB, reports *reportstore.Store, timeout time.Duration, logger *slog.Logger) http.Handler {
+func New(db *database.Store, reports *reportstore.Store, timeout, requestTimeout time.Duration, maxRequestBytes int64, logger *slog.Logger) http.Handler {
 	ready := &readinessProbe{timeout: timeout, check: func(ctx context.Context) error {
 		dependency := "database"
-		err := db.PingContext(ctx)
+		err := db.DB.PingContext(ctx)
 		if err == nil {
 			dependency = "report_storage"
 			err = reports.Check(ctx)
@@ -28,6 +28,7 @@ func New(db *sql.DB, reports *reportstore.Store, timeout time.Duration, logger *
 		return err
 	}}
 
+	admin := &adminAPI{store: db, maxRequestBytes: maxRequestBytes, timeout: requestTimeout, logger: logger}
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("Cache-Control", "no-store")
@@ -44,7 +45,7 @@ func New(db *sql.DB, reports *reportstore.Store, timeout time.Duration, logger *
 				ready.ServeHTTP(w, r)
 			}
 		default:
-			writeError(w, http.StatusNotFound, "not_found", "Endpoint not found")
+			admin.ServeHTTP(w, r)
 		}
 	})
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -116,7 +117,7 @@ func (p *readinessProbe) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 func writeJSON(w http.ResponseWriter, status int, value any) {
 	w.WriteHeader(status)
-	// These responses contain only fixed strings, and cannot fail to marshal.
+	// Responses contain concrete JSON-safe types and cannot fail to marshal.
 	// Transport failures are handled by net/http.
 	_ = json.NewEncoder(w).Encode(value)
 }
