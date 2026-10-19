@@ -44,7 +44,7 @@ try {
         $hash = (Get-FileHash -LiteralPath "$output\$name" -Algorithm SHA256).Hash.ToLowerInvariant()
         "$hash  $name"
     }
-    Set-Content -LiteralPath "$output\SHA256SUMS" -Value $lines -Encoding ascii
+    [IO.File]::WriteAllText("$output\SHA256SUMS", ($lines -join "`n") + "`n", [Text.Encoding]::ASCII)
 }
 finally {
     Pop-Location

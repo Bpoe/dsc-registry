@@ -53,16 +53,17 @@ def main():
         "database": {"engine": "sqlite", "dsn": str(args.root / "registry.db")},
         "reportRoot": str(args.root / "reports"),
     }), encoding="utf-8")
-    prefix = [] if os.name == "nt" else ["runuser", "-u", "dscregd", "--"]
+    identity = {}
     if os.name != "nt":
         import pwd
         account = pwd.getpwnam("dscregd")
+        identity = {"user": account.pw_uid, "group": account.pw_gid, "extra_groups": []}
         os.chown(config, account.pw_uid, account.pw_gid)
         config.chmod(0o600)
-    command = [*prefix, str(args.binary), "-config", str(config)]
+    command = [str(args.binary), "-config", str(config)]
     result = subprocess.run(
-        [*prefix, str(args.binary), "bootstrap", "-config", str(config)],
-        capture_output=True, text=True, check=True,
+        [str(args.binary), "bootstrap", "-config", str(config)],
+        capture_output=True, text=True, check=True, **identity,
     )
     key = json.loads(result.stdout)["key"]
     process = None
@@ -80,12 +81,14 @@ def main():
                             f"'{'Running' if action == 'start' else 'Stopped'}', "
                             "[TimeSpan]::FromSeconds(30))"], check=True)
         elif action == "start":
-            process = subprocess.Popen(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            process = subprocess.Popen(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                       **identity)
         else:
             process.terminate()
-            if process.wait(timeout=25) != 0:
-                raise RuntimeError("Console daemon did not shut down successfully.")
+            code = process.wait(timeout=25)
             process = None
+            if code != 0:
+                raise RuntimeError(f"Console daemon did not shut down successfully (exit {code}).")
 
     def request(path, method="GET", body=None, token=key, headers=None):
         fields = dict(headers or {})
@@ -158,7 +161,7 @@ def main():
         status, _, body = request(path + "/report")
         assert status == 200 and json.loads(body) == report
     finally:
-        if running:
+        if running and args.service != "none":
             control("stop")
         elif process is not None and process.poll() is None:
             process.terminate()
