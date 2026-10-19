@@ -39,7 +39,7 @@ administrator ── admin API ──┐
 | Persistence | SQLite is the easy single-server default; PostgreSQL is the supported HA / multi-replica production option; explicit SQL migrations for both |
 | Report storage | One configured filesystem root, local or shared; report paths are relative to that root; SQL owns the current report reference |
 | Authentication | Direct long-lived **API keys over TLS**; separate machine and administrator principals; no OAuth, JWT, OpenIddict or token-exchange server in v1 |
-| Machine identity | Server-created immutable UUID; human `Name` is display-only, not identity |
+| Machine identity | Server-created immutable UUID; unique human `Name` is a display/lookup label, not identity |
 | Desired state | Each **Configuration** is named and belongs to one machine; it contains an embedded **Template** DSC document and optional **Parameters** sidecar document |
 | Document representation | HTTP API accepts **JSON objects only**: `template` and optional `parameters` are embedded structured JSON, not `{format,content}` text envelopes. YAML-to-JSON conversion is a CLI responsibility. Server stores/delivers deterministic JSON and does not interpret DSC resources or `metadata.dscd.operation` |
 | Polling | Machine-scoped GET with `ETag`/`If-None-Match`, `304`, and `Cache-Control: private, max-age=...` |
@@ -53,6 +53,7 @@ No web UI, event history, report analytics, groups/tags/policy inheritance, temp
 ## 3. Terminology and invariants
 
 - **Machine:** one registered machine, identified by server-generated UUID. Machine-local API credentials are scoped to this UUID.
+- **Machine name:** original UTF-8 display name, globally unique under `NFC(full Unicode case fold(NFC(name)))`. Administrator collection lookup by `?name=...` returns one exact match or `404`; conflicting creation returns `409`. Names never confer authorization, replace UUIDs, or change resource routes. No renaming API is supported.
 - **Template:** a required structured **JSON object** containing the DSC document (`$schema`, parameter declarations, resources, variables, outputs, `metadata.dscd.operation`, etc.). The HTTP request embeds the object directly; there is no `format`/`content` wrapper. `operation` is **not** a separate DSC Registry setting. The Registry treats DSC fields as opaque values.
 - **Parameters:** optional structured **JSON object** containing DSC's direct parameter mapping, embedded directly in the API request. Missing or `null` means no sidecar; `{}` is a present, empty parameter mapping. YAML translation, when needed, happens in a user-facing CLI before the HTTP request. Do not interpret, expand or log parameter values.
 - **Configuration:** uniquely `(MachineId, Name)`, with embedded Template, optional Parameters and an opaque per-content revision ID; no shared template table, `enabled` flag, or separate assignment entity.
@@ -69,13 +70,23 @@ The initial relational schema, expressed conceptually (use SQL types appropriate
 
 | Table | Core fields | Constraint / index |
 | --- | --- | --- |
-| `machines` | `id UUID`, `name`, `configuration_revision BIGINT`, `created_at` | PK id; name display-only |
+| `machines` | `id UUID`, `name`, internal `name_folded`, `configuration_revision BIGINT`, `created_at` | PK id; unique required name_folded |
 | `configurations` | `machine_id`, `name`, `revision UUID`, `template_json`, nullable `parameters_json`, `content_sha256`, `updated_at` | PK(machine_id,name), FK machines |
 | `configuration_status` | `machine_id`, `name`, `configuration_revision`, `received_at`, `started_at`, `finished_at`, `outcome`, nullable `operation`, nullable `input_hash`, nullable `error_kind`, `report_path`, `last_upload_id` | PK(machine_id,name), FK configuration; no hot-path index on updated timestamps |
 | `admins` | `id UUID`, `name`, `created_at` | PK id |
 | `api_keys` | `key_id`, `owner_type` (`admin`/`machine`), `owner_id`, `secret_hash`, `created_at`, nullable `revoked_at`, nullable `description` | PK key_id; no plaintext secrets |
 
 Use a DB transaction for configuration CRUD plus machine collection-revision updates. A delete increments the collection revision and removes the corresponding latest status; the former file is eligible for garbage collection. Machine deletion cascades to configurations/status/keys and likewise leaves unreferenced report files for cleanup.
+
+Machine creation and name lookup use one shared Go NFC/full-case-folding helper.
+Preserve the original `name` bytes; use only the derived `name_folded` for a
+parameterized, indexed equality query and database-enforced uniqueness. Compare
+derived keys byte-for-byte (SQLite binary collation, PostgreSQL `C` collation),
+not with provider-specific LOWER/NOCASE rules. Normalize to NFC before and after
+folding so canonically equivalent composed/decomposed names compare equal. Do
+not apply compatibility normalization, accent removal, or culture-dependent
+conversion. Concurrent inserts rely on the unique index, not a pre-insert
+existence check. The derived key is internal and is never added to API responses.
 
 For SQLite: enable WAL, foreign keys, bounded busy timeout and pool configuration suitable for one writer. SQLite database **must reside on a local filesystem**, not a shared NFS mount. For multiple active API servers use PostgreSQL. Keep SQL engine-specific migration scripts and test both. Do not quietly implement a third database provider.
 

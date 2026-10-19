@@ -155,6 +155,10 @@ func (a *adminAPI) machines(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		machine, err := a.store.CreateMachine(r.Context(), name)
+		if errors.Is(err, database.ErrMachineNameConflict) {
+			writeError(w, http.StatusConflict, "machine_name_conflict", "A machine with this name already exists")
+			return
+		}
 		if err != nil {
 			a.failure(w, err)
 			return
@@ -162,6 +166,28 @@ func (a *adminAPI) machines(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Location", "/v1/machines/"+machine.ID)
 		writeJSON(w, http.StatusCreated, machine)
 	case http.MethodGet:
+		values, err := url.ParseQuery(r.URL.RawQuery)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "invalid_pagination", "Invalid query string")
+			return
+		}
+		if names, present := values["name"]; present {
+			if len(values) != 1 || len(names) != 1 {
+				writeError(w, http.StatusBadRequest, "invalid_query", "Name lookup accepts only one name and no other query parameters")
+				return
+			}
+			if !config.ValidDisplayName(names[0], 256) {
+				writeError(w, http.StatusBadRequest, "invalid_name", "Name must be 1-256 UTF-8 bytes without surrounding whitespace or control characters")
+				return
+			}
+			machine, err := a.store.GetMachineByName(r.Context(), names[0])
+			if err != nil {
+				a.resourceError(w, err, apikey.Machine)
+				return
+			}
+			writeJSON(w, http.StatusOK, machine)
+			return
+		}
 		limit, cursor, ok := pagination(w, r, validUUID)
 		if !ok {
 			return

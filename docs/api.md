@@ -21,7 +21,7 @@ All routes below require an administrator key.
 | Method | Route | Semantics |
 | --- | --- | --- |
 | `POST` | `/v1/machines` | Register new machine, server generates `id`; input `{ "name": "host-1" }`, returns `201` |
-| `GET` | `/v1/machines` | Paginated machine list, summary only |
+| `GET` | `/v1/machines` | Paginated machine list; optional `name` returns one exact Unicode-caseless match |
 | `GET` | `/v1/machines/{machineId}` | Machine details including `configurationRevision` |
 | `DELETE` | `/v1/machines/{machineId}` | Delete machine and its desired/config status DB records, revoke attached keys; `204` |
 | `GET` | `/v1/machines/{machineId}/configurations` | Paginated configuration summaries including names/content revisions |
@@ -50,7 +50,11 @@ missing, malformed, forged-role, and revoked credentials receive `401` with
 `WWW-Authenticate: ApiKey`. Authentication is never bypassed in development mode.
 All administration responses use `Cache-Control: no-store`.
 
-Machine display names are 1-256 UTF-8 bytes. Optional credential descriptions are
+Machine display names are 1-256 UTF-8 bytes and globally unique under NFC
+normalization plus full Unicode case folding. Original name bytes and casing
+are preserved for display; UUIDs remain the immutable identity. Conflicting
+creation returns `409` (`machine_name_conflict`), including concurrent attempts.
+Optional credential descriptions are
 at most 1024 UTF-8 bytes; empty descriptions are allowed. Nonempty names and
 descriptions reject surrounding whitespace and control characters. Bodies must
 be single UTF-8 JSON objects with string-valued fields. Unknown or duplicate
@@ -93,6 +97,50 @@ Location: /v1/machines/550e8400-e29b-41d4-a716-446655440000
 
 {"id":"550e8400-e29b-41d4-a716-446655440000","name":"host-1","configurationRevision":0}
 ```
+
+### Machine lookup by name
+
+An administrator can look up one machine without knowing its UUID:
+
+```http
+GET /v1/machines?name=HOST-1
+Authorization: ApiKey dsca_<id>.<secret>
+```
+
+```http
+HTTP/1.1 200 OK
+Content-Type: application/json
+Cache-Control: no-store
+
+{"id":"550e8400-e29b-41d4-a716-446655440000","name":"host-1","configurationRevision":0}
+```
+
+With `name`, the response is the existing individual machine object, never a
+`machines` collection. No match returns `404` (`machine_not_found`). Without
+`name`, the existing paginated collection response is unchanged.
+
+Matching and uniqueness both use `NFC(full Unicode case fold(NFC(name)))`.
+For example, composed `"\u00c9"` and decomposed `"e\u0301"` compare equal;
+full folding also equates sharp-s with `ss` and the Greek sigma variants.
+No locale-specific conversion, compatibility normalization (NFKC/NFKD), accent
+removal, trimming, prefix, substring, or wildcard matching is performed.
+Accents remain significant and fullwidth letters do not become ASCII letters.
+The original display name is returned unchanged.
+
+Lookup accepts exactly one URL-encoded `name` and no other query parameters.
+Combining it with `limit`, `cursor`, or unknown parameters, or repeating it,
+returns `400` (`invalid_query`). An empty or invalid display name returns `400`
+(`invalid_name`); malformed query encoding retains `invalid_pagination`.
+The same 1-256 UTF-8-byte, whitespace, and control-character validation applies
+to creation and lookup before normalization. Encode literal `+` as `%2B`;
+`%` and `_` in a decoded name are ordinary characters, not patterns.
+
+Creation remains `POST /v1/machines`; a uniqueness conflict returns the stable
+JSON error shape with code `machine_name_conflict`, without disclosing the
+existing machine's UUID. Names are not authorization identities: administrator
+authorization still precedes lookup, machine credentials receive `403`, and
+all resource/credential ownership remains UUID-based. No rename operation or
+name-based resource route is supported.
 
 ### Create or replace desired configuration
 
@@ -374,6 +422,7 @@ bounded offline cleanup.
 
 ## 5. API integration test scenarios
 
+- Exact machine-name lookup returns a single object; unfiltered listing remains a collection. Unicode case/NFC-equivalent lookup and concurrent creation agree on uniqueness; conflicting creation returns `409`. Accents and non-case compatibility differences remain significant.
 - Cross-machine isolation, forged owner IDs, role confusion, revoked keys, credential logging redaction.
 - Duplicate/idempotent PUT, delete-then-recreate revision uniqueness, agent ETag after PUT/DELETE, status updates not modifying ETag.
 - `304` on matching validator including cache headers; `200` after change. Distinguish HTTP cache headers on 200/304.

@@ -111,7 +111,7 @@ func TestConfigurationsBothEngines(t *testing.T) {
 		if err != nil || !created || recreated.Revision == first.Revision || recreated.Revision == changed.Revision || recreated.MachineConfigurationRevision != 6 {
 			t.Fatalf("recreate: %+v %v", recreated, err)
 		}
-		other, err := store.CreateMachine(ctx, "host")
+		other, err := store.CreateMachine(ctx, "other-host")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -276,7 +276,7 @@ func TestPostgresLosslessJSONUpgrade(t *testing.T) {
 		t.Fatal("upgrade changed existing desired state")
 	}
 	assertCount(t, store.DB, "configuration_status", 1)
-	assertCount(t, store.DB, "schema_migrations", 2)
+	assertCount(t, store.DB, "schema_migrations", 3)
 	var applied string
 	if err := store.DB.QueryRow("SELECT applied_at FROM schema_migrations WHERE version = 1").Scan(&applied); err != nil || applied != "original" {
 		t.Fatal("initial migration reapplied")

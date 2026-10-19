@@ -40,7 +40,7 @@ func configurationAPI(t *testing.T, engine, dsn string, logs io.Writer) (http.Ha
 	if err != nil {
 		t.Fatal(err)
 	}
-	machine, err := store.CreateMachine(ctx, "same display name")
+	machine, err := store.CreateMachine(ctx, "first display name")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -82,7 +82,7 @@ func TestConfigurationsHTTPBothEngines(t *testing.T) {
 		handler, store, admin, machine, key := configurationAPI(t, engine, dsn, logs)
 		ctx := context.Background()
 		path := "/v1/machines/" + machine.ID + "/configurations"
-		other, err := store.CreateMachine(ctx, machine.Name)
+		other, err := store.CreateMachine(ctx, "other display name")
 		if err != nil {
 			t.Fatal(err)
 		}

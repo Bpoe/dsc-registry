@@ -60,7 +60,7 @@ func TestReportsHTTPBothEngines(t *testing.T) {
 		for _, route := range []string{path + "/status", path + "/report", "/v1/machines/not-a-uuid/configurations/UPPER/report"} {
 			apiRequest(t, handler, key.Key, "GET", route, "", 403)
 		}
-		other, err := db.CreateMachine(context.Background(), machine.Name)
+		other, err := db.CreateMachine(context.Background(), "other display name")
 		if err != nil {
 			t.Fatal(err)
 		}

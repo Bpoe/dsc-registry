@@ -37,8 +37,8 @@ func exec(t *testing.T, db *sql.DB, query string, args ...any) {
 func TestMigrationPersistsAndConfiguresConnections(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "registry # percent%.db")
 	db := openTestDB(t, path)
-	exec(t, db, "INSERT INTO machines VALUES ($1, $2, $3, $4)",
-		"550e8400-e29b-41d4-a716-446655440000", "display only", 0, "2026-10-18T00:00:00Z")
+	exec(t, db, "INSERT INTO machines(id, name, configuration_revision, created_at, name_folded) VALUES ($1, $2, $3, $4, $5)",
+		"550e8400-e29b-41d4-a716-446655440000", "display only", 0, "2026-10-18T00:00:00Z", foldMachineName("display only"))
 	if err := db.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -79,8 +79,9 @@ func TestSchemaIntegrityAndCascade(t *testing.T) {
 func checkSchemaIntegrityAndCascade(t *testing.T, db *sql.DB) {
 	id := "550e8400-e29b-41d4-a716-446655440000"
 	now := "2026-10-18T00:00:00Z"
-	exec(t, db, "INSERT INTO machines VALUES ($1, $2, $3, $4)", id, "duplicate name allowed", 0, now)
-	exec(t, db, "INSERT INTO machines VALUES ($1, $2, $3, $4)", "second-id", "duplicate name allowed", 0, now)
+	machineSQL := "INSERT INTO machines(id, name, configuration_revision, created_at, name_folded) VALUES ($1, $2, $3, $4, $5)"
+	exec(t, db, machineSQL, id, "first name", 0, now, foldMachineName("first name"))
+	exec(t, db, machineSQL, "second-id", "second name", 0, now, foldMachineName("second name"))
 	exec(t, db, "INSERT INTO admins VALUES ($1, $2, $3)", id, "admin", now)
 	keySQL := "INSERT INTO api_keys(key_id, owner_type, owner_id, secret_hash, created_at) VALUES ($1, $2, $3, $4, $5)"
 	exec(t, db, keySQL, "machine-key", "machine", id, make([]byte, 32), now)
@@ -161,7 +162,7 @@ func TestRejectFutureSchemaAndCanceledStartup(t *testing.T) {
 		t.Fatal(err)
 	}
 	exec(t, raw, "CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)")
-	exec(t, raw, "INSERT INTO schema_migrations VALUES (2, 'future')")
+	exec(t, raw, "INSERT INTO schema_migrations VALUES (3, 'future')")
 	if err := raw.Close(); err != nil {
 		t.Fatal(err)
 	}

@@ -81,7 +81,7 @@ func initialize(ctx context.Context, db *sql.DB) error {
 		Scan(&count, &version); err != nil {
 		return fmt.Errorf("read migration ledger: %w", err)
 	}
-	if count != version || version < 0 || version > 1 {
+	if count != version || version < 0 || version > 2 {
 		return errors.New("unsupported SQLite schema version or migration ledger")
 	}
 	if version == 0 {
@@ -91,6 +91,18 @@ func initialize(ctx context.Context, db *sql.DB) error {
 		if _, err := tx.ExecContext(ctx, "INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)",
 			1, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
 			return fmt.Errorf("record SQLite migration 1: %w", err)
+		}
+	}
+	if version < 2 {
+		if _, err := tx.ExecContext(ctx, migrations.SQLiteMachineNames); err != nil {
+			return fmt.Errorf("apply SQLite migration 2: %w", err)
+		}
+		if err := backfillMachineNames(ctx, tx); err != nil {
+			return fmt.Errorf("backfill SQLite machine names: %w", err)
+		}
+		if _, err := tx.ExecContext(ctx, "INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)",
+			2, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
+			return fmt.Errorf("record SQLite migration 2: %w", err)
 		}
 	}
 	if err := tx.Commit(); err != nil {
