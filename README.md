@@ -107,14 +107,14 @@ Precedence is **built-in defaults, then file properties, then explicitly supplie
 CLI flags**, including flags explicitly set to their default or `false` value.
 Omitted properties keep existing defaults; explicit empty strings, zero, and
 false are not treated as missing. Durations use Go strings such as `"500ms"`,
-`"5s"`, or `"5m"`. Unknown properties (including nested database properties),
+`"5s"`, or `"5m"`. Unknown properties (including nested database and TLS properties),
 duplicate keys, nulls, invalid types/durations, malformed JSON, and extra JSON
 documents are rejected. Final merged settings must pass normal validation.
 An unreadable file is fatal when `-config` is supplied. Without it, existing
 CLI behavior is unchanged. There is no implicit file discovery, environment
 override, or hot reload; restart to apply file changes.
 
-Relative `reportRoot` and SQLite `database.dsn` values **supplied in the file**
+Relative `reportRoot`, SQLite `database.dsn`, `tls.certFile`, and `tls.keyFile` values **supplied in the file**
 are resolved against the configuration file's directory, not the current
 working directory. Absolute paths stay unchanged. Omitted path defaults and
 paths explicitly supplied through CLI flags retain working-directory semantics.
@@ -150,7 +150,67 @@ settings without printing their values or file contents.
 | `-probe-timeout` | `2s` | Readiness deadline, less than the write timeout |
 | `-sqlite-busy-timeout` | `5s` | Per-connection lock wait, whole milliseconds up to `1m` |
 
-Select exactly one transport mode. `-external-https` does **not** enable TLS in
+### Transport modes
+
+Select exactly one transport mode; omitting all three is a startup error.
+Existing development and reverse-proxy configurations remain valid unchanged.
+
+| Mode | JSON configuration | Intended use |
+| --- | --- | --- |
+| Native HTTPS | `"tls": {"certFile": "...", "keyFile": "..."}` | Direct HTTPS with operator-provided PEM files; no reverse proxy required |
+| External HTTPS | `"externalHttps": true` | HTTP on a protected backend behind trusted TLS termination |
+| Development HTTP | `"developmentHttp": true` | Plain HTTP on a literal loopback IP only |
+
+Native TLS cannot be combined with either HTTP mode, and the two HTTP modes
+cannot be combined with each other. TLS settings are **configuration-file
+only**; there are no TLS command-line flags. A complete native HTTPS example:
+
+```json
+{
+  "listenAddress": "127.0.0.1:8443",
+  "tls": {
+    "certFile": "certs/server.crt",
+    "keyFile": "certs/server.key"
+  },
+  "database": {
+    "engine": "sqlite",
+    "dsn": "data/registry.db"
+  },
+  "reportRoot": "data/reports"
+}
+```
+
+Create the data/report directories and supply the certificate/key, then start:
+
+```powershell
+.\dscregd.exe -config .\config.json
+Invoke-RestMethod https://localhost:8443/health/ready # In a second terminal
+```
+
+`certFile` is a PEM server certificate followed by any required intermediates;
+`keyFile` is its matching, unencrypted PEM private key. Both are required and
+loaded before the listener opens. Missing, unreadable, malformed or mismatched
+files fail startup without falling back to HTTP or logging their contents/paths.
+Native HTTPS uses TLS 1.2 or newer and Go's secure cipher/protocol defaults,
+including HTTP/2. API-key authentication and graceful shutdown are unchanged.
+
+Clients must trust the issuing CA and use a name in the certificate's DNS SAN
+(for example `localhost`); IP-address URLs require matching IP SANs instead.
+Do not disable client certificate verification. Protect private-key files and
+their directories with service/operator-only Windows ACLs or POSIX permissions
+(for example key mode `0600`, or `0640` with a dedicated service group).
+Certificates are not generated or renewed by the server; replace the PEM files
+and **restart the service** to load a replacement. No hot reload, certificate
+store lookup, ACME or client-certificate/mTLS authentication is provided.
+
+See the [Windows trusted-HTTPS walkthrough](docs/operations.md#windows-local-https-with-powershell)
+for certificate creation, PEM export, trust and ACL commands. It requires
+PowerShell 7.4+ for .NET PEM export; Windows PowerShell 5.1 alone does not
+provide those private-key export methods.
+
+Reverse-proxy TLS remains available for production deployments needing
+centralized certificate renewal, load balancing, traffic limits or edge policy.
+`-external-https` does **not** enable TLS in
 the executable or trust forwarded identity headers. Configure the reverse proxy
 to terminate TLS and restrict the backend listener with network controls.
 Never expose the plain HTTP backend directly. Development mode rejects wildcard
@@ -421,7 +481,9 @@ normal and race suites on a non-root Linux host. Both suites configure
 the existing SQLite and PostgreSQL integration cases run together; missing
 PostgreSQL configuration fails CI rather than opting out. Separate builds
 check Linux amd64 and arm64 with CGO disabled. CI does not publish artifacts
-or deploy the server.
+or deploy the server. A Windows job also exercises server transports (including
+verified native HTTPS), configuration and SQLite startup/shutdown, and builds
+the executable.
 
 CI additionally runs bounded desired/report fuzz smoke tests and the isolated
 two-replica PostgreSQL/TLS demo with dependency faults and cold paired restore.

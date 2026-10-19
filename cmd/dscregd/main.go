@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -51,6 +52,18 @@ func run(ctx context.Context, settings config.Settings, logger *slog.Logger) (er
 	if err := settings.Validate(); err != nil {
 		return err
 	}
+	var tlsConfig *tls.Config
+	if settings.TLS != nil {
+		certificate, err := tls.LoadX509KeyPair(settings.TLS.CertFile, settings.TLS.KeyFile)
+		if err != nil {
+			logger.Error("TLS initialization failed", "reason", "certificate_key_pair_unreadable_or_invalid")
+			return errors.New("cannot load TLS certificate and private key; require readable PEM files with a matching key")
+		}
+		tlsConfig = &tls.Config{
+			MinVersion:   tls.VersionTLS12,
+			Certificates: []tls.Certificate{certificate},
+		}
+	}
 	startup, cancel := context.WithTimeout(ctx, settings.StartupTimeout)
 	defer cancel()
 	reports, err := reportstore.Open(startup, settings.ReportRoot)
@@ -79,6 +92,7 @@ func run(ctx context.Context, settings config.Settings, logger *slog.Logger) (er
 		IdleTimeout:       settings.IdleTimeout,
 		MaxHeaderBytes:    64 << 10,
 		ErrorLog:          log.New(&serverErrorLog{logger: logger}, "", 0),
+		TLSConfig:         tlsConfig,
 	}
 	logger.Info("server listening", "address", listener.Addr().String())
 	return serve(ctx, server, listener, settings, logger)
@@ -115,9 +129,17 @@ func bootstrap(ctx context.Context, args []string, output io.Writer) error {
 }
 
 func serve(ctx context.Context, server *http.Server, listener net.Listener, settings config.Settings, logger *slog.Logger) (err error) {
+	// ServeTLS can fail before net/http takes ownership of the listener.
+	defer listener.Close()
 	defer func() { err = errors.Join(err, server.Close()) }()
 	done := make(chan error, 1)
-	go func() { done <- server.Serve(listener) }()
+	go func() {
+		if settings.TLS != nil {
+			done <- server.ServeTLS(listener, "", "")
+		} else {
+			done <- server.Serve(listener)
+		}
+	}()
 	select {
 	case err := <-done:
 		if !errors.Is(err, http.ErrServerClosed) {

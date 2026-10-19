@@ -131,6 +131,15 @@ func TestFileErrors(t *testing.T) {
 		"overflow duration":      `{"pollMaxAge":"999999999999h"}`,
 		"invalid utf8":           "{\"listenAddress\":\"\xffsecret\"}",
 		"nested invalid content": `{"database":{"dsn":{"secret":"secret"}}}`,
+		"unknown TLS":            `{"tls":{"secret":"secret"}}`,
+		"case mismatch TLS":      `{"tls":{"CertFile":"secret"}}`,
+		"duplicate TLS":          `{"tls":{},"tls":{}}`,
+		"duplicate certificate":  `{"tls":{"certFile":"secret","certFile":"secret"}}`,
+		"escaped duplicate TLS":  `{"tls":{"keyFile":"secret","key\u0046ile":"secret"}}`,
+		"null TLS":               `{"tls":null}`,
+		"array TLS":              `{"tls":[]}`,
+		"null certificate":       `{"tls":{"certFile":null}}`,
+		"number key":             `{"tls":{"keyFile":123}}`,
 	}
 	for name, body := range tests {
 		t.Run(name, func(t *testing.T) {
@@ -268,6 +277,7 @@ func TestFilePaths(t *testing.T) {
 func TestBootstrapFile(t *testing.T) {
 	path := writeConfig(t, `{
 		"listenAddress":"invalid", "externalHttps":true, "developmentHttp":true,
+		"tls":{"certFile":"missing.pem"},
 		"reportRoot":"", "pollMaxAge":"0s", "maxRequestBytes":0,
 		"maxReportBytes":0, "readHeaderTimeout":"0s", "readTimeout":"0s",
 		"writeTimeout":"0s", "idleTimeout":"0s", "shutdownTimeout":"0s", "probeTimeout":"0s",
@@ -278,6 +288,7 @@ func TestBootstrapFile(t *testing.T) {
 		got.StartupTimeout != 3*time.Second || got.SQLiteBusyTimeout != 500*time.Millisecond {
 		t.Fatalf("bootstrap file: %v", err)
 	}
+
 	got, _, err = ParseBootstrap([]string{"-config", path, "-database-engine", "postgres",
 		"-database-dsn", "host=localhost", "-startup-timeout", "10s", "-sqlite-busy-timeout", "5s"}, io.Discard)
 	if err != nil || got.DatabaseEngine != "postgres" || got.DatabaseDSN != "host=localhost" ||
@@ -292,5 +303,78 @@ func TestBootstrapFile(t *testing.T) {
 		if _, _, err := ParseBootstrap([]string{"-config", path}, io.Discard); err == nil {
 			t.Fatal("bootstrap accepted invalid database settings")
 		}
+	}
+}
+
+func TestTLSFilePaths(t *testing.T) {
+	path := writeConfig(t, `{
+		"listenAddress":"0.0.0.0:8443",
+		"tls":{"certFile":"certs/server.crt","keyFile":"certs/server.key"}
+	}`)
+	got, err := Parse([]string{"-config", path}, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := TLSSettings{
+		CertFile: filepath.Join(filepath.Dir(path), "certs", "server.crt"),
+		KeyFile:  filepath.Join(filepath.Dir(path), "certs", "server.key"),
+	}
+	if got.TLS == nil || *got.TLS != want || got.ExternalHTTPS || got.DevelopmentHTTP {
+		t.Fatal("TLS paths or native mode not loaded")
+	}
+	data, err := json.Marshal(map[string]any{
+		"tls": map[string]string{"certFile": want.CertFile, "keyFile": want.KeyFile},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	absolute, err := Parse([]string{"-config", writeConfig(t, string(data))}, io.Discard)
+	if err != nil || absolute.TLS == nil || *absolute.TLS != want {
+		t.Fatal("absolute TLS paths changed")
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	relative, err := filepath.Rel(cwd, path)
+	if err == nil {
+		fromRelative, err := Parse([]string{"-config", relative}, io.Discard)
+		if err != nil || fromRelative.TLS == nil || *fromRelative.TLS != want {
+			t.Fatal("relative config path changed TLS path resolution")
+		}
+	}
+}
+
+func TestTLSTransportValidation(t *testing.T) {
+	for _, body := range []string{
+		`{"tls":{}}`,
+		`{"tls":{"certFile":"server.crt"}}`,
+		`{"tls":{"keyFile":"server.key"}}`,
+		`{"tls":{"certFile":"","keyFile":"server.key"}}`,
+		`{"tls":{"certFile":"server.crt","keyFile":" "}}`,
+		`{"tls":{"certFile":"server.crt","keyFile":"server.key"},"externalHttps":true}`,
+		`{"tls":{"certFile":"server.crt","keyFile":"server.key"},"developmentHttp":true}`,
+		`{"tls":{"certFile":"server.crt","keyFile":"server.key"},"externalHttps":true,"developmentHttp":true}`,
+		`{"tls":{"certFile":"server.crt","keyFile":"server.key"},"listenAddress":"localhost:8443"}`,
+		`{"tls":{"certFile":"server.crt","keyFile":"server.key"},"listenAddress":"127.0.0.1:65536"}`,
+	} {
+		t.Run(body, func(t *testing.T) {
+			if _, err := Parse([]string{"-config", writeConfig(t, body)}, io.Discard); err == nil {
+				t.Fatal("invalid TLS settings accepted")
+			}
+		})
+	}
+	path := writeConfig(t, `{"tls":{"certFile":"server.crt","keyFile":"server.key"}}`)
+	for _, mode := range []string{"-external-https", "-development-http"} {
+		if _, err := Parse([]string{"-config", path, mode}, io.Discard); err == nil {
+			t.Fatal("CLI override accepted incompatible TLS mode")
+		}
+	}
+	path = writeConfig(t, `{
+		"tls":{"certFile":"server.crt","keyFile":"server.key"},
+		"externalHttps":true,"developmentHttp":true
+	}`)
+	if _, err := Parse([]string{"-config", path, "-external-https=false", "-development-http=false"}, io.Discard); err != nil {
+		t.Fatalf("explicit false overrides did not select native TLS: %v", err)
 	}
 }
