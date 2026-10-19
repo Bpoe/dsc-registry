@@ -22,7 +22,7 @@ import (
 	"github.com/google/uuid"
 )
 
-func configurationAPI(t *testing.T, engine, dsn string, logs io.Writer) (http.Handler, *database.Store, database.BootstrapResult, database.Machine, database.IssuedKey) {
+func configurationAPI(t testing.TB, engine, dsn string, logs io.Writer) (http.Handler, *database.Store, database.BootstrapResult, database.Machine, database.IssuedKey) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -70,8 +70,8 @@ func assertAgentCache(t *testing.T, response *httptest.ResponseRecorder, status 
 		response.Header().Get("Vary") != "Authorization" || len(tag) < 2 || tag[0] != '"' || tag[len(tag)-1] != '"' {
 		t.Fatalf("agent cache contract: %d %v %s", response.Code, response.Header(), response.Body)
 	}
-	if status == 304 && response.Body.Len() != 0 {
-		t.Fatal("304 has a body")
+	if status == 304 && (response.Body.Len() != 0 || response.Header().Get("Content-Type") != "") {
+		t.Fatal("304 has a body or content type")
 	}
 	return tag
 }

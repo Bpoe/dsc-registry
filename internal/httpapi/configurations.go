@@ -97,21 +97,36 @@ func (a *adminAPI) agentConfigurations(w http.ResponseWriter, r *http.Request, i
 		writeError(w, http.StatusBadRequest, "invalid_query", "Agent configuration retrieval accepts no query parameters")
 		return
 	}
+	if validators := r.Header.Values("If-None-Match"); len(validators) > 0 {
+		revision, err := a.store.ConfigurationRevision(r.Context(), id)
+		if err != nil {
+			a.configurationError(w, err)
+			return
+		}
+		etag := fmt.Sprintf(`"machine-%s-config-%d"`, id, revision)
+		if matchesETag(validators, etag) {
+			a.agentConfigurationCache(w, etag)
+			w.Header().Del("Content-Type")
+			w.WriteHeader(http.StatusNotModified)
+			return
+		}
+	}
 	snapshot, err := a.store.ConfigurationSnapshot(r.Context(), id)
 	if err != nil {
 		a.configurationError(w, err)
 		return
 	}
+	// A conditional miss may race with a mutation; only the snapshot's
+	// revision describes the content returned in a 200 response.
 	etag := fmt.Sprintf(`"machine-%s-config-%d"`, id, snapshot.ConfigurationRevision)
+	a.agentConfigurationCache(w, etag)
+	writeJSON(w, http.StatusOK, snapshot)
+}
+
+func (a *adminAPI) agentConfigurationCache(w http.ResponseWriter, etag string) {
 	w.Header().Set("ETag", etag)
 	w.Header().Set("Cache-Control", fmt.Sprintf("private, max-age=%d", a.pollMaxAge/time.Second))
 	w.Header().Set("Vary", "Authorization")
-	if matchesETag(r.Header.Values("If-None-Match"), etag) {
-		w.Header().Del("Content-Type")
-		w.WriteHeader(http.StatusNotModified)
-		return
-	}
-	writeJSON(w, http.StatusOK, snapshot)
 }
 
 // If-None-Match uses weak comparison for GET. Commas inside opaque quoted

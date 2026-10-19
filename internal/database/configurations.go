@@ -184,6 +184,15 @@ func (s *Store) DeleteConfiguration(ctx context.Context, id, name string) error 
 	return tx.Commit()
 }
 
+func (s *Store) ConfigurationRevision(ctx context.Context, id string) (int64, error) {
+	var revision int64
+	err := s.DB.QueryRowContext(ctx, "SELECT configuration_revision FROM machines WHERE id = $1", id).Scan(&revision)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, ErrNotFound
+	}
+	return revision, err
+}
+
 func (s *Store) ConfigurationSnapshot(ctx context.Context, id string) (ConfigurationSnapshot, error) {
 	// One ordered SELECT prevents mixing a revision with another transaction's
 	// content, including an empty collection during concurrent deletion.

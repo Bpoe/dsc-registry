@@ -66,6 +66,23 @@ constraining opaque JSON numbers or escaped Unicode values; SQLite migration 1
 is unchanged. Report endpoints are implemented in PR 4 below; the separate sync
 agent is not implemented.
 
+Conditional polling now reads only `machines.configuration_revision` before
+returning a matching 304; unconditional polling still reads only the full
+snapshot. A conditional miss reads the revision and then the full snapshot,
+whose revision alone supplies the 200 ETag. Each path also performs the normal
+API-key lookup. Query-observation tests enforce these paths on both engines and
+force create/update/delete between the reads to verify consistent 200 responses.
+
+Run the polling benchmarks with
+`go test ./internal/httpapi -run '^$' -bench '^BenchmarkAgentConfigurations$' -benchmem`.
+They compare unconditional 200, matching 304 and stale-validator 200 with 1 and
+64 configurations (approximately 4 KiB template data plus 1 KiB parameters
+each). Fixture creation and request setup are outside the measured loop; HTTP
+routing, authentication, database reads, logging to a discard writer and
+response serialization are included. PostgreSQL benchmarks use the existing
+`DSCREGISTRY_TEST_POSTGRES_DSN` disposable-database hook and skip when unset.
+Results are measurements, not fixed performance-ratio assertions.
+
 ## PR 4 — full-report ingestion and latest status
 
 - Accept a wrapped real dscd envelope; validate required fields and current configuration revision; preserve nested JSON.
