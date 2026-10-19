@@ -36,6 +36,12 @@ func receive[T any](t *testing.T, channel <-chan T) T {
 }
 
 func TestGracefulShutdownDrainsRequests(t *testing.T) {
+	for _, mode := range []string{"http", "https"} {
+		t.Run(mode, func(t *testing.T) { testGracefulShutdownDrainsRequests(t, mode == "https") })
+	}
+}
+
+func testGracefulShutdownDrainsRequests(t *testing.T, nativeTLS bool) {
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -51,15 +57,15 @@ func TestGracefulShutdownDrainsRequests(t *testing.T) {
 		}
 	})}
 	defer server.Close()
+	settings, client, scheme := testServerTransport(t, server, nativeTLS)
 	server.RegisterOnShutdown(func() { close(shuttingDown) })
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	done := make(chan error, 1)
-	go func() { done <- serve(ctx, server, listener, config.Defaults(), testLogger()) }()
+	go func() { done <- serve(ctx, server, listener, settings, testLogger()) }()
 	result := make(chan error, 1)
 	go func() {
-		client := &http.Client{Timeout: 3 * time.Second}
-		response, err := client.Get("http://" + listener.Addr().String())
+		response, err := client.Get(scheme + "://" + listener.Addr().String())
 		if err == nil {
 			defer response.Body.Close()
 			body, readErr := io.ReadAll(response.Body)
@@ -88,6 +94,12 @@ func TestGracefulShutdownDrainsRequests(t *testing.T) {
 }
 
 func TestShutdownDeadlineClosesRequests(t *testing.T) {
+	for _, mode := range []string{"http", "https"} {
+		t.Run(mode, func(t *testing.T) { testShutdownDeadlineClosesRequests(t, mode == "https") })
+	}
+}
+
+func testShutdownDeadlineClosesRequests(t *testing.T, nativeTLS bool) {
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -101,15 +113,14 @@ func TestShutdownDeadlineClosesRequests(t *testing.T) {
 	defer server.Close()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	settings := config.Defaults()
+	settings, client, scheme := testServerTransport(t, server, nativeTLS)
 	settings.ShutdownTimeout = 50 * time.Millisecond
 	done := make(chan error, 1)
 	go func() { done <- serve(ctx, server, listener, settings, testLogger()) }()
 	requestDone := make(chan struct{})
 	go func() {
 		defer close(requestDone)
-		client := &http.Client{Timeout: 3 * time.Second}
-		response, err := client.Get("http://" + listener.Addr().String())
+		response, err := client.Get(scheme + "://" + listener.Addr().String())
 		if err == nil {
 			response.Body.Close()
 		}
@@ -140,15 +151,18 @@ func (h listeningLog) Handle(ctx context.Context, record slog.Record) error {
 }
 
 func TestRunStartupHealthShutdownAndRestart(t *testing.T) {
-	testdb.Engines(t, func(t *testing.T, engine, dsn string) {
-		testRunStartupHealthShutdownAndRestart(t, engine, dsn)
-	})
+	for _, mode := range []string{"developmentHttp", "externalHttps"} {
+		t.Run(mode, func(t *testing.T) {
+			testdb.Engines(t, func(t *testing.T, engine, dsn string) {
+				testRunStartupHealthShutdownAndRestart(t, engine, dsn, mode)
+			})
+		})
+	}
 }
 
-func testRunStartupHealthShutdownAndRestart(t *testing.T, engine, dsn string) {
+func testRunStartupHealthShutdownAndRestart(t *testing.T, engine, dsn, mode string) {
 	root := t.TempDir()
 	settings := config.Defaults()
-	settings.DevelopmentHTTP = true
 	settings.ListenAddress = "127.0.0.1:0"
 	settings.DatabaseEngine = engine
 	settings.DatabaseDSN = dsn
@@ -157,7 +171,7 @@ func testRunStartupHealthShutdownAndRestart(t *testing.T, engine, dsn string) {
 		t.Fatal(err)
 	}
 	data, err := json.Marshal(map[string]any{
-		"listenAddress": settings.ListenAddress, "developmentHttp": true,
+		"listenAddress": settings.ListenAddress, mode: true,
 		"database":   map[string]string{"engine": engine, "dsn": dsn},
 		"reportRoot": settings.ReportRoot,
 	})

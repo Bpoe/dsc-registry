@@ -28,8 +28,10 @@ func mergeFile(flags *flag.FlagSet, path string, s *Settings) error {
 		return errors.New("configuration file must be UTF-8 JSON")
 	}
 	// Flag values are saved before loading so even explicit default values win.
+	var tls TLSSettings
 	fields := map[string]any{
 		"listenAddress": &s.ListenAddress, "externalHttps": &s.ExternalHTTPS,
+		"tls":             map[string]any{"certFile": &tls.CertFile, "keyFile": &tls.KeyFile},
 		"developmentHttp": &s.DevelopmentHTTP, "reportRoot": &s.ReportRoot,
 		"pollMaxAge": &s.PollMaxAge, "maxRequestBytes": &s.MaxRequestBytes,
 		"maxReportBytes": &s.MaxReportBytes, "readHeaderTimeout": &s.ReadHeaderTimeout,
@@ -46,6 +48,9 @@ func mergeFile(flags *flag.FlagSet, path string, s *Settings) error {
 	}
 	if _, err := decoder.Token(); err != io.EOF {
 		return errors.New("configuration file must contain a single JSON object")
+	}
+	if present["tls"] {
+		s.TLS = &tls
 	}
 	for name, value := range overrides {
 		if err := flags.Set(name, value); err != nil {
@@ -66,6 +71,13 @@ func mergeFile(flags *flag.FlagSet, path string, s *Settings) error {
 	if present["database.dsn"] && !hasOverride(overrides, "database-dsn") &&
 		s.DatabaseEngine == "sqlite" && !filepath.IsAbs(s.DatabaseDSN) {
 		s.DatabaseDSN = filepath.Join(directory, s.DatabaseDSN)
+	}
+	if s.TLS != nil {
+		for _, path := range []*string{&s.TLS.CertFile, &s.TLS.KeyFile} {
+			if strings.TrimSpace(*path) != "" && !filepath.IsAbs(*path) {
+				*path = filepath.Join(directory, *path)
+			}
+		}
 	}
 	return nil
 }

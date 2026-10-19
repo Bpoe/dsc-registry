@@ -179,7 +179,162 @@ are unchanged. Do not run an age-based online report cleaner. Use only the
 [bounded offline cleanup procedure](../README.md#bounded-offline-orphan-cleanup)
 with **all replicas stopped**, checking every candidate against SQL.
 
-## TLS edge and health
+## Transport modes and health
+
+Choose exactly one transport in the startup JSON file:
+
+| Mode | Setting | Use |
+| --- | --- | --- |
+| Native HTTPS | `tls.certFile` and `tls.keyFile` | Serve HTTPS directly from `dscregd` using operator-provided PEM files |
+| External HTTPS | `externalHttps: true` | Serve HTTP only on a protected backend behind trusted TLS termination |
+| Development HTTP | `developmentHttp: true` | Loopback-only plaintext development, never an exposed deployment |
+
+Selecting none or combining modes fails startup. The existing literal-IP/port
+validation applies to all modes; only development HTTP is limited to loopback.
+Existing files/CLI invocations for the two HTTP modes need no changes. TLS has
+no CLI flags and no environment overrides. API keys and authorization rules
+are identical in all three modes.
+
+### Native HTTPS
+
+A complete single-node SQLite configuration, saved as `config.json`:
+
+```json
+{
+  "listenAddress": "127.0.0.1:8443",
+  "tls": {
+    "certFile": "certs/server.crt",
+    "keyFile": "certs/server.key"
+  },
+  "database": {
+    "engine": "sqlite",
+    "dsn": "data/registry.db"
+  },
+  "reportRoot": "data/reports"
+}
+```
+
+Create the database parent and report root, install the PEM files, then run
+`dscregd -config config.json` (Windows: `.\dscregd.exe -config .\config.json`).
+All relative paths shown here are relative to the configuration file directory;
+absolute TLS paths remain unchanged. For remote clients, replace the loopback
+listen IP with the intended local interface's literal IP and configure firewall
+access deliberately.
+
+`tls.certFile` contains the server certificate first, then any intermediate
+certificates needed to build the chain. `tls.keyFile` contains its matching,
+unencrypted PEM private key. Both must be nonempty. Unknown/duplicate nested
+TLS properties, nulls and wrong types are rejected by the configuration loader.
+Unreadable/missing files, malformed PEM and mismatched keys fail startup
+**before opening the listener**, with redacted diagnostics and no HTTP fallback.
+
+Native TLS requires TLS 1.2+ and leaves cipher suites and protocol negotiation,
+including HTTP/2, to Go's secure defaults. Clients must trust the issuing CA and
+connect using a DNS name in the certificate SAN (for example `localhost`).
+Connecting to `https://127.0.0.1` instead requires an IP SAN for `127.0.0.1`;
+the listener's IP need not be the hostname used in the URL. Include all intended
+service DNS names in deployed certificates. A Common Name alone is insufficient.
+Install trust on every client; never bypass certificate verification.
+
+Protect the key against reading **and replacement** by untrusted accounts.
+On POSIX, use a protected directory and a service-owned key mode `0600`, or a
+root-owned key mode `0640` with a dedicated service group and directory `0750`.
+On Windows, remove inherited broad access and grant only the service identity
+read access and authorized operators write access; protect the parent directory
+too. Do not print PEM data, put private keys in logs/source control/images, or
+send private keys to clients. The server does not use Windows certificate
+stores, issue/renew certificates, support encrypted-key passphrases, hot reload
+files, or require client certificates.
+
+For replacement, install a valid matching certificate/key pair with the same
+protected permissions and **restart `dscregd`**. The running process keeps its
+loaded certificate until restart. Plan expiry monitoring/renewal externally;
+drain and restart replicas individually when available. Normal timeouts,
+readiness checks and graceful shutdown apply unchanged.
+
+### Windows local HTTPS with PowerShell
+
+This is a disposable localhost test, not a production certificate authority.
+Use **PowerShell 7.4+ on Windows** (`pwsh`, .NET 8+) and the built-in Windows
+PKI cmdlets. PowerShell 7 is an additional installation on systems that ship only
+Windows PowerShell 5.1. The .NET `ExportCertificatePem` and
+`ExportPkcs8PrivateKeyPem` methods below are not available in Windows PowerShell
+5.1; `Export-Certificate` alone exports only the public certificate, not a PEM
+private key. This example needs no OpenSSL. An alternative for older shells is
+an explicitly installed OpenSSL tool and a protected PFX export/conversion;
+never assume `Export-PfxCertificate` produces PEM.
+
+From the repository root in a private PowerShell 7.4+ terminal, build the binary,
+create a dedicated test directory, and restrict its ACL **before writing keys**:
+
+```powershell
+$ErrorActionPreference = 'Stop'
+go build -o dscregd.exe .\cmd\dscregd
+if ($LASTEXITCODE -ne 0) { throw 'Build failed' }
+$demo = Join-Path $PWD 'native-https-demo'
+New-Item -ItemType Directory -Path $demo | Out-Null # Use a new directory
+$identity = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
+icacls.exe $demo /inheritance:r /grant:r "${identity}:(OI)(CI)F" "SYSTEM:(OI)(CI)F"
+if ($LASTEXITCODE -ne 0) { throw 'ACL setup failed' }
+New-Item -ItemType Directory -Path "$demo\certs", "$demo\data\reports" -Force | Out-Null
+
+$cert = New-SelfSignedCertificate -Type SSLServerAuthentication `
+    -DnsName 'localhost' -CertStoreLocation 'Cert:\CurrentUser\My' `
+    -KeyAlgorithm RSA -KeyLength 2048 -HashAlgorithm SHA256 `
+    -Provider 'Microsoft Software Key Storage Provider' -KeyExportPolicy Exportable `
+    -NotAfter (Get-Date).AddDays(7)
+$rsa = [System.Security.Cryptography.X509Certificates.RSACertificateExtensions]::GetRSAPrivateKey($cert)
+try {
+    [System.IO.File]::WriteAllText("$demo\certs\server.crt", $cert.ExportCertificatePem())
+    [System.IO.File]::WriteAllText("$demo\certs\server.key", $rsa.ExportPkcs8PrivateKeyPem())
+} finally {
+    $rsa.Dispose()
+}
+
+# Trust only this test certificate for the current Windows user.
+Export-Certificate -Cert $cert -FilePath "$demo\certs\localhost.cer" | Out-Null
+Import-Certificate -FilePath "$demo\certs\localhost.cer" `
+    -CertStoreLocation 'Cert:\CurrentUser\Root' | Out-Null
+
+@{
+    listenAddress = '127.0.0.1:8443'
+    tls = @{ certFile = 'certs/server.crt'; keyFile = 'certs/server.key' }
+    database = @{ engine = 'sqlite'; dsn = 'data/registry.db' }
+    reportRoot = 'data/reports'
+} | ConvertTo-Json -Depth 3 | Set-Content "$demo\config.json" -Encoding utf8NoBOM
+
+.\dscregd.exe -config "$demo\config.json"
+```
+
+Approve the Windows trust prompt only for the certificate just generated.
+In a second terminal **as the same user**, use normal trusted HTTPS:
+
+```powershell
+Invoke-RestMethod https://localhost:8443/health/ready
+```
+
+No `-SkipCertificateCheck` or validation callback is needed. This tests health
+only; bootstrap with this same `-config` in a private terminal when API access
+is needed, and keep the printed API key protected. Ctrl+C in the server terminal
+drains requests. Replacing the files requires restarting the server.
+After stopping it, remove only this test certificate's trust/store entries in
+the original terminal:
+
+```powershell
+Remove-Item "Cert:\CurrentUser\Root\$($cert.Thumbprint)"
+Remove-Item "Cert:\CurrentUser\My\$($cert.Thumbprint)"
+```
+
+Keep the test directory out of source control and remove its private-key file
+when finished. Production service accounts need their own ACL grants; the
+interactive user's test ACL and certificate trust do not provision a service.
+
+### External TLS termination and probes
+
+Reverse-proxy TLS remains a production option for centralized certificate
+issuance/renewal, load balancing, request limits and edge policy. Native HTTPS
+does not replace those operational capabilities; the existing Nginx/Docker demo
+continues using external termination unchanged.
 
 `externalHttps` is an operator assertion, not TLS configuration or forwarded
 header authentication. Terminate TLS 1.2+ with a trusted certificate, preserve
@@ -193,7 +348,9 @@ Do not automatically retry non-idempotent requests; report clients retain
 their upload ID when retrying an ambiguous acknowledgement.
 
 Probe `/health/live` for process liveness and `/health/ready` for traffic
-admission. Database or report storage outage makes readiness `503` while
+admission. For native TLS, probes use HTTPS with certificate trust and SAN
+verification just like other clients; configure the probe's hostname/trust
+accordingly. Database or report storage outage makes readiness `503` while
 liveness remains `200`; restarting every healthy process during a shared
 dependency outage is counterproductive. Drain a replica before SIGTERM.
 Unauthenticated health routes belong on trusted probe networks. The demo's
