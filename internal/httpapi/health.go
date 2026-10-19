@@ -14,7 +14,7 @@ import (
 
 const unavailable = `{"error":{"code":"not_ready","message":"Service dependencies are unavailable"}}` + "\n"
 
-func New(db *database.Store, reports *reportstore.Store, timeout, requestTimeout time.Duration, maxRequestBytes int64, logger *slog.Logger) http.Handler {
+func New(db *database.Store, reports *reportstore.Store, timeout, requestTimeout, pollMaxAge time.Duration, maxRequestBytes int64, logger *slog.Logger) http.Handler {
 	ready := &readinessProbe{timeout: timeout, check: func(ctx context.Context) error {
 		dependency := "database"
 		err := db.DB.PingContext(ctx)
@@ -28,7 +28,7 @@ func New(db *database.Store, reports *reportstore.Store, timeout, requestTimeout
 		return err
 	}}
 
-	admin := &adminAPI{store: db, maxRequestBytes: maxRequestBytes, timeout: requestTimeout, logger: logger}
+	admin := &adminAPI{store: db, maxRequestBytes: maxRequestBytes, timeout: requestTimeout, pollMaxAge: pollMaxAge, logger: logger}
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("Cache-Control", "no-store")

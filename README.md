@@ -3,10 +3,11 @@
 `dscregd` is the DSC Registry configuration-delivery server. It does not execute
 DSC. The separate `dscsyncd` sync agent and `dscd` reconciler are not included.
 
-**Current milestone: PR 2.** The executable provides local administrator bootstrap,
+**Current milestone: PR 3.** The executable provides local administrator bootstrap,
 API-key authentication, machine and credential administration, SQLite/PostgreSQL
-migrations, report-storage checks, graceful shutdown, and health endpoints.
-Configuration delivery and report ingestion are not implemented.
+migrations, desired-configuration CRUD and conditional machine polling,
+report-storage checks, graceful shutdown, and health endpoints.
+Report ingestion/status/retrieval remain deferred to PR 4.
 See [the staged plan](docs/implementation-plan.md)
 and the [API](docs/api.md) and [design](docs/design.md) contracts.
 
@@ -132,8 +133,8 @@ settings without printing their values or file contents.
 | `-database-engine` | `sqlite` | `sqlite` or `postgres` |
 | `-database-dsn` | `registry.db` | Local SQLite file path (not URI), or PostgreSQL DSN |
 | `-report-root` | `reports` | Existing private directory, local or shared |
-| `-poll-max-age` | `5m` | Positive whole seconds; reserved for the agent API |
-| `-max-request-bytes` | `1048576` | Administration JSON body limit; also reserved for configurations |
+| `-poll-max-age` | `5m` | Positive whole seconds; private agent response cache max age |
+| `-max-request-bytes` | `1048576` | Administration/configuration JSON body limit, including template and parameters |
 | `-max-report-bytes` | `16777216` | Reserved report request limit, at least the request limit |
 | `-read-header-timeout` | `5s` | HTTP header read deadline |
 | `-read-timeout` | `30s` | HTTP read deadline and administration request context timeout |
@@ -172,7 +173,11 @@ putting a password in process arguments. Explicitly configure certificate
 verification for deployed databases; `sslmode=disable` is for isolated local
 tests only. The first connection applies `migrations\postgres\001_initial.sql`
 transactionally; replicas serialize migration startup with a transaction advisory
-lock. The pool allows ten connections. PostgreSQL uses text UUID/timestamp
+lock. Migration `002_lossless_json.sql` replaces JSONB-based shape constraints
+with JSON-based checks, preserving existing rows, revisions, status pointers,
+and the original migration. This permits opaque JSON numbers beyond PostgreSQL's
+numeric range and escaped NUL strings without changing the text storage.
+The pool allows ten connections. PostgreSQL uses text UUID/timestamp
 representations to match SQLite's existing schema, with `BIGINT` revisions and
 `BYTEA` digests. Both schemas enforce owner existence, immutable identities,
 object-shaped configuration JSON, and deletion cascades. PostgreSQL owner checks
@@ -183,8 +188,7 @@ Logs are structured JSON on stderr. Request logs contain only the method,
 known route label, status, and duration, not raw URLs, queries, headers, or
 bodies. Health endpoints are unauthenticated. Administration endpoints require
 an administrator API key even in development mode; there is no auth bypass.
-Configuration, status, report, and agent APIs remain unimplemented (`404` for
-authorized administrators on future admin routes).
+Status and report APIs remain unimplemented (`404` for authorized callers).
 
 ## Bootstrap and credential rotation
 
@@ -248,6 +252,61 @@ page. Key metadata includes revoked keys, with nullable `revokedAt`, but no
 digest or secret. Revoking an already revoked key returns `204`; missing owners
 or keys outside the named owner return `404`.
 
+## Desired configurations and machine polling
+
+An administrator creates or replaces a machine-owned configuration using
+`PUT /v1/machines/{id}/configurations/{name}` with, for example:
+
+```json
+{
+  "template": {
+    "metadata": {"dscd": {"operation": "test"}},
+    "resources": []
+  },
+  "parameters": {"ContainerRuntime": "containerd"}
+}
+```
+
+The template is a required embedded JSON object; parameters are an optional
+embedded JSON object. Missing/null parameters mean no sidecar and differ from
+`{}`. Only UTF-8 `application/json` is accepted. YAML, string documents,
+`format`/`content` envelopes, duplicate keys at any depth, unknown request
+properties, invalid Unicode escapes, and nesting beyond 128 levels are rejected.
+The complete request, including template and parameters, is bounded by
+`-max-request-bytes`. DSC resource schemas and unknown DSC fields/values are
+not interpreted. Never log these sensitive documents.
+
+Names are 1-64 lowercase ASCII characters, starting with a letter or digit,
+then letters, digits, `.`, `_`, or `-`; trailing dots and the `.parameters`
+suffix are forbidden. `GET` and `DELETE` use the same configuration path.
+Creation returns `201` and `Location`; replacements and identical PUTs return
+`200`, including content, opaque revision, and `machineConfigurationRevision`.
+Deletion returns `204`; a missing configuration returns `404`.
+`GET /v1/machines/{id}/configurations` lists name/revision summaries with the
+same `limit`/`cursor` convention as machine lists, ordered by name.
+
+Documents are deterministically serialized with sorted object keys and no
+insignificant whitespace. Numbers are normalized exactly using decimal
+coefficients/exponents, never floating-point, preserving arbitrary precision
+and range. Numerically equal spellings such as `1`, `1.0`, and `10e-1` compare
+equally; output may use exponent notation. Formatting/key-order-only PUTs leave
+content revisions, timestamps, collection revisions, and ETags unchanged.
+Material creation/change/deletion atomically increments the machine collection
+revision. Content revisions are random UUIDs and are never reused on recreation.
+
+A machine key calls `GET /v1/agent/configurations` with no machine ID or query
+parameters. Identity comes solely from its credential. The response contains
+only the complete desired collection and revisions, sorted by configuration
+name, from one consistent SQL snapshot. Send the returned `ETag` in
+`If-None-Match` on subsequent calls. Matching weak/strong validators, validator
+lists, and `*` return a bodyless `304`. Both `200` and `304` include
+`Cache-Control: private, max-age=<poll-max-age seconds>` and
+`Vary: Authorization`. Validators are machine-scoped, including empty
+collections. Credential rotation and execution-status writes do not invalidate
+them. Errors are not cached and must not cause the agent to erase local state.
+Administrator keys cannot use this machine endpoint, and machine keys cannot
+use administration endpoints, even for their own machine.
+
 ## Development checks
 
 From the repository root in PowerShell:
@@ -265,7 +324,8 @@ go test -race ./...
 ```
 
 The normal suite always exercises SQLite. To also run real PostgreSQL migration,
-constraint, CRUD, concurrent-bootstrap/deletion, CLI, and HTTP tests, set
+constraint, CRUD, concurrent-bootstrap/deletion/configuration updates and
+polling, CLI, and HTTP tests, set
 `DSCREGISTRY_TEST_POSTGRES_DSN` to a **disposable test database** before running
 `go test ./...`. Its account must be allowed to create schemas. Each test creates
 a unique schema, pins connections to it, and drops only that schema on cleanup.
@@ -287,5 +347,5 @@ PostgreSQL configuration fails CI rather than opting out. Separate builds
 check Linux amd64 and arm64 with CGO disabled. CI does not publish artifacts
 or deploy the server.
 
-This CI-only portion of PR 5 was moved forward after PR 2. Configuration delivery,
-report ingestion, and the remaining production-readiness work are still deferred.
+This CI-only portion of PR 5 was moved forward after PR 2. Report ingestion and
+the remaining production-readiness work are still deferred.

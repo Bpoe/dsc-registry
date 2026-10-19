@@ -17,6 +17,7 @@ import (
 	"github.com/Bpoe/dsc-registry/internal/apikey"
 	"github.com/Bpoe/dsc-registry/internal/config"
 	"github.com/Bpoe/dsc-registry/internal/database"
+	"github.com/Bpoe/dsc-registry/internal/desired"
 	"github.com/google/uuid"
 )
 
@@ -24,12 +25,13 @@ type adminAPI struct {
 	store           *database.Store
 	maxRequestBytes int64
 	timeout         time.Duration
+	pollMaxAge      time.Duration
 	logger          *slog.Logger
 }
 
 func (a *adminAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/"), "/")
-	if len(parts) < 2 || parts[0] != "v1" || (parts[1] != "machines" && parts[1] != "admins") {
+	if len(parts) < 2 || parts[0] != "v1" || (parts[1] != "machines" && parts[1] != "admins" && parts[1] != "agent") {
 		writeError(w, http.StatusNotFound, "not_found", "Endpoint not found")
 		return
 	}
@@ -55,6 +57,18 @@ func (a *adminAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		a.failure(w, err)
 		return
 	}
+	if parts[1] == "agent" {
+		if principal.Role != apikey.Machine {
+			writeError(w, http.StatusForbidden, "forbidden", "Machine credential required")
+			return
+		}
+		if len(parts) == 3 && parts[2] == "configurations" {
+			a.agentConfigurations(w, r, principal.OwnerID)
+			return
+		}
+		writeError(w, http.StatusNotFound, "not_found", "Endpoint not found")
+		return
+	}
 	// Role authorization precedes path validation and all machine data queries.
 	if principal.Role != apikey.Admin {
 		writeError(w, http.StatusForbidden, "forbidden", "Administrator credential required")
@@ -70,6 +84,16 @@ func (a *adminAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if len(parts) == 3 && parts[1] == "machines" {
 		a.machine(w, r, parts[2])
+		return
+	}
+	if parts[1] == "machines" && (len(parts) == 4 || len(parts) == 5) && parts[3] == "configurations" {
+		if len(parts) == 4 {
+			a.configurations(w, r, parts[2])
+		} else if !desired.ValidName(parts[4]) {
+			writeError(w, http.StatusBadRequest, "invalid_name", "Expected a safe lowercase configuration name of 1-64 characters")
+		} else {
+			a.configuration(w, r, parts[2], parts[4])
+		}
 		return
 	}
 	if (len(parts) == 4 || len(parts) == 5) && parts[3] == "api-keys" {
@@ -203,20 +227,8 @@ func (a *adminAPI) keys(w http.ResponseWriter, r *http.Request, role, id string)
 }
 
 func (a *adminAPI) decodeStringField(w http.ResponseWriter, r *http.Request, field string) (string, bool) {
-	media, parameters, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
-	if err != nil || media != "application/json" ||
-		(parameters["charset"] != "" && !strings.EqualFold(parameters["charset"], "utf-8")) {
-		writeError(w, http.StatusUnsupportedMediaType, "unsupported_media_type", "Expected UTF-8 application/json")
-		return "", false
-	}
-	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, a.maxRequestBytes))
-	if err != nil {
-		var tooLarge *http.MaxBytesError
-		if errors.As(err, &tooLarge) {
-			writeError(w, http.StatusRequestEntityTooLarge, "body_too_large", "Request body exceeds the configured limit")
-		} else {
-			writeError(w, http.StatusBadRequest, "invalid_json", "Could not read JSON request")
-		}
+	body, ok := a.readJSONBody(w, r)
+	if !ok {
 		return "", false
 	}
 	// Each PR 2 input has just one string field. Tokens reject duplicate keys,
@@ -253,6 +265,26 @@ func (a *adminAPI) decodeStringField(w http.ResponseWriter, r *http.Request, fie
 		return "", false
 	}
 	return result, true
+}
+
+func (a *adminAPI) readJSONBody(w http.ResponseWriter, r *http.Request) ([]byte, bool) {
+	media, parameters, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
+	if err != nil || media != "application/json" ||
+		(parameters["charset"] != "" && !strings.EqualFold(parameters["charset"], "utf-8")) {
+		writeError(w, http.StatusUnsupportedMediaType, "unsupported_media_type", "Expected UTF-8 application/json")
+		return nil, false
+	}
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, a.maxRequestBytes))
+	if err != nil {
+		var tooLarge *http.MaxBytesError
+		if errors.As(err, &tooLarge) {
+			writeError(w, http.StatusRequestEntityTooLarge, "body_too_large", "Request body exceeds the configured limit")
+		} else {
+			writeError(w, http.StatusBadRequest, "invalid_json", "Could not read JSON request")
+		}
+		return nil, false
+	}
+	return body, true
 }
 
 func pagination(w http.ResponseWriter, r *http.Request, validCursor func(string) bool) (int, string, bool) {

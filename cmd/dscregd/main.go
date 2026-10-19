@@ -67,7 +67,7 @@ func run(ctx context.Context, settings config.Settings, logger *slog.Logger) (er
 		return fmt.Errorf("listen HTTP: %w", err)
 	}
 	server := &http.Server{
-		Handler:           httpapi.New(db, reports, settings.ProbeTimeout, settings.ReadTimeout, settings.MaxRequestBytes, logger),
+		Handler:           httpapi.New(db, reports, settings.ProbeTimeout, settings.ReadTimeout, settings.PollMaxAge, settings.MaxRequestBytes, logger),
 		ReadHeaderTimeout: settings.ReadHeaderTimeout,
 		ReadTimeout:       settings.ReadTimeout,
 		WriteTimeout:      settings.WriteTimeout,

@@ -1,6 +1,6 @@
 # DSC Registry — staged Copilot implementation plan
 
-The product behavior is defined by [design.md](design.md) and [api.md](api.md). Implement in small, reviewable PRs. **Do not implement the whole roadmap in one PR.** PR 1 and PR 2 are implemented; the CI-only portion of PR 5 is moved forward below.
+The product behavior is defined by [design.md](design.md) and [api.md](api.md). Implement in small, reviewable PRs. **Do not implement the whole roadmap in one PR.** PR 1 through PR 3 are implemented; the CI-only portion of PR 5 is moved forward below. Report ingestion/status/retrieval (PR 4) remains the next separate milestone.
 
 ## Repository shape
 
@@ -54,6 +54,16 @@ Prefer fewer packages if the implementation remains small. Do **not** create emp
 - Concurrency tests with concurrent updates and polling. Repeated identical PUT must not churn ETag.
 
 **Done when:** polling agent observes only desired-state changes, not report/status or credential changes.
+
+Implemented with lossless duplicate-key-rejecting JSON canonicalization, safe
+names, bounded input, transactional collection/content revisions, paginated
+admin summaries, and machine-scoped ETags/private caching. Single-statement
+snapshots prevent mixed content/revision delivery. Both-engine tests cover
+no-ops, sidecar presence, delete/recreate uniqueness, rollback, concurrent
+writers and polling across independent connection pools, and status/key churn.
+PostgreSQL migration 2 changes JSONB shape checks to JSON checks to avoid
+constraining opaque JSON numbers or escaped Unicode values; SQLite migration 1
+is unchanged. Report endpoints and the separate sync agent are not implemented.
 
 ## PR 4 — full-report ingestion and latest status
 

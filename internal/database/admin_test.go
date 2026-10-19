@@ -173,7 +173,11 @@ func TestAdministrationBothEngines(t *testing.T) {
 		if _, err := store.GetMachine(ctx, second.ID); err != nil {
 			t.Fatal("machine did not survive restart")
 		}
-		assertCount(t, store.DB, "schema_migrations", 1)
+		migrations := 1
+		if engine == "postgres" {
+			migrations = 2
+		}
+		assertCount(t, store.DB, "schema_migrations", migrations)
 	})
 }
 
@@ -282,7 +286,7 @@ func TestPostgresMigrationRollbackAndVersion(t *testing.T) {
 	exec(t, raw, "INSERT INTO configurations VALUES ('preserved')")
 	exec(t, raw, "DROP TABLE configurations")
 	store := testStore(t, "postgres", dsn)
-	exec(t, store.DB, "INSERT INTO schema_migrations VALUES (2, 'future')")
+	exec(t, store.DB, "INSERT INTO schema_migrations VALUES (3, 'future')")
 	if db, err := OpenPostgres(ctx, dsn); db != nil || err == nil {
 		t.Fatal("future PostgreSQL schema accepted")
 	}
@@ -364,7 +368,7 @@ func TestConcurrentPostgresMigration(t *testing.T) {
 			t.Error(result.err)
 			continue
 		}
-		assertCount(t, result.db, "schema_migrations", 1)
+		assertCount(t, result.db, "schema_migrations", 2)
 		if err := result.db.Close(); err != nil {
 			t.Error(err)
 		}
