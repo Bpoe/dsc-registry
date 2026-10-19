@@ -64,6 +64,113 @@ limit too. Keep sufficient free space for both the old and new full report,
 WAL growth and backups. Limit service memory/CPU and edge traffic based on
 measurements, not a claimed machine capacity.
 
+## Release packages
+
+Download a reviewed, published release from
+[GitHub Releases](https://github.com/Bpoe/dsc-registry/releases). Linux amd64
+and arm64 each have a `.tar.gz`, `.deb` and `.rpm`; Windows amd64 has a `.zip`
+and `.msi`. All eight assets share one `SHA256SUMS` manifest. From a directory
+containing all assets, run `sha256sum --check --strict SHA256SUMS`. For a single
+asset, compare its SHA-256 to that exact filename's entry (PowerShell:
+`Get-FileHash .\dscregd-vX.Y.Z-windows-amd64.msi -Algorithm SHA256`).
+These builds are **not signed**; retrieve checksums from the trusted release
+page. Checksums are not independent authentication.
+
+Archives contain `bin/`, operator/API docs, the license, and example configuration.
+Linux archives also include the manual systemd unit from `deploy/`. Extract a
+Linux archive, change to its top-level directory, and follow the manual install
+above using `bin/dscregd` rather than a locally built binary. The archive unit
+uses `/usr/local/bin/dscregd`.
+
+### Linux DEB/RPM
+
+Install with `sudo apt install ./dscregd_X.Y.Z_amd64.deb` or
+`sudo dnf install ./dscregd-X.Y.Z-1.x86_64.rpm` (use `arm64` / `aarch64` for
+ARM64). Packages install `/usr/bin/dscregd`, a systemd unit referencing that
+path, docs under `/usr/share/doc/dscregd`, and the license. They create a
+non-login `dscregd` account and private `/etc/dscregd`, `/var/lib/dscregd` and
+`/var/lib/dscregd/reports` directories when absent; existing ownership and modes
+are not changed.
+
+The service is **not enabled or started on first installation**. Copy
+`/usr/share/doc/dscregd/config.example.json` to `/etc/dscregd/config.json`,
+restrict it to the service account (mode `0600`), and review it. The example
+expects a separately configured trusted TLS reverse proxy and binds loopback.
+Alternatively configure native TLS as described below. Bootstrap privately as
+`dscregd` using `/usr/bin/dscregd bootstrap -config /etc/dscregd/config.json`,
+then `sudo systemctl enable --now dscregd`. Do not reinstall the manual unit
+over the packaged unit.
+
+Upgrades try to restart an already running service, respecting an
+administrator-stopped service. Removal/purge stops and unregisters the service,
+but intentionally retains the account, configuration, database and reports.
+Do not migrate a manual installation over the top of a package without reviewing
+unit paths and ownership. Automated upgrade testing is deferred; take a paired
+cold backup before upgrades. RPM smoke tests verify console startup/restart
+and removal in Fedora without systemd, not RPM systemd lifecycle.
+
+### Windows MSI and native service
+
+Use an elevated terminal to install:
+`msiexec.exe /i dscregd-vX.Y.Z-windows-amd64.msi`.
+The MSI installs to `%ProgramFiles%\dscregd`, registers a **manual-start**
+`dscregd` service running as `NT AUTHORITY\LocalService`, and creates protected
+`%ProgramData%\dscregd` and `reports` directories. Only SYSTEM, Administrators
+and LocalService receive access to this data tree. It does not install active
+configuration, start the service or provision credentials.
+
+Copy `%ProgramFiles%\dscregd\config.example.json` to
+`%ProgramData%\dscregd\config.json` in an elevated terminal. Database/report
+paths in this example resolve relative to that configuration file, not SCM's
+working directory. Configure a TLS edge or native TLS first and grant
+LocalService access to any separately stored TLS private key. Run
+`& "$env:ProgramFiles\dscregd\dscregd.exe" bootstrap -config "$env:ProgramData\dscregd\config.json"`
+privately and protect its one-time output; then `Start-Service dscregd`.
+After confirming readiness, operators may choose automatic startup with
+`Set-Service dscregd -StartupType Automatic`.
+
+SCM stop/shutdown requests use the same bounded HTTP drain as console shutdown.
+Service logs go to the Windows Application event log under source `dscregd`;
+console invocations still log to stderr. No secrets or request bodies are added
+to logs. The ZIP contains the same daemon and docs but **does not register a
+service**, event source or data ACLs; use the MSI for native service installation.
+No DSC runtime, evaluator or Windows sync client is bundled.
+
+MSI uninstall stops/removes the service and binaries while retaining the protected
+data tree, including configuration, SQLite and reports. Back up these files
+before changing versions. MSI supports major upgrades/downgrade rejection,
+but automated upgrade/migration and custom service-account/startup-setting
+preservation are not certified by this pipeline. Repair/reinstall may restore
+the packaged manual-start LocalService registration.
+
+### Maintainer release procedure
+
+Merge the release changes into `main`, review its CI, then create and push a
+stable tag such as `v1.2.3` on the reviewed commit. Tags on commits not in `main`
+are rejected. MSI imposes major/minor <= 255 and patch <= 65535; prereleases,
+leading zeroes and build metadata are not accepted.
+
+The tag run reruns all Go/SQLite/PostgreSQL, race/fuzz and shared-volume
+deployment checks before native package builds. It tests the **same packaged
+binaries** against their archive counterparts, one-time bootstrap, health,
+authorization, configuration ETags, report upload/retry and retrieval after
+restart. All platforms check that uninstall retains a stored report alongside
+SQL and configuration. DEB tests use Ubuntu systemd (amd64/arm64), RPM tests
+use Fedora containers without
+systemd (amd64/arm64), and MSI tests use Windows SCM (amd64), including private
+data ACLs and uninstall preservation. It does not certify upgrades, real NFS,
+capacity, RPM systemd behavior, or Authenticode/package signatures.
+
+Only successful package jobs upload artifacts. The release job downloads from
+that invoking run, verifies the exact eight-asset set and all checksums, rechecks
+the remote tag's commit, and creates a draft with generated notes and combined
+checksums. Only that final job receives `contents: write`. Existing releases,
+including drafts, are never intentionally overwritten; a failed partial draft
+requires manual inspection/removal before rerunning. Do not move a published
+tag or replace published assets: issue a new version. Review the draft's
+assets, notes and acceptance limitations, then publish it manually. Creating
+the release is not a production deployment.
+
 ## Containers
 
 `docker build -t dscregd:<reviewed-commit> .` builds a CGO-free Linux binary.

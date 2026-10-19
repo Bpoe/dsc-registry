@@ -1,0 +1,108 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  preflight:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      commit: ${{ steps.source.outputs.commit }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Validate stable release version and MSI bounds
+        shell: pwsh
+        env:
+          VERSION: ${{ github.ref_name }}
+        run: .\packaging\windows\msi\version.ps1 -Version $env:VERSION
+      - name: Verify tag belongs to main
+        id: source
+        env:
+          VERSION: ${{ github.ref_name }}
+        run: |
+          commit=$(git rev-parse "$GITHUB_SHA^{commit}")
+          test "$(git rev-parse "refs/tags/$VERSION^{commit}")" = "$commit"
+          git merge-base --is-ancestor "$commit" origin/main
+          echo "commit=$commit" >> "$GITHUB_OUTPUT"
+      - name: Refuse existing releases, including drafts
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          VERSION: ${{ github.ref_name }}
+        run: |
+          if gh api "repos/$GH_REPO/releases/tags/$VERSION" --silent 2>"$RUNNER_TEMP/release-error"; then
+            echo "::error::Release already exists; inspect it manually."
+            exit 1
+          elif ! grep -Fq '(HTTP 404)' "$RUNNER_TEMP/release-error"; then
+            cat "$RUNNER_TEMP/release-error" >&2
+            exit 1
+          fi
+
+  build:
+    needs: preflight
+    uses: ./.github/workflows/ci.yml
+    with:
+      version: ${{ github.ref_name }}
+      commit: ${{ needs.preflight.outputs.commit }}
+
+  draft:
+    needs: [preflight, build]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ github.ref_name }}
+      COMMIT: ${{ needs.preflight.outputs.commit }}
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ needs.preflight.outputs.commit }}
+          persist-credentials: false
+      # Downloads are scoped to this invoking run, not a previous successful CI run.
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: dscregd-linux-amd64
+          path: dist/linux-amd64
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: dscregd-linux-arm64
+          path: dist/linux-arm64
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: dscregd-windows-amd64
+          path: dist/windows-amd64
+      - name: Verify exact assets and generate combined checksums
+        run: python3 packaging/verify-assets.py --directory dist --version "$VERSION"
+      - name: Recheck remote tag and release
+        run: |
+          git fetch --no-tags origin "refs/tags/$VERSION"
+          test "$(git rev-parse 'FETCH_HEAD^{commit}')" = "$COMMIT"
+          if gh api "repos/$GH_REPO/releases/tags/$VERSION" --silent 2>"$RUNNER_TEMP/release-error"; then
+            echo "::error::Release already exists; it will not be overwritten."
+            exit 1
+          elif ! grep -Fq '(HTTP 404)' "$RUNNER_TEMP/release-error"; then
+            cat "$RUNNER_TEMP/release-error" >&2
+            exit 1
+          fi
+      - name: Create draft release
+        run: |
+          assets=(dist/linux-*/*.tar.gz dist/linux-*/*.deb dist/linux-*/*.rpm dist/windows-*/*.zip dist/windows-*/*.msi)
+          gh release create "$VERSION" "${assets[@]}" dist/SHA256SUMS \
+            --verify-tag --draft --title "DSC Registry $VERSION" --generate-notes \
+            --notes "Built from $COMMIT. These exact packaged binaries passed fresh-install, API, restart and uninstall checks on Ubuntu (amd64/arm64), Fedora without systemd (amd64/arm64), and Windows SCM (amd64). Packages do not bootstrap credentials or start automatically. Configure TLS and bootstrap privately before starting. Automated upgrades, real NFS acceptance and code signing are not certified by this pipeline. Review this draft before publishing."

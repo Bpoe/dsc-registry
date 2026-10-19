@@ -126,6 +126,17 @@ without the missing external tools. CI supplies Linux normal/race parity
 and amd64/arm64 validation; it is not multi-host HA, NFS server-failure
 certification, or a machine-capacity guarantee. No sync-agent work is included.
 
+### Implemented release follow-up
+
+Stable tags now run the existing CI as a reusable workflow, followed by Linux
+amd64/arm64 archive/DEB/RPM and Windows amd64 ZIP/MSI builds and fresh-install
+lifecycle checks. Verified same-run artifacts become a non-overwriting draft
+release with SHA-256 checksums. Native Windows SCM integration supports the MSI's
+manual-start LocalService service; console/bootstrap behavior is retained.
+Packages never auto-bootstrap or start an unconfigured service. See the
+[release runbook](operations.md#release-packages) for exact coverage and limits.
+This does not close the existing real-NFS gate or add DSC/sync-agent code.
+
 ## Separate project: dscsyncd
 
 Do not add agent code inside the DSC Registry server repository. A separate design and implementation cycle should address:
