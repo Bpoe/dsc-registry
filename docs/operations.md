@@ -281,8 +281,9 @@ and SQL acknowledgements must be honored by the storage/server; the application
 does not provide a distributed DB/filesystem transaction or certify power-loss
 durability of a particular NFS server.
 
-File-before-SQL publication, last-upload retry and cross-replica reader locks
-are unchanged. Do not run an age-based online report cleaner. Use only the
+File-before-SQL publication and cross-replica reader locks are retained;
+idempotency now covers all stored report history. Do not run an age-based
+online report cleaner. Use only the
 [bounded offline cleanup procedure](../README.md#bounded-offline-orphan-cleanup)
 with **all replicas stopped**, checking every candidate against SQL.
 
@@ -505,7 +506,7 @@ SQL key contents, reset the database or invent an authentication bypass.
 
 Back up the **database and report tree as one cold pair**. SQL alone is not a
 report backup; copying a live tree alongside an online dump can miss a report
-retired between snapshots. This runbook chooses downtime rather than claiming
+published between snapshots. This runbook chooses downtime rather than claiming
 online consistency. PostgreSQL/NFS HA backups or coordinated snapshot systems
 are an external operator responsibility.
 
@@ -559,10 +560,10 @@ collector. Durations are numeric **nanoseconds** (`slog` JSON duration encoding)
 
 | Event | Fields and operator use |
 | --- | --- |
-| `http request` | Bounded method and route template (never IDs/names), actual first final status, duration. Count per interval for rate; group 4xx/5xx for client/dependency errors; compute p50/p95/p99 from duration. Separate health traffic and distinguish expected 304, 401 and stale 409 from faults. |
+| `http request` | Bounded method and route template (never IDs/names), actual first final status, duration. Count per interval for rate; group 4xx/5xx for client/dependency errors; compute p50/p95/p99 from duration. Separate health traffic and distinguish expected 304, 401 and upload-identity 409 from faults. |
 | `report write` | `written`/`write_error`, duration including direct create/write/sync/close. A retry bypassing the file creates no write event. No path, body, byte-content label or identity. |
-| `database transaction` | Fixed operation and engine, `committed`/`rolled_back`/`begin_error`/`commit_error`/`rollback_error`, duration, pool in-use and cumulative wait count/duration. One event per attempt. Rollback can be an expected missing/stale resource or file failure, not necessarily a database outage. Commit error can be ambiguous; retry stable upload ID. Pool counters reset on restart; take per-replica deltas, not sums of cumulative samples. |
-| Dependency errors | Readiness identifies only `database`/`report_storage`; HTTP database/storage failures and retirement failures are redacted. Startup logs identify failed dependency without OS/driver text. |
+| `database transaction` | Fixed operation and engine, `committed`/`rolled_back`/`begin_error`/`commit_error`/`rollback_error`, duration, pool in-use and cumulative wait count/duration. One event per attempt. Rollback can be an expected missing resource, conflicting upload identity or file failure, not necessarily a database outage. Commit error can be ambiguous; retry stable upload ID. Pool counters reset on restart; take per-replica deltas, not sums of cumulative samples. |
+| Dependency errors | Readiness identifies only `database`/`report_storage`; HTTP database/storage failures are redacted. Startup logs identify failed dependency without OS/driver text. |
 
 Database non-transaction query/auth failures are surfaced by redacted HTTP
 dependency-error logs and `503` request events, not transaction events.
@@ -574,7 +575,7 @@ handler error. Restrict log access/retention anyway.
 
 Alert on sustained non-health 5xx, unready replicas, commit/begin errors,
 report-write errors or increased durations/pool waits; investigate underlying
-DB locks/disk and NFS health out of band. Alert on failed retirement and plan
+DB locks/disk and NFS health out of band. Monitor retained report growth and plan
 bounded **offline** cleanup, not deletion on a live fleet. Logs do not measure
 kernel transport errors as completed HTTP requests or replace PostgreSQL
 WAL/autovacuum/NFS server telemetry. Avoid high-cardinality/sensitive labels

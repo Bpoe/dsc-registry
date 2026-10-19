@@ -75,10 +75,10 @@ func TestConfigurationsBothEngines(t *testing.T) {
 		if err := store.RevokeKey(ctx, apikey.Machine, machine.ID, key.KeyID); err != nil {
 			t.Fatal(err)
 		}
-		exec(t, store.DB, `INSERT INTO configuration_status
-			(machine_id,name,configuration_revision,received_at,started_at,finished_at,outcome,report_path,last_upload_id)
-			VALUES ($1,'one',$2,'now','now','now','failed','private/report.json','upload')`, machine.ID, changed.Revision)
-		exec(t, store.DB, `UPDATE configuration_status SET outcome = 'succeeded', report_path = 'other/report.json' WHERE machine_id = $1`, machine.ID)
+		exec(t, store.DB, `INSERT INTO reports
+			(id,sequence,machine_id,name,configuration_revision,received_at,started_at,finished_at,outcome,report_path,upload_id)
+			VALUES ('report',1,$1,'one',$2,'now','now','now','failed','private/report.json','upload')`, machine.ID, changed.Revision)
+		exec(t, store.DB, `UPDATE reports SET outcome = 'succeeded', report_path = 'other/report.json' WHERE machine_id = $1`, machine.ID)
 		after, err := store.ConfigurationSnapshot(ctx, machine.ID)
 		if err != nil || before.ConfigurationRevision != after.ConfigurationRevision ||
 			len(after.Configurations) != 1 || after.Configurations[0].Revision != changed.Revision {
@@ -104,7 +104,7 @@ func TestConfigurationsBothEngines(t *testing.T) {
 		if err := store.DeleteConfiguration(ctx, machine.ID, "one"); err != nil {
 			t.Fatal(err)
 		}
-		assertCount(t, store.DB, "configuration_status", 0)
+		assertCount(t, store.DB, "reports", 1)
 		if err := store.DeleteConfiguration(ctx, machine.ID, "one"); !errors.Is(err, ErrConfigurationNotFound) {
 			t.Fatalf("repeat deletion: %v", err)
 		}
@@ -349,8 +349,8 @@ func TestPostgresLosslessJSONUpgrade(t *testing.T) {
 	if err != nil || got.Revision != "original" || got.MachineConfigurationRevision != 7 || string(got.Parameters) != "{}" {
 		t.Fatal("upgrade changed existing desired state")
 	}
-	assertCount(t, store.DB, "configuration_status", 1)
-	assertCount(t, store.DB, "schema_migrations", 2)
+	assertCount(t, store.DB, "reports", 1)
+	assertCount(t, store.DB, "schema_migrations", 3)
 	var applied string
 	if err := store.DB.QueryRow("SELECT applied_at FROM schema_migrations WHERE version = 1").Scan(&applied); err != nil || applied != "original" {
 		t.Fatal("initial migration reapplied")

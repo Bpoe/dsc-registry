@@ -68,7 +68,8 @@ func TestReportsHTTPBothEngines(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		apiRequest(t, handler, otherKey.Key, "POST", agentPath, body, 404)
+		apiRequest(t, handler, otherKey.Key, "POST", agentPath, body, 204)
+		apiRequest(t, handler, admin.Key, "GET", path+"/report", "", 404)
 		content, err := desired.Parse([]byte(`{"template":{}}`))
 		if err != nil {
 			t.Fatal(err)
@@ -76,7 +77,7 @@ func TestReportsHTTPBothEngines(t *testing.T) {
 		if _, _, err := db.PutConfiguration(context.Background(), other.ID, "docker", content); err != nil {
 			t.Fatal(err)
 		}
-		apiRequest(t, handler, otherKey.Key, "POST", agentPath, body, 409)
+		apiRequest(t, handler, otherKey.Key, "POST", agentPath, body, 204)
 		apiRequest(t, handler, key.Key, "POST", agentPath, body, 204)
 		response := apiRequest(t, handler, admin.Key, "GET", path+"/report", "", 200)
 		if !bytes.Equal(response.Body.Bytes(), []byte(rawSuccessReport)) || response.Header().Get("Content-Type") != "application/json" {
@@ -97,14 +98,14 @@ func TestReportsHTTPBothEngines(t *testing.T) {
 			}
 		}
 		entries, err := os.ReadDir(root)
-		if err != nil || len(entries) != 1 {
+		if err != nil || len(entries) != 2 {
 			t.Fatal("missing current report", entries, err)
 		}
 		firstName := entries[0].Name()
 		apiRequest(t, handler, key.Key, "POST", agentPath, body, 204)
 		retryStatus := apiRequest(t, handler, admin.Key, "GET", path+"/status", "", 200)
 		entries, err = os.ReadDir(root)
-		if err != nil || len(entries) != 1 || entries[0].Name() != firstName ||
+		if err != nil || len(entries) != 2 || entries[0].Name() != firstName ||
 			!bytes.Equal(retryStatus.Body.Bytes(), status.Body.Bytes()) {
 			t.Fatal("retry rewrote report or status", err)
 		}
@@ -134,14 +135,14 @@ func TestReportsHTTPBothEngines(t *testing.T) {
 		assertAgentCache(t, agentRequest(handler, key.Key, tag), 304)
 		changed := decodeResponse[database.ConfigurationResult](t,
 			apiRequest(t, handler, admin.Key, "PUT", path, `{"template":{"changed":true}}`, 200))
-		apiRequest(t, handler, key.Key, "POST", agentPath, body, 409)
+		apiRequest(t, handler, key.Key, "POST", agentPath, body, 204)
 		apiRequest(t, handler, key.Key, "POST", agentPath, reportBody(changed.Revision, uuid.NewString(), rawSuccessReport), 204)
 		apiRequest(t, handler, admin.Key, "DELETE", path, "", 204)
-		apiRequest(t, handler, key.Key, "POST", agentPath, body, 404)
+		apiRequest(t, handler, key.Key, "POST", agentPath, body, 204)
 		apiRequest(t, handler, admin.Key, "GET", path+"/status", "", 404)
 		apiRequest(t, handler, admin.Key, "GET", path+"/report", "", 404)
 		apiRequest(t, handler, admin.Key, "PUT", path, `{"template":{}}`, 201)
-		apiRequest(t, handler, key.Key, "POST", agentPath, body, 409)
+		apiRequest(t, handler, key.Key, "POST", agentPath, body, 204)
 		for _, secret := range []string{key.Key, admin.Key, "private-dsc-result", "private-error-message", root, firstName} {
 			if strings.Contains(logs.String(), secret) {
 				t.Fatal("sensitive data in routine logs", secret)
@@ -260,7 +261,11 @@ func TestReportRestartRecoveryBothEngines(t *testing.T) {
 		tag := assertAgentCache(t, agentRequest(handler, key.Key), 200)
 		body := reportBody(config.Revision, uuid.NewString(), rawSuccessReport)
 		apiRequest(t, handler, key.Key, "POST", agentPath, body, 204)
+		apiRequest(t, handler, key.Key, "POST", agentPath, reportBody(config.Revision, uuid.NewString(), rawSuccessReport), 204)
 		before := apiRequest(t, handler, admin.Key, "GET", path+"/status", "", 200).Body.String()
+		machinePath := "/v1/machines/" + machine.ID
+		history := apiRequest(t, handler, admin.Key, "GET", machinePath+"/reports", "", 200).Body.String()
+		machineStatus := apiRequest(t, handler, admin.Key, "GET", machinePath+"/status", "", 200).Body.String()
 		// A process interruption after file close but before SQL publication
 		// leaves an orphan, which startup must not publish or scavenge online.
 		orphan, err := files.Write(context.Background(), []byte(`{"interrupted":true}`))
@@ -293,8 +298,19 @@ func TestReportRestartRecoveryBothEngines(t *testing.T) {
 		if got := apiRequest(t, handler, admin.Key, "GET", path+"/report", "", 200).Body.String(); got != rawSuccessReport {
 			t.Fatal("restart lost original report")
 		}
+		if got := apiRequest(t, handler, admin.Key, "GET", machinePath+"/reports", "", 200).Body.String(); got != history {
+			t.Fatal("restart lost or reordered historical metadata")
+		}
+		if got := apiRequest(t, handler, admin.Key, "GET", machinePath+"/status", "", 200).Body.String(); got != machineStatus {
+			t.Fatal("restart changed derived machine status")
+		}
+		for _, item := range decodeResponse[reportPage](t, apiRequest(t, handler, admin.Key, "GET", machinePath+"/reports", "", 200)).Reports {
+			if got := apiRequest(t, handler, admin.Key, "GET", machinePath+"/reports/"+item.ID+"/content", "", 200).Body.String(); got != rawSuccessReport {
+				t.Fatal("restart lost historical original content")
+			}
+		}
 		entries, err := os.ReadDir(root)
-		if err != nil || len(entries) != 2 {
+		if err != nil || len(entries) != 3 {
 			t.Fatal("restart/retry rewrote files or scavenged online", err)
 		}
 		if _, err := os.Stat(filepath.Join(root, orphan)); err != nil {

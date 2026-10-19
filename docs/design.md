@@ -7,14 +7,14 @@
 
 **Naming:** The product is **DSC Registry**; the server repository is `dsc-registry`, and its executable/service is `dscregd`. The separately developed machine sync daemon is `dscsyncd`; the existing local reconciler remains `dscd`. These are distinct processes.
 
-DSC Registry is a small, self-hostable control plane for delivering DSC desired-state inputs to authenticated machines and receiving their latest execution results. It is **not** a DSC execution engine, policy compiler, workflow engine, scheduler, inventory collector, or replacement for the local reconciler.
+DSC Registry is a small, self-hostable control plane for delivering DSC desired-state inputs to authenticated machines and preserving their execution reports. It is **not** a DSC execution engine, policy compiler, workflow engine, scheduler, inventory collector, or replacement for the local reconciler.
 
 ```text
 administrator ── admin API ──┐
                              │
                          dscregd (DSC Registry, Go HTTP)
-                         ├── SQLite or PostgreSQL (metadata, keys, latest status)
-                         └── filesystem reports (one latest full report/configuration)
+                         ├── SQLite or PostgreSQL (metadata, keys, report history)
+                         └── filesystem reports (original full envelopes)
                              │
         machine API  ◀────────┘
              ▲
@@ -37,18 +37,18 @@ administrator ── admin API ──┐
 | HTTP | Standard `net/http`; ordinary explicit handlers and routing; no heavyweight web framework |
 | Application organization | One executable/module, shallow `cmd/` and `internal/` packages by concrete concern; no Clean/Onion, generic repositories, DI container, service locator or plugin framework |
 | Persistence | SQLite is the easy single-server default; PostgreSQL is the supported HA / multi-replica production option; explicit SQL migrations for both |
-| Report storage | One configured filesystem root, local or shared; report paths are relative to that root; SQL owns the current report reference |
+| Report storage | One configured filesystem root, local or shared; report paths are relative to that root; committed SQL metadata publishes immutable report references |
 | Authentication | Direct long-lived **API keys over TLS**; separate machine and administrator principals; no OAuth, JWT, OpenIddict or token-exchange server in v1 |
 | Machine identity | Server-created immutable UUID; human `Name` is display-only, not identity |
 | Desired state | Each **Configuration** is named and belongs to one machine; it contains an embedded **Template** DSC document and optional **Parameters** sidecar document |
 | Document representation | HTTP API accepts **JSON objects only**: `template` and optional `parameters` are embedded structured JSON, not `{format,content}` text envelopes. YAML-to-JSON conversion is a CLI responsibility. Server stores/delivers deterministic JSON and does not interpret DSC resources or `metadata.dscd.operation` |
 | Polling | Machine-scoped GET with `ETag`/`If-None-Match`, `304`, and `Cache-Control: private, max-age=...` |
-| Results | Store **latest full `dscd` JSON result envelope** per configuration, no audit history in v1; separate SQL status summary |
+| Results | Preserve original `dscd` JSON result envelopes with historical SQL metadata; derive machine and configuration status from persisted reports |
 | Scaling | Stateless API scale-out + vertically scaled PostgreSQL + provisioned report shares; defer multi-stamp routing and distributed database systems |
 
 ### Explicit non-goals for v1
 
-No web UI, event history, report analytics, groups/tags/policy inheritance, template catalog, rollout orchestrator, API-key OAuth exchange, SSH/mTLS/Entra identities, per-tenant RBAC, message broker, queues, Kubernetes dependency, database partitioning, automatic NFS provisioning, or support for generic remote report/object storage providers. Do not implement speculative hooks for these.
+No web UI, general-purpose event history, report analytics, groups/tags/policy inheritance, template catalog, rollout orchestrator, API-key OAuth exchange, SSH/mTLS/Entra identities, per-tenant RBAC, message broker, queues, Kubernetes dependency, database partitioning, automatic NFS provisioning, or support for generic remote report/object storage providers. Do not implement speculative hooks for these.
 
 ## 3. Terminology and invariants
 
@@ -58,24 +58,26 @@ No web UI, event history, report analytics, groups/tags/policy inheritance, temp
 - **Configuration:** uniquely `(MachineId, Name)`, with embedded Template, optional Parameters and an opaque per-content revision ID; no shared template table, `enabled` flag, or separate assignment entity.
 - **Machine configuration revision:** machine-scoped, monotonically increasing integer. Only desired-state create/change/delete increments it. Result uploads, status writes and API-key changes do not.
 - **Configuration content revision:** opaque UUID generated upon creation or a material change to template/parameters. It uniquely distinguishes a removed/recreated configuration. Whitespace-only and JSON object-property-order-only edits are no-ops; repeated equivalent PUT values do not change it. Agents treat it as opaque.
-- **ConfigurationStatus:** latest execution summary and current full-report reference. Do not confuse execution success (`outcome=succeeded`) with actual in-desired-state compliance (a successful `test` can report drift).
+- **ConfigurationStatus:** latest accepted execution summary derived from report metadata, retaining its reported revision. Do not confuse execution success (`outcome=succeeded`) with actual in-desired-state compliance (a successful `test` can report drift), current desired-state execution, or online health.
 - **Report:** original `dscd` result envelope as JSON, not a service-reinvented report schema. SQL stores its relative file path.
 
 Configuration names are lowercase ASCII, 1–64 characters: start with `[a-z0-9]`, then `[a-z0-9._-]`; no `/`, `\\`, trailing `.`, leading `.`, or `.parameters` suffix. This safe cross-platform stem prevents filename collisions and sidecar ambiguity. Names are unique within a machine, not globally.
 
 ## 4. Persistence model
 
-The initial relational schema, expressed conceptually (use SQL types appropriate to each engine):
+The relational schema, expressed conceptually (use SQL types appropriate to each engine):
 
 | Table | Core fields | Constraint / index |
 | --- | --- | --- |
 | `machines` | `id UUID`, `name`, `configuration_revision BIGINT`, `created_at` | PK id; name display-only |
 | `configurations` | `machine_id`, `name`, `revision UUID`, `template_json`, nullable `parameters_json`, `content_sha256`, `updated_at` | PK(machine_id,name), FK machines |
-| `configuration_status` | `machine_id`, `name`, `configuration_revision`, `received_at`, `started_at`, `finished_at`, `outcome`, nullable `operation`, nullable `input_hash`, nullable `error_kind`, `report_path`, `last_upload_id` | PK(machine_id,name), FK configuration; no hot-path index on updated timestamps |
+| `reports` | server UUID `id`, `machine_id`, acceptance `sequence`, `name`, `configuration_revision`, `received_at`, `started_at`, `finished_at`, `outcome`, nullable `operation`, `input_hash`, `error_kind`, relative `report_path`, `upload_id`, `result_sha256` | PK id; FK machine only; unique(machine_id,sequence); unique(machine_id,name,upload_id); indexes for latest per name and file references |
 | `admins` | `id UUID`, `name`, `created_at` | PK id |
 | `api_keys` | `key_id`, `owner_type` (`admin`/`machine`), `owner_id`, `secret_hash`, `created_at`, nullable `revoked_at`, nullable `description` | PK key_id; no plaintext secrets |
 
-Use a DB transaction for configuration CRUD plus machine collection-revision updates. A delete increments the collection revision and removes the corresponding latest status; the former file is eligible for garbage collection. Machine deletion cascades to configurations/status/keys and likewise leaves unreferenced report files for cleanup.
+Use a DB transaction for configuration CRUD plus machine collection-revision updates. Configuration deletion increments the collection revision but retains report history, including uploads received after deletion. Machine deletion cascades to configurations/reports/keys and leaves unreferenced report files for offline cleanup.
+
+SQLite migration 2 and PostgreSQL migration 3 copy existing `configuration_status` entries into `reports`, generate server report IDs, preserve original file references/summary fields/upload IDs, then drop the old status table. Existing received timestamps order the migrated records, with name as a deterministic tie-breaker. Original discarded reports cannot be reconstructed. Migrated records initially have no payload digest; their first matching retry reads and hashes the original file before persisting the digest. Upgrades are transactional; stop all API instances before upgrading and do not mix schema generations.
 
 For SQLite: enable WAL, foreign keys, bounded busy timeout and pool configuration suitable for one writer. SQLite database **must reside on a local filesystem**, not a shared NFS mount. For multiple active API servers use PostgreSQL. Keep SQL engine-specific migration scripts and test both. Do not quietly implement a third database provider.
 
@@ -91,15 +93,17 @@ After normal API-key authentication, a conditional GET reads only the machine's 
 
 A configuration `PUT` is create-or-replace. Identical content should be a no-op. Every successful changed desired-state transaction bumps the collection revision. Deletions must invalidate the ETag. Client cache behavior must not depend on fresh status or reports.
 
-Agent uploads submit the original v1 `dscd` result envelope, wrapped with the service configuration revision and a stable idempotency identifier. The server extracts only the small stable envelope fields needed for the status summary; `dscResult` is preserved unchanged and is **not** interpreted for resource compliance. If the reported content revision no longer matches current desired state, do not overwrite current status; return a clear stale-revision response. The local sync agent must map its installed inputs to the matching service revision, including outstanding results from an older revision.
+Agent uploads submit the original v1 `dscd` result envelope, wrapped with the configuration name, service content revision and stable idempotency identifier. The server extracts only the small stable envelope fields needed for the status summary; `dscResult` is preserved unchanged and is **not** interpreted for resource compliance. Valid historical uploads are accepted even after desired-state changes or configuration deletion. Revision UUIDs are agent-reported associations, not proof of execution of particular inputs; the server does not retain historical desired documents to verify them. The local sync agent must map its installed inputs to the matching service revision, including outstanding results from an older revision.
 
-The service should accept retries safely, avoid reinterpreting raw report content, and bound request body size and processing time. One sync agent per machine is the v1 writer assumption. A future agent sequencing protocol may strengthen ordering; do not rely on machine wall-clock timestamps as a universally reliable ordering source.
+The service accepts retries safely, avoids reinterpreting raw report content, and bounds request body size and processing time. The machine-row lock serializes server acceptance and assigns an increasing report sequence independently of desired-state revisions. History and latest status use this acceptance order, never machine wall-clock ordering. A delayed older execution can therefore become the latest received report, explicitly marked stale if its revision differs from current desired state. Retrying any accepted upload does not reorder it or change its timestamps. Reusing its machine/name/upload-ID identity with different revision or nested report bytes returns a conflict.
+
+Machine status is computed from reports and current desired configurations in a machine-locked transaction, not an independently maintained status table. It exposes the latest accepted report plus per-name current/stale/removed/unreported states. Aggregate execution outcome covers current desired names only: failed takes precedence over canceled, then unknown for missing executions, then succeeded. A machine without any reports is never_reported; one with history but no desired names is unknown. Removed names remain inspectable. No outcome implies online health or compliance, and staleness is separate from execution outcome.
 
 ## 6. Report storage and safety
 
 **Report storage:** V1 supports a single configured filesystem root. Store each report's path relative to that root.
 
-Write each report directly to a new, uniquely named file under the configured storage root. Complete and close the file successfully before updating the SQL status row with its relative path. The committed SQL row determines which report is current; no temporary file or atomic filesystem rename is required. Delete the previous report only after the SQL commit succeeds and after confirming it is no longer referenced. Failed or interrupted file writes and failed SQL commits can leave unreferenced files, but must not replace the previous status. Implement or document bounded orphan cleanup; never delete a file still referenced in SQL. No global lock or distributed transaction is necessary for the normal path.
+Write each report directly to a new, uniquely named file under the configured storage root. Complete, sync and close the file successfully before inserting SQL metadata with its relative path. The SQL commit atomically publishes the complete file to API readers; no temporary file or filesystem rename is used. Keep previous report files because history still references them. Failed or interrupted file writes and failed SQL commits can leave unreferenced files, but must not replace the previous valid report/status. Bounded offline cleanup must consult all `reports` references and never delete a referenced file. No global lock or distributed transaction is necessary for the normal path. History has no automatic retention policy; operators must provision and monitor storage growth.
 
 Filesystem paths must not be constructed from untrusted machine names or raw user-supplied filenames. Use UUIDs and server-generated keys. Resolve the operator-configured report root to a canonical path at startup, allowing trusted symlinked roots and parents, and constrain file operations to the opened directory with `os.Root`. Changing the original symlink must not redirect active storage; replacement of the canonical root invalidates readiness. Keep the canonical root and its parents under trusted operator control, and reject traversal outside the storage boundary. Reports may contain secrets emitted by DSC resources: protect at rest, restrict access, and never log or return reports outside authorized admin endpoints.
 
@@ -149,7 +153,7 @@ The current [`dsc-reconciler`](https://github.com/Bpoe/dsc-reconciler) design is
 4. Agent key obtains only its machine's configurations. A repeat GET with a current ETag returns 304 and preserves `Cache-Control`.
 5. Updating or deleting desired state changes machine collection ETag; uploading a report does **not**.
 6. A valid existing `dscd` result envelope is stored and its small summary can be retrieved independently from the full file. `test` drift isn't incorrectly labeled execution failure.
-7. An old configuration-revision upload cannot overwrite a newer configuration's status; retrying the same upload is safe.
+7. Historical uploads retain their original revision and are explicitly distinguished from current desired state; retrying any accepted upload is safe and never changes latest ordering.
 8. Concurrent API server instances work against shared PostgreSQL and shared report paths; report failure does not corrupt previous status or file.
 9. No service code invokes DSC or parses resources, and no machine key can access another machine's data.
 10. Tests cover migrations, API auth, desired-state revisions, ETag behavior, report durability/error handling, deletion, and SQLite/PG parity.
@@ -159,8 +163,8 @@ The current [`dsc-reconciler`](https://github.com/Bpoe/dsc-reconciler) design is
 | Topic | Current rule |
 | --- | --- |
 | Rich fleet-wide compliance interpretation | Defer; dscd reports execution outcome and raw DSC results, not a universal compliance Boolean |
-| Status upload ordering across reordered concurrent attempts | Start with one ordered sync agent per machine plus revision checks and idempotency. Design stronger monotonic attempt sequencing alongside the sync agent before permitting parallel uploads per configuration |
+| Status upload ordering across reordered concurrent attempts | Server acceptance order is serialized and idempotent, not a claim about execution chronology across agents. Stronger agent-side attempt sequencing remains separate sync-agent work |
 | Client atomic replacement of template + parameters | Track as separate sync-agent design issue; publishing parameter first and template last supports new pairs, but changing an existing pair is not a two-file atomic transaction under current dscd watcher semantics |
-| Report deduplication/heartbeat-only unchanged status | Future protocol optimization. V1 accepts each executed report; benchmark actual write rates |
+| Heartbeat-only unchanged status | Future protocol optimization. Stable upload IDs deduplicate retries; distinct IDs represent distinct execution records |
 | OAuth/Entra/mTLS/SSH-style keys | Future auth providers only if required |
 | Global stamp routing, Citus/Elastic Clusters, Cosmos, MongoDB | Out of scope; prefer ordinary PostgreSQL and independent future stamps |

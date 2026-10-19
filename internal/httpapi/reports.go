@@ -28,7 +28,7 @@ func (a *adminAPI) uploadReport(w http.ResponseWriter, r *http.Request, id, name
 		return
 	}
 	storageFailure := false
-	previous, err := a.store.PublishReport(r.Context(), id, name, upload, func() (string, error) {
+	publication, err := a.store.PublishReport(r.Context(), id, upload.Name, upload, func() (string, error) {
 		start := time.Now()
 		path, err := a.reports.Write(r.Context(), upload.Result)
 		storageFailure = err != nil
@@ -38,6 +38,10 @@ func (a *adminAPI) uploadReport(w http.ResponseWriter, r *http.Request, id, name
 		}
 		a.logger.Info("report write", "outcome", outcome, "duration", time.Since(start))
 		return path, err
+	}, func(path string) ([]byte, error) {
+		content, err := a.reports.Read(r.Context(), path, a.maxReportBytes)
+		storageFailure = err != nil
+		return content, err
 	})
 	if err != nil {
 		if storageFailure {
@@ -47,23 +51,89 @@ func (a *adminAPI) uploadReport(w http.ResponseWriter, r *http.Request, id, name
 		}
 		return
 	}
-	if previous != "" {
-		if err := a.store.RetireReport(r.Context(), previous, a.reports.Remove); err != nil {
-			// Publication succeeded; retry must still acknowledge the persisted
-			// upload ID. Cleanup failure is observable but cannot undo it.
-			a.logger.Warn("report retirement failed; offline orphan cleanup required")
-		}
+	if name != "" {
+		w.WriteHeader(http.StatusNoContent)
+		return
 	}
-	w.WriteHeader(http.StatusNoContent)
+	w.Header().Set("Location", "/v1/machines/"+id+"/reports/"+publication.Report.ID)
+	status := http.StatusOK
+	if publication.Created {
+		status = http.StatusCreated
+	}
+	writeJSON(w, status, publication.Report)
 }
 
-func (a *adminAPI) configurationReport(w http.ResponseWriter, r *http.Request, id, name, kind string) {
+func (a *adminAPI) machineReports(w http.ResponseWriter, r *http.Request, id string) {
 	if r.Method != http.MethodGet {
 		methodNotAllowed(w, "GET")
 		return
 	}
-	if r.URL.RawQuery != "" {
-		writeError(w, http.StatusBadRequest, "invalid_query", "Report retrieval accepts no query parameters")
+	limit, cursor, ok := pagination(w, r, validUUID)
+	if !ok {
+		return
+	}
+	items, err := a.store.ListReports(r.Context(), id, cursor, limit+1)
+	if err != nil {
+		a.reportError(w, err)
+		return
+	}
+	next := ""
+	if len(items) > limit {
+		next = items[limit-1].ID
+		items = items[:limit]
+	}
+	writeJSON(w, http.StatusOK, struct {
+		Reports    []database.ReportMetadata `json:"reports"`
+		NextCursor string                    `json:"nextCursor,omitempty"`
+	}{items, next})
+}
+
+func (a *adminAPI) machineReport(w http.ResponseWriter, r *http.Request, id, reportID string, full bool) {
+	if !reportReadRequest(w, r) {
+		return
+	}
+	var content []byte
+	var read func(string) error
+	storageFailure := false
+	if full {
+		read = func(path string) error {
+			var err error
+			content, err = a.reports.Read(r.Context(), path, a.maxReportBytes)
+			storageFailure = err != nil
+			return err
+		}
+	}
+	item, err := a.store.GetReport(r.Context(), id, reportID, read)
+	if err != nil {
+		if storageFailure {
+			a.reportStorageError(w)
+		} else {
+			a.reportError(w, err)
+		}
+		return
+	}
+	if full {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(content)
+	} else {
+		writeJSON(w, http.StatusOK, item)
+	}
+}
+
+func (a *adminAPI) machineStatus(w http.ResponseWriter, r *http.Request, id string) {
+	if !reportReadRequest(w, r) {
+		return
+	}
+	status, err := a.store.GetMachineStatus(r.Context(), id)
+	if err != nil {
+		a.reportError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, status)
+}
+
+func (a *adminAPI) configurationReport(w http.ResponseWriter, r *http.Request, id, name, kind string) {
+	if !reportReadRequest(w, r) {
 		return
 	}
 	if kind == "status" {
@@ -95,10 +165,24 @@ func (a *adminAPI) configurationReport(w http.ResponseWriter, r *http.Request, i
 	_, _ = w.Write(content)
 }
 
+func reportReadRequest(w http.ResponseWriter, r *http.Request) bool {
+	if r.Method != http.MethodGet {
+		methodNotAllowed(w, "GET")
+		return false
+	}
+	if r.URL.RawQuery != "" {
+		writeError(w, http.StatusBadRequest, "invalid_query", "Report retrieval accepts no query parameters")
+		return false
+	}
+	return true
+}
+
 func (a *adminAPI) reportError(w http.ResponseWriter, err error) {
 	switch {
-	case errors.Is(err, database.ErrStaleRevision):
-		writeError(w, http.StatusConflict, "stale_configuration_revision", "Report configuration revision is no longer current")
+	case errors.Is(err, database.ErrUploadConflict):
+		writeError(w, http.StatusConflict, "upload_id_conflict", "Upload ID already identifies a different report")
+	case errors.Is(err, database.ErrReportCursor):
+		writeError(w, http.StatusBadRequest, "invalid_pagination", "Report cursor does not belong to this machine")
 	case errors.Is(err, database.ErrReportNotFound):
 		writeError(w, http.StatusNotFound, "report_not_found", "No report has been received")
 	default:

@@ -28,19 +28,30 @@ type Summary struct {
 
 type Upload struct {
 	Summary
+	Name   string
 	ID     string
 	Result json.RawMessage
 }
 
 func Parse(body []byte, name string) (Upload, error) {
-	if !desired.ValidName(name) || desired.ValidateJSON(body) != nil {
+	if desired.ValidateJSON(body) != nil {
 		return Upload{}, ErrInvalid
 	}
 	var wrapper map[string]json.RawMessage
-	if json.Unmarshal(body, &wrapper) != nil || len(wrapper) != 3 {
+	if json.Unmarshal(body, &wrapper) != nil {
 		return Upload{}, ErrInvalid
 	}
-	var upload Upload
+	if name == "" {
+		if len(wrapper) != 4 || !requiredString(wrapper["configurationName"], &name) {
+			return Upload{}, ErrInvalid
+		}
+	} else if len(wrapper) != 3 {
+		return Upload{}, ErrInvalid
+	}
+	if !desired.ValidName(name) {
+		return Upload{}, ErrInvalid
+	}
+	upload := Upload{Name: name}
 	if !requiredString(wrapper["configurationRevision"], &upload.ConfigurationRevision) ||
 		!validUUID(upload.ConfigurationRevision) || !requiredString(wrapper["uploadId"], &upload.ID) || !validUUID(upload.ID) {
 		return Upload{}, ErrInvalid

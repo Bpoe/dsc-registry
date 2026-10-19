@@ -161,13 +161,9 @@ func TestConfigurationsHTTPBothEngines(t *testing.T) {
 		if err := store.RevokeKey(ctx, apikey.Machine, machine.ID, extra.KeyID); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := store.DB.Exec(`INSERT INTO configuration_status
-			(machine_id,name,configuration_revision,received_at,started_at,finished_at,outcome,report_path,last_upload_id)
-			VALUES ($1,'docker',$2,'now','now','now','failed','sensitive/report.json','upload')`, machine.ID, first.Revision); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := store.DB.Exec("UPDATE configuration_status SET outcome = 'succeeded' WHERE machine_id = $1", machine.ID); err != nil {
-			t.Fatal(err)
+		for range 2 {
+			apiRequest(t, handler, key.Key, "POST", "/v1/agent/configurations/docker/report",
+				reportBody(first.Revision, uuid.NewString(), rawSuccessReport), 204)
 		}
 		assertAgentCache(t, agentRequest(handler, key.Key, tag), 304)
 		for _, sensitive := range []string{"report", "outcome", "receivedAt", "api_keys", key.Key, "machineConfigurationRevision"} {
@@ -221,8 +217,8 @@ func TestConfigurationsHTTPBothEngines(t *testing.T) {
 		if recreated.Revision == first.Revision {
 			t.Fatal("recreated revision reused")
 		}
-		apiRequest(t, handler, admin.Key, "GET", path+"/docker/status", "", 404)
-		apiRequest(t, handler, admin.Key, "GET", path+"/docker/report", "", 404)
+		apiRequest(t, handler, admin.Key, "GET", path+"/docker/status", "", 200)
+		apiRequest(t, handler, admin.Key, "GET", path+"/docker/report", "", 200)
 		apiRequest(t, handler, key.Key, "POST", "/v1/agent/configurations/docker/report", `{}`, 400)
 		missing := "/v1/machines/" + uuid.NewString() + "/configurations"
 		for _, method := range []string{"GET", "PUT", "DELETE"} {

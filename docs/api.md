@@ -9,7 +9,7 @@
 - UUIDs are strings in standard RFC 4122 format. `name` is a safe lowercase configuration stem described in design.md.
 - Dates in JSON are UTC RFC3339 timestamps. Unknown request fields may be rejected to catch typos; response consumers must ignore additive fields.
 - JSON errors use `{"error":{"code":"machine_not_found","message":"..."}}`. Keep error codes stable; messages are for humans and must not expose secret values, storage paths or existence of another machine's resources.
-- Usual responses: `400` invalid input; `401` missing/invalid key; `403` insufficient role; `404` missing resource; `409` conflict/stale revision; `413` body too large; `415` unsupported document representation; `429` throttled; `500`/`503` internal/dependency failure.
+- Usual responses: `400` invalid input; `401` missing/invalid key; `403` insufficient role; `404` missing resource; `409` conflicting upload identity; `413` body too large; `415` unsupported document representation; `429` throttled; `500`/`503` internal/dependency failure.
 - Paginate administrative collection endpoints; don't return an unbounded million-machine listing. `limit`/`cursor` are sufficient. Agent collection size is naturally bounded by one machine.
 - Accept only JSON on the HTTP API. `template` and optional `parameters` are **JSON objects**, not strings or `{format,content}` envelopes. Reject YAML, string-encoded documents, arrays and scalars at those fields. A CLI may accept YAML and convert it before making the request; the service does not translate YAML.
 - Explicitly bound template/parameter size and raw result body size. Start with conservative configurable limits and tests; don't silently truncate.
@@ -23,7 +23,11 @@ All routes below require an administrator key.
 | `POST` | `/v1/machines` | Register new machine, server generates `id`; input `{ "name": "host-1" }`, returns `201` |
 | `GET` | `/v1/machines` | Paginated machine list, summary only |
 | `GET` | `/v1/machines/{machineId}` | Machine details including `configurationRevision` |
-| `DELETE` | `/v1/machines/{machineId}` | Delete machine and its desired/config status DB records, revoke attached keys; `204` |
+| `DELETE` | `/v1/machines/{machineId}` | Delete machine and its desired/report DB records, revoke attached keys; `204` |
+| `GET` | `/v1/machines/{machineId}/status` | Derived machine execution status and per-configuration summaries |
+| `GET` | `/v1/machines/{machineId}/reports` | Paginated report metadata, newest accepted first |
+| `GET` | `/v1/machines/{machineId}/reports/{reportId}` | One report's metadata |
+| `GET` | `/v1/machines/{machineId}/reports/{reportId}/content` | Original full `dscd` envelope bytes, `application/json` |
 | `GET` | `/v1/machines/{machineId}/configurations` | Paginated configuration summaries including names/content revisions |
 | `PUT` | `/v1/machines/{machineId}/configurations/{name}` | Create-or-replace complete embedded template and optional parameters |
 | `GET` | `/v1/machines/{machineId}/configurations/{name}` | Get desired content and revision |
@@ -186,12 +190,13 @@ Actual key IDs/secrets are generated randomly; illustrative values are not a lit
 
 ## 3. Agent API
 
-Both endpoints require a **machine key**. There is no `{machineId}` path segment; ownership derives solely from the authenticated principal.
+All agent endpoints require a **machine key**. There is no `{machineId}` path segment; ownership derives solely from the authenticated principal.
 
 | Method | Route | Semantics |
 | --- | --- | --- |
 | `GET` | `/v1/agent/configurations` | All current desired configurations for authenticated machine; supports ETag |
-| `POST` | `/v1/agent/configurations/{name}/report` | Latest executed report for that machine/configuration |
+| `POST` | `/v1/agent/reports` | Accept an execution record; return report metadata |
+| `POST` | `/v1/agent/configurations/{name}/report` | Compatible named upload route; same persistence/retry behavior, `204` response |
 
 ### Conditional configuration retrieval
 
@@ -256,16 +261,17 @@ accepted (`400`, `invalid_query`); administrator credentials receive `403`.
 
 Never add machine status, full reports, secret credentials, or server-side host paths to this response. Configure a maximum poll interval; agents add jitter and exponential backoff on failure, respecting `Retry-After` when provided. Agent must retain local desired state on HTTP errors, even prolonged outage.
 
-### Upload latest dscd result
+### Upload a dscd result
 
 The nested `result` is the **unmodified dscd schemaVersion=1 JSON envelope**. This example is a failure; `dscResult` can be a large opaque object on execution success.
 
 ```http
-POST /v1/agent/configurations/docker/report
+POST /v1/agent/reports
 Authorization: ApiKey dscm_<id>.<secret>
 Content-Type: application/json
 
 {
+  "configurationName": "docker",
   "configurationRevision": "77701b57-ddb9-4e7b-b235-b04ed87e3468",
   "uploadId": "95951a72-7b8f-43e2-b602-1802d091c91d",
   "result": {
@@ -285,19 +291,43 @@ Content-Type: application/json
 ```
 
 ```http
-HTTP/1.1 204 No Content
+HTTP/1.1 201 Created
+Location: /v1/machines/550e8400-e29b-41d4-a716-446655440000/reports/2e631f22-1183-4264-b131-a328f7dfe789
+Content-Type: application/json
+Cache-Control: no-store
+
+{
+  "id": "2e631f22-1183-4264-b131-a328f7dfe789",
+  "machineId": "550e8400-e29b-41d4-a716-446655440000",
+  "configurationName": "docker",
+  "configurationRevision": "77701b57-ddb9-4e7b-b235-b04ed87e3468",
+  "receivedAt": "2026-10-18T12:00:01Z",
+  "startedAt": "2026-10-18T12:00:00Z",
+  "finishedAt": "2026-10-18T12:00:00.005Z",
+  "outcome": "failed",
+  "operation": "test",
+  "inputHash": null,
+  "errorKind": "start"
+}
 ```
 
 Server validation:
 
-1. Authenticate machine; find configuration `(machineId,name)`.
-2. Require submitted `configurationRevision` to match the current configuration content revision. `409` if stale, `404` if removed.
+1. Authenticate machine; obtain its immutable machine ID from the API key only. Reject supplied machine-ID fields.
+2. Require a safe `configurationName` and canonical UUID `configurationRevision`. Accept historical revisions and removed configuration names. These are reported associations, not a server-verified assertion that particular inputs executed.
 3. Validate wrapper, `uploadId`, `result.schemaVersion == 1`, expected managed `configuration` path **`managed/{name}.json`**, timestamps, outcome/error enum *as specified by dscd*; allow legal null/optional fields. The managed sidecar, when present, is `managed/{name}.parameters.json`. Reject malformed JSON/oversize payloads. Never interpret nested DSC resource status.
-4. Preserve the original nested `result` JSON as the full report (no summary-only truncation). Write it directly to a new, uniquely named private file and close it successfully before committing its relative path and status summary in SQL. The SQL commit makes the report current; no temporary file or filesystem rename is needed. Retire the previously referenced file only after commit.
-5. On retry of the same `uploadId`, return success without creating another current status report. V1 assumes one ordered sync-agent writer per machine; do not claim to solve arbitrary cross-agent reordering.
+4. Preserve the original nested `result` JSON as the full report (no summary-only truncation). Write it directly to a new, uniquely named private file, sync and close it successfully before committing its relative path and metadata in SQL. The SQL commit atomically publishes the report to API readers; no temporary file or filesystem rename is used. Previous reports remain referenced by history.
+5. Deduplicate by authenticated machine, configuration name and `uploadId`. An exact retry returns `200` and the original metadata/Location without another file, new receive time or order change. Reusing that identity with another revision or different nested `result` bytes returns `409` (`upload_id_conflict`). Preserve the envelope bytes across retries; formatting changes inside `result` count as different bytes. Wrapper formatting is immaterial. Distinct upload IDs represent distinct records.
 6. Do not bump machine desired-state collection revision or collection ETag.
 
 The local sync agent must remember an upload ID while retrying, and must not infer a service revision by comparing it with `dscd.inputHash`. The client can maintain a dot-prefixed managed metadata file, ignored by `dscd`, mapping a published local configuration/sidecar snapshot to its server-provided revision.
+
+The existing `POST /v1/agent/configurations/{name}/report` accepts exactly
+`configurationRevision`, `uploadId`, and `result` (omit `configurationName`).
+It shares history, validation and deduplication with the new route, but retains
+`204` for both creation and retry. Both routes now accept stale/deleted
+configuration reports rather than rejecting them. The Location on the new
+route identifies an **admin-only** resource; machine keys cannot GET it.
 
 ### Admin status view
 
@@ -311,33 +341,120 @@ The local sync agent must remember an upload ID while retrying, and must not inf
   "operation": "test",
   "inputHash": null,
   "errorKind": "start",
-  "hasReport": true
+  "hasReport": true,
+  "reportId": "2e631f22-1183-4264-b131-a328f7dfe789"
 }
 ```
 
-`hasReport` is a computed Boolean, not the underlying storage key. Do not expose internal filenames to callers. Report GET returns the original dscd JSON object and requires admin role. No history endpoint.
+This is the existing per-configuration `/status` shape. `hasReport` is a
+computed Boolean, not a storage key. Its `/report` sibling returns the original
+dscd JSON object. Both require an existing desired configuration and return
+`404` before its first report; after deletion, use machine history instead.
+Recreating the same name may expose an older report at its original revision.
+Neither endpoint exposes internal filenames.
 
-### PR 4 report details
+### Report history and machine status
 
-POST returns `204`, including a retry of the persisted last upload ID. Revision
-validation precedes idempotency, so an old retry after content change returns
-`409` (`stale_configuration_revision`); a removed configuration returns `404`
-(`configuration_not_found`). There is no history-based deduplication or
-cross-agent ordering guarantee. Both admin GETs return `404` (`report_not_found`)
-before the first execution, and all report/status responses use `no-store`.
-Desired content changes retain the last execution at its original revision;
-they never relabel its status as an execution of the new desired content.
+All administration endpoints authorize the administrator role first, even for
+the caller's own machine. All report/status responses use `Cache-Control: no-store`.
+Unknown machines return `404` (`machine_not_found`); unknown report
+IDs and IDs belonging to another machine return `404` (`report_not_found`).
+
+`GET /v1/machines/{machineId}/reports?limit=100&cursor={reportId}` returns:
+
+```json
+{
+  "reports": [
+    {
+      "id": "2e631f22-1183-4264-b131-a328f7dfe789",
+      "machineId": "550e8400-e29b-41d4-a716-446655440000",
+      "configurationName": "docker",
+      "configurationRevision": "77701b57-ddb9-4e7b-b235-b04ed87e3468",
+      "receivedAt": "2026-10-18T12:00:01Z",
+      "startedAt": "2026-10-18T12:00:00Z",
+      "finishedAt": "2026-10-18T12:00:00.005Z",
+      "outcome": "failed",
+      "operation": "test",
+      "inputHash": null,
+      "errorKind": "start"
+    }
+  ],
+  "nextCursor": "2e631f22-1183-4264-b131-a328f7dfe789"
+}
+```
+
+The metadata shape matches the upload receipt and individual report GET.
+`reports` is always an array; omit `nextCursor` on the final page. `limit`
+defaults to 100 and must be 1-1000; the cursor is the last returned report UUID.
+Unknown, malformed or cross-machine cursors return `400`
+(`invalid_pagination`). Ordering uses an internal, serialized server acceptance
+sequence, newest first, not UUID order or agent wall-clock timestamps. New
+uploads do not displace items on a continuation page. Pagination is not a
+snapshot across machine deletion. Only list accepts query parameters.
+
+`GET .../reports/{reportId}` returns metadata without filesystem access;
+`GET .../reports/{reportId}/content` returns exactly the original nested
+`result`, without the wrapper or reserialization. Configuration deletion does
+not delete either resource. Deleting the machine deletes its metadata;
+unreferenced files remain eligible for bounded offline cleanup.
+
+`GET /v1/machines/{machineId}/status` derives a consistent view from SQL
+history and current desired configurations. Before any report:
+
+```json
+{
+  "machineId": "550e8400-e29b-41d4-a716-446655440000",
+  "configurationRevision": 0,
+  "hasReport": false,
+  "lastReportReceivedAt": null,
+  "lastExecutionAt": null,
+  "latestReport": null,
+  "outcome": "never_reported",
+  "hasStaleReports": false,
+  "configurations": []
+}
+```
+
+After reports, `latestReport` contains the complete metadata object shown
+above, including its reported content revision and report ID.
+`lastReportReceivedAt` is that report's server receive time; `lastExecutionAt`
+is its agent-reported `finishedAt`, **not** an online/health indicator or the
+maximum execution timestamp. Top-level `configurationRevision` is the
+**current desired collection revision**, not an inferred reported collection
+revision: dscd reports describe one configuration, not a whole collection.
+
+`configurations` is sorted by name and includes current desired names and
+historically reported names. Each entry has `name`, nullable `desiredRevision`,
+`revisionState`, `outcome`, and nullable `latestReport` (the same metadata
+shape). `revisionState` is `unreported` if no report exists, `current` if the
+latest reported revision matches desired, `stale` if it differs, or `removed`
+if no desired configuration of that name exists. Per-name `outcome` is the
+latest report's outcome, or `never_reported`. `hasStaleReports` is true if any
+current desired name has a stale latest report.
+
+Aggregate `outcome` covers current desired names: `failed` takes precedence,
+then `canceled`, then `unknown` when some names have never reported, otherwise
+`succeeded`. Without any machine reports it is `never_reported`; with reports
+but no current desired names it is `unknown`. Removed names do not contribute
+to aggregate outcome. Staleness is independent: successful execution of old
+content remains `succeeded` with `revisionState: "stale"`. A delayed report can
+become latest by acceptance order; retrying an existing record cannot. Success
+never asserts online health or DSC compliance.
+
+### Envelope validation and persistence
 
 The complete POST wrapper is bounded by `-max-report-bytes` (default 16 MiB),
 independently of `-max-request-bytes`. Oversize input returns `413`; unsupported
 media type/charset returns `415`; malformed envelopes return `400`
 (`invalid_report`). JSON has the same duplicate-key (including escaped aliases),
 UTF-8, surrogate and 128-level nesting rules as desired-state input. Wrapper
-fields are exactly `configurationRevision`, `uploadId`, `result`, with canonical
-lowercase hyphenated UUIDs. Unknown additive envelope/payload fields are
+fields are exactly `configurationName`, `configurationRevision`, `uploadId`,
+`result` on the new route; the existing named route omits `configurationName`.
+Revision/upload IDs are canonical lowercase hyphenated UUIDs.
+Unknown additive envelope/payload fields are
 preserved; case aliases of known envelope/error fields are rejected so Go
 consumers cannot interpret a different summary. No query parameters are accepted
-for POST or either admin GET.
+for POST or individual status/metadata/content GET.
 
 Envelope semantics were verified against
 [`dsc-reconciler` at cce7df1](https://github.com/Bpoe/dsc-reconciler/tree/cce7df1764c2f25fe5e1d1066a77e387d2b218b5):
@@ -365,13 +482,20 @@ payloads and filenames never enter the SQL summary or routine logs.
 
 Full-report GET returns exactly the nested `result` bytes (including internal
 formatting and unknown fields), without reserializing it or returning the
-wrapper. File writes/sync/close must finish before SQL commit. Dependencies
+wrapper. SQL stores only metadata, relative file references and a SHA-256
+digest for retry comparison, never full JSON. File writes/sync/close must finish
+before SQL commit. Dependencies
 return `503` (`database_unavailable` or `report_storage_unavailable`), without
 paths or underlying diagnostics. Failed writes and failed SQL commits do not
 replace the previous valid report. See the
 [storage and orphan maintenance contract](../README.md#latest-reports-and-execution-status)
 for cross-instance reader protection, ambiguous commit acknowledgements and
-bounded offline cleanup.
+bounded offline cleanup. The existing `-report-root` and `-max-report-bytes`
+settings apply; no new settings or infrastructure are required. History has
+no automatic expiration. SQLite migration 2 / PostgreSQL migration 3 retain
+existing latest reports and remove the separate status table. The first retry
+of a migrated record reads its original file to verify/backfill its payload
+digest; later retries need no filesystem access.
 
 ## 4. Health
 
@@ -386,5 +510,5 @@ bounded offline cleanup.
 - YAML-to-JSON conversion is outside the server (e.g., in a CLI). Reordered object keys and insignificant whitespace are no-op PUTs; real content changes bump revisions. Null/missing parameters produce no sidecar, while `{}` creates an empty JSON parameter object.
 - Agent contract uses `managed/{name}.json`, optional `managed/{name}.parameters.json`, and the corresponding `.json.result.json` output path.
 - Valid `dscd` failure and success envelopes; `test` drift is not an execution failure; raw result retrievable byte-for-byte as a JSON value.
-- Report idempotency, stale revision conflicts, missing/deleted configurations, file write failure, SQL commit failure, orphan behavior, retry after interruption.
+- Report history and idempotency, conflicting upload identities, historical/deleted configuration reports, pagination, machine status, file write failure, SQL commit failure, orphan behavior, retry after interruption.
 - PostgreSQL and SQLite migrations/data behavior parity; concurrent requests; readiness and graceful shutdown.

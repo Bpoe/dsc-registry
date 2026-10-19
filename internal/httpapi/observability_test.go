@@ -15,6 +15,11 @@ func TestBoundedRequestLabels(t *testing.T) {
 		{"GET", "/v1/machines/private-id/configurations/private-name/status", "/v1/machines/{id}/configurations/{name}/status"},
 		{"GET", "/v1/machines/private-id/configurations/private-name/report", "/v1/machines/{id}/configurations/{name}/report"},
 		{"POST", "/v1/agent/configurations/private-name/report", "/v1/agent/configurations/{name}/report"},
+		{"POST", "/v1/agent/reports", "/v1/agent/reports"},
+		{"GET", "/v1/machines/private-id/status", "/v1/machines/{id}/status"},
+		{"GET", "/v1/machines/private-id/reports", "/v1/machines/{id}/reports"},
+		{"GET", "/v1/machines/private-id/reports/private-report", "/v1/machines/{id}/reports/{reportId}"},
+		{"GET", "/v1/machines/private-id/reports/private-report/content", "/v1/machines/{id}/reports/{reportId}/content"},
 		{"DELETE", "/v1/admins/private-id/api-keys/private-key", "/v1/admins/{id}/api-keys/{keyId}"},
 		{"SECRET-METHOD", "/private-path?secret=private-query", "unmatched"},
 	} {
