@@ -18,12 +18,15 @@ import (
 	"github.com/Bpoe/dsc-registry/internal/config"
 	"github.com/Bpoe/dsc-registry/internal/database"
 	"github.com/Bpoe/dsc-registry/internal/desired"
+	"github.com/Bpoe/dsc-registry/internal/reportstore"
 	"github.com/google/uuid"
 )
 
 type adminAPI struct {
 	store           *database.Store
 	maxRequestBytes int64
+	maxReportBytes  int64
+	reports         *reportstore.Store
 	timeout         time.Duration
 	pollMaxAge      time.Duration
 	logger          *slog.Logger
@@ -66,6 +69,14 @@ func (a *adminAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			a.agentConfigurations(w, r, principal.OwnerID)
 			return
 		}
+		if len(parts) == 5 && parts[2] == "configurations" && parts[4] == "report" {
+			if !desired.ValidName(parts[3]) {
+				writeError(w, http.StatusBadRequest, "invalid_name", "Expected a safe lowercase configuration name of 1-64 characters")
+			} else {
+				a.uploadReport(w, r, principal.OwnerID, parts[3])
+			}
+			return
+		}
 		writeError(w, http.StatusNotFound, "not_found", "Endpoint not found")
 		return
 	}
@@ -93,6 +104,15 @@ func (a *adminAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, "invalid_name", "Expected a safe lowercase configuration name of 1-64 characters")
 		} else {
 			a.configuration(w, r, parts[2], parts[4])
+		}
+		return
+	}
+	if parts[1] == "machines" && len(parts) == 6 && parts[3] == "configurations" &&
+		(parts[5] == "status" || parts[5] == "report") {
+		if !desired.ValidName(parts[4]) {
+			writeError(w, http.StatusBadRequest, "invalid_name", "Expected a safe lowercase configuration name of 1-64 characters")
+		} else {
+			a.configurationReport(w, r, parts[2], parts[4], parts[5])
 		}
 		return
 	}
@@ -268,13 +288,17 @@ func (a *adminAPI) decodeStringField(w http.ResponseWriter, r *http.Request, fie
 }
 
 func (a *adminAPI) readJSONBody(w http.ResponseWriter, r *http.Request) ([]byte, bool) {
+	return readJSONBody(w, r, a.maxRequestBytes)
+}
+
+func readJSONBody(w http.ResponseWriter, r *http.Request, limit int64) ([]byte, bool) {
 	media, parameters, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
 	if err != nil || media != "application/json" ||
 		(parameters["charset"] != "" && !strings.EqualFold(parameters["charset"], "utf-8")) {
 		writeError(w, http.StatusUnsupportedMediaType, "unsupported_media_type", "Expected UTF-8 application/json")
 		return nil, false
 	}
-	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, a.maxRequestBytes))
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, limit))
 	if err != nil {
 		var tooLarge *http.MaxBytesError
 		if errors.As(err, &tooLarge) {

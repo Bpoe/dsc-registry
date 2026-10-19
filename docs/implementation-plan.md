@@ -1,6 +1,6 @@
 # DSC Registry — staged Copilot implementation plan
 
-The product behavior is defined by [design.md](design.md) and [api.md](api.md). Implement in small, reviewable PRs. **Do not implement the whole roadmap in one PR.** PR 1 through PR 3 are implemented; the CI-only portion of PR 5 is moved forward below. Report ingestion/status/retrieval (PR 4) remains the next separate milestone.
+The product behavior is defined by [design.md](design.md) and [api.md](api.md). Implement in small, reviewable PRs. **Do not implement the whole roadmap in one PR.** PR 1 through PR 4 are implemented; the CI-only portion of PR 5 is moved forward below. The remaining production-readiness work (PR 5) remains a separate milestone.
 
 ## Repository shape
 
@@ -63,7 +63,8 @@ no-ops, sidecar presence, delete/recreate uniqueness, rollback, concurrent
 writers and polling across independent connection pools, and status/key churn.
 PostgreSQL migration 2 changes JSONB shape checks to JSON checks to avoid
 constraining opaque JSON numbers or escaped Unicode values; SQLite migration 1
-is unchanged. Report endpoints and the separate sync agent are not implemented.
+is unchanged. Report endpoints are implemented in PR 4 below; the separate sync
+agent is not implemented.
 
 ## PR 4 — full-report ingestion and latest status
 
@@ -74,6 +75,19 @@ is unchanged. Report endpoints and the separate sync agent are not implemented.
 - Fault-injection tests for interrupted file writes, DB commit failure, concurrent requests, and orphan handling.
 
 **Done when:** full `dscd` schemaVersion=1 report reaches admin GET unchanged; SQLite and PostgreSQL versions pass the same tests.
+
+Implemented with source-verified dscd envelope validation, bounded/unambiguous
+UTF-8 JSON, original nested report bytes, exclusive private direct writes,
+successful sync/close before SQL publication, persisted last-upload idempotency,
+and machine-row/immediate transactions serializing publication, desired-state
+mutation and file reads across instances. SQL references are relative filenames;
+retirement checks for remaining references after commit. No new schema migration
+is necessary: the initial latest-status table already contains these fields.
+Tests cover file and SQL-commit faults, interrupted-write orphans, concurrency,
+role/machine isolation, stale/deleted configurations and desired ETag invariance.
+Bounded **offline** orphan maintenance requires all replicas stopped; see the
+[procedure](../README.md#bounded-offline-orphan-cleanup). No online scavenger,
+report history, DSC execution or sync-agent implementation is included.
 
 ## PR 5 — production readiness
 

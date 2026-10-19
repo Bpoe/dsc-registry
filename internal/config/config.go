@@ -58,7 +58,7 @@ func Parse(args []string, help io.Writer) (Settings, error) {
 	f.StringVar(&s.ReportRoot, "report-root", s.ReportRoot, "existing private report directory")
 	f.DurationVar(&s.PollMaxAge, "poll-max-age", s.PollMaxAge, "agent cache max age (whole seconds)")
 	f.Int64Var(&s.MaxRequestBytes, "max-request-bytes", s.MaxRequestBytes, "administration/configuration request limit")
-	f.Int64Var(&s.MaxReportBytes, "max-report-bytes", s.MaxReportBytes, "future report request limit")
+	f.Int64Var(&s.MaxReportBytes, "max-report-bytes", s.MaxReportBytes, "complete report upload request limit")
 	f.DurationVar(&s.ReadHeaderTimeout, "read-header-timeout", s.ReadHeaderTimeout, "HTTP header read timeout")
 	f.DurationVar(&s.ReadTimeout, "read-timeout", s.ReadTimeout, "HTTP request read timeout")
 	f.DurationVar(&s.WriteTimeout, "write-timeout", s.WriteTimeout, "HTTP response write timeout")

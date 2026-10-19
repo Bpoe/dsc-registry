@@ -48,7 +48,7 @@ func configurationAPI(t *testing.T, engine, dsn string, logs io.Writer) (http.Ha
 	if err != nil {
 		t.Fatal(err)
 	}
-	handler := New(store, reports, time.Second, 5*time.Second, 37*time.Second, 2048, slog.New(slog.NewJSONHandler(logs, nil)))
+	handler := New(store, reports, time.Second, 5*time.Second, 37*time.Second, 2048, 16<<20, slog.New(slog.NewJSONHandler(logs, nil)))
 	return handler, store, admin, machine, key
 }
 
@@ -223,7 +223,7 @@ func TestConfigurationsHTTPBothEngines(t *testing.T) {
 		}
 		apiRequest(t, handler, admin.Key, "GET", path+"/docker/status", "", 404)
 		apiRequest(t, handler, admin.Key, "GET", path+"/docker/report", "", 404)
-		apiRequest(t, handler, key.Key, "POST", "/v1/agent/configurations/docker/report", `{}`, 404)
+		apiRequest(t, handler, key.Key, "POST", "/v1/agent/configurations/docker/report", `{}`, 400)
 		missing := "/v1/machines/" + uuid.NewString() + "/configurations"
 		for _, method := range []string{"GET", "PUT", "DELETE"} {
 			apiRequest(t, handler, admin.Key, method, missing+"/one", `{"template":{}}`, 404)
