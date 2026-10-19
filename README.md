@@ -3,11 +3,16 @@
 `dscregd` is the DSC Registry configuration-delivery server. It does not execute
 DSC. The separate `dscsyncd` sync agent and `dscd` reconciler are not included.
 
-**Current milestone: PR 4.** The executable provides local administrator bootstrap,
+**Current milestone: PR 5 production readiness (real-NFS validation pending).**
+The executable provides local administrator bootstrap,
 API-key authentication, machine and credential administration, SQLite/PostgreSQL
 migrations, desired-configuration CRUD and conditional machine polling,
 full dscd report ingestion, latest execution summaries and admin-only report
 retrieval, report-storage checks, graceful shutdown, and health endpoints.
+Production-readiness additions include redacted structured operation timings,
+recovery/fuzz coverage, Linux/container examples and a bounded two-replica
+PostgreSQL/TLS/recovery harness. See the [operator runbook](docs/operations.md)
+for installation, mounts, TLS, key recovery and paired backup/restore.
 See [the staged plan](docs/implementation-plan.md)
 and the [API](docs/api.md) and [design](docs/design.md) contracts.
 
@@ -185,11 +190,14 @@ lock against concurrent deletion. Report publication and full-report reads use
 the machine row lock on PostgreSQL and an immediate transaction on SQLite,
 also across independent API instances. No in-process mutex is required.
 
-Logs are structured JSON on stderr. Request logs contain only the method,
-known route label, status, and duration, not raw URLs, queries, headers, or
+Logs are structured JSON on stderr. Request logs contain only the bounded method,
+route template, status, and duration, not raw URLs, queries, headers, or
 bodies. Health endpoints are unauthenticated. Administration endpoints require
 an administrator API key even in development mode; there is no auth bypass.
 Full reports are sensitive and are available only to administrator credentials.
+Report writes and SQL transactions also emit bounded outcomes/timings and pool
+wait signals. See [observability](docs/operations.md#structured-observability)
+for units, aggregation and redaction boundaries; there is no public metrics API.
 
 ## Bootstrap and credential rotation
 
@@ -415,5 +423,9 @@ PostgreSQL configuration fails CI rather than opting out. Separate builds
 check Linux amd64 and arm64 with CGO disabled. CI does not publish artifacts
 or deploy the server.
 
-This CI-only portion of PR 5 was moved forward after PR 2. The remaining
-production-readiness work and the separate sync agent are still deferred.
+CI additionally runs bounded desired/report fuzz smoke tests and the isolated
+two-replica PostgreSQL/TLS demo with dependency faults and cold paired restore.
+Its shared Docker volume is **not NFS**. The
+[real-NFS procedure and external validation gate](docs/operations.md#repeatable-two-replica-verification)
+remain explicit; green CI alone is not a fully demonstrated NFS deployment or
+an HA/capacity guarantee. The separate sync agent remains out of scope.

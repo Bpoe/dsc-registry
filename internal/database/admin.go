@@ -48,7 +48,7 @@ type BootstrapResult struct {
 }
 
 func (s *Store) Bootstrap(ctx context.Context, name string) (BootstrapResult, error) {
-	tx, err := s.DB.BeginTx(ctx, nil)
+	tx, err := s.begin(ctx, "bootstrap")
 	if err != nil {
 		return BootstrapResult{}, err
 	}
@@ -77,7 +77,7 @@ func (s *Store) Bootstrap(ctx context.Context, name string) (BootstrapResult, er
 	if err != nil {
 		return BootstrapResult{}, err
 	}
-	key, err := insertKey(ctx, tx, apikey.Admin, id, "local bootstrap")
+	key, err := insertKey(ctx, tx.Tx, apikey.Admin, id, "local bootstrap")
 	if err != nil {
 		return BootstrapResult{}, err
 	}
@@ -110,7 +110,7 @@ func (s *Store) Authenticate(ctx context.Context, value string) (Principal, erro
 
 func (s *Store) CreateMachine(ctx context.Context, name string) (Machine, error) {
 	machine := Machine{ID: uuid.NewString(), Name: name}
-	tx, err := s.DB.BeginTx(ctx, nil)
+	tx, err := s.begin(ctx, "create_machine")
 	if err != nil {
 		return Machine{}, err
 	}
@@ -154,7 +154,7 @@ func (s *Store) ListMachines(ctx context.Context, after string, limit int) ([]Ma
 }
 
 func (s *Store) DeleteMachine(ctx context.Context, id string) error {
-	tx, err := s.DB.BeginTx(ctx, nil)
+	tx, err := s.begin(ctx, "delete_machine")
 	if err != nil {
 		return err
 	}
@@ -191,15 +191,15 @@ func (s *Store) lockOwner(ctx context.Context, tx *sql.Tx, role, id string) erro
 }
 
 func (s *Store) IssueKey(ctx context.Context, role, id, description string) (IssuedKey, error) {
-	tx, err := s.DB.BeginTx(ctx, nil)
+	tx, err := s.begin(ctx, "issue_key")
 	if err != nil {
 		return IssuedKey{}, err
 	}
 	defer tx.Rollback()
-	if err := s.lockOwner(ctx, tx, role, id); err != nil {
+	if err := s.lockOwner(ctx, tx.Tx, role, id); err != nil {
 		return IssuedKey{}, err
 	}
-	key, err := insertKey(ctx, tx, role, id, description)
+	key, err := insertKey(ctx, tx.Tx, role, id, description)
 	if err != nil {
 		return IssuedKey{}, err
 	}
@@ -223,12 +223,12 @@ func insertKey(ctx context.Context, tx *sql.Tx, role, id, description string) (I
 }
 
 func (s *Store) ListKeys(ctx context.Context, role, id, after string, limit int) ([]Key, error) {
-	tx, err := s.DB.BeginTx(ctx, nil)
+	tx, err := s.begin(ctx, "list_keys")
 	if err != nil {
 		return nil, err
 	}
 	defer tx.Rollback()
-	if err := s.lockOwner(ctx, tx, role, id); err != nil {
+	if err := s.lockOwner(ctx, tx.Tx, role, id); err != nil {
 		return nil, err
 	}
 	rows, err := tx.QueryContext(ctx, `SELECT key_id, owner_type, owner_id, created_at, revoked_at, COALESCE(description, '')
@@ -257,12 +257,12 @@ func (s *Store) ListKeys(ctx context.Context, role, id, after string, limit int)
 }
 
 func (s *Store) RevokeKey(ctx context.Context, role, id, keyID string) error {
-	tx, err := s.DB.BeginTx(ctx, nil)
+	tx, err := s.begin(ctx, "revoke_key")
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
-	if err := s.lockOwner(ctx, tx, role, id); err != nil {
+	if err := s.lockOwner(ctx, tx.Tx, role, id); err != nil {
 		return err
 	}
 	result, err := tx.ExecContext(ctx, `UPDATE api_keys SET revoked_at = COALESCE(revoked_at, $1)

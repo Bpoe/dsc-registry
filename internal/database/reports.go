@@ -23,15 +23,15 @@ type ConfigurationStatus struct {
 // readers using the machine row (SQLite BEGIN IMMEDIATE / PostgreSQL FOR UPDATE).
 // The callback completes and closes a unique file before SQL can reference it.
 func (s *Store) PublishReport(ctx context.Context, id, name string, upload report.Upload, write func() (string, error)) (string, error) {
-	tx, err := s.DB.BeginTx(ctx, nil)
+	tx, err := s.begin(ctx, "publish_report")
 	if err != nil {
 		return "", err
 	}
 	defer tx.Rollback()
-	if err := s.lockOwner(ctx, tx, apikey.Machine, id); err != nil {
+	if err := s.lockOwner(ctx, tx.Tx, apikey.Machine, id); err != nil {
 		return "", err
 	}
-	revision, err := reportRevision(ctx, tx, id, name)
+	revision, err := reportRevision(ctx, tx.Tx, id, name)
 	if err != nil {
 		return "", err
 	}
@@ -105,18 +105,18 @@ func (s *Store) ReadReport(ctx context.Context, id, name string, read func(strin
 }
 
 func (s *Store) withReport(ctx context.Context, id, name string, read func(*sql.Tx) error) error {
-	tx, err := s.DB.BeginTx(ctx, nil)
+	tx, err := s.begin(ctx, "read_report_status")
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
-	if err := s.lockOwner(ctx, tx, apikey.Machine, id); err != nil {
+	if err := s.lockOwner(ctx, tx.Tx, apikey.Machine, id); err != nil {
 		return err
 	}
-	if _, err := reportRevision(ctx, tx, id, name); err != nil {
+	if _, err := reportRevision(ctx, tx.Tx, id, name); err != nil {
 		return err
 	}
-	if err := read(tx); err != nil {
+	if err := read(tx.Tx); err != nil {
 		return err
 	}
 	return tx.Commit()

@@ -64,6 +64,29 @@ func TestRealEnvelopes(t *testing.T) {
 	}
 }
 
+func FuzzReportEnvelope(f *testing.F) {
+	f.Add(wrapped(success))
+	f.Add([]byte(`{}`))
+	f.Add(wrapped(strings.Replace(success, `"schemaVersion":1`, `"schemaVersion":1,"SchemaVersion":2`, 1)))
+	f.Fuzz(func(t *testing.T, body []byte) {
+		upload, err := Parse(body, "docker")
+		if err != nil {
+			return
+		}
+		var wrapper map[string]json.RawMessage
+		if err := json.Unmarshal(body, &wrapper); err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(upload.Result, bytes.TrimSpace(wrapper["result"])) {
+			t.Fatal("accepted report bytes changed")
+		}
+		again, err := Parse(wrapped(string(upload.Result)), "docker")
+		if err != nil || !bytes.Equal(again.Result, upload.Result) || again.Outcome != upload.Outcome {
+			t.Fatal("accepted result did not survive rewrapping")
+		}
+	})
+}
+
 func TestInvalidEnvelopes(t *testing.T) {
 	for name, replacement := range map[string]string{
 		"schemaVersion": `2`, "configuration": `"managed/other.json"`, "operation": `"get"`,
@@ -76,6 +99,7 @@ func TestInvalidEnvelopes(t *testing.T) {
 			if err := json.Unmarshal([]byte(success), &envelope); err != nil {
 				t.Fatal(err)
 			}
+
 			envelope[name] = json.RawMessage(replacement)
 			data, err := json.Marshal(envelope)
 			if err != nil {

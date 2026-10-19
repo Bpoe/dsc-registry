@@ -234,5 +234,71 @@ func TestReportBoundsAndStorageFailureBothEngines(t *testing.T) {
 				t.Fatal("storage failure leaked data into logs")
 			}
 		}
+		for _, outcome := range []string{"written", "write_error"} {
+			if !strings.Contains(logs.String(), `"msg":"report write","outcome":"`+outcome+`","duration":`) {
+				t.Fatalf("missing report write timing for %s", outcome)
+			}
+		}
+	})
+}
+
+func TestReportRestartRecoveryBothEngines(t *testing.T) {
+	testdb.Engines(t, func(t *testing.T, engine, dsn string) {
+		logs := &bytes.Buffer{}
+		_, db, admin, machine, key := configurationAPI(t, engine, dsn, logs)
+		root := t.TempDir()
+		files, err := reportstore.Open(context.Background(), root)
+		if err != nil {
+			t.Fatal(err)
+		}
+		logger := slog.New(slog.NewJSONHandler(logs, nil))
+		handler := New(db, files, time.Second, time.Second, 37*time.Second, 2048, 4096, logger)
+		path := "/v1/machines/" + machine.ID + "/configurations/docker"
+		agentPath := "/v1/agent/configurations/docker/report"
+		config := decodeResponse[database.ConfigurationResult](t,
+			apiRequest(t, handler, admin.Key, "PUT", path, `{"template":{"precise":9007199254740993123456789},"parameters":{}}`, 201))
+		tag := assertAgentCache(t, agentRequest(handler, key.Key), 200)
+		body := reportBody(config.Revision, uuid.NewString(), rawSuccessReport)
+		apiRequest(t, handler, key.Key, "POST", agentPath, body, 204)
+		before := apiRequest(t, handler, admin.Key, "GET", path+"/status", "", 200).Body.String()
+		// A process interruption after file close but before SQL publication
+		// leaves an orphan, which startup must not publish or scavenge online.
+		orphan, err := files.Write(context.Background(), []byte(`{"interrupted":true}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := files.Close(); err != nil {
+			t.Fatal(err)
+		}
+		if err := db.DB.Close(); err != nil {
+			t.Fatal(err)
+		}
+		db, err = database.Connect(context.Background(), engine, dsn, time.Second)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer db.DB.Close()
+		files, err = reportstore.Open(context.Background(), root)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer files.Close()
+		handler = New(db, files, time.Second, time.Second, 37*time.Second, 2048, 4096, logger)
+		apiRequest(t, handler, "", "GET", "/health/ready", "", 200)
+		assertAgentCache(t, agentRequest(handler, key.Key, tag), 304)
+		apiRequest(t, handler, key.Key, "POST", agentPath, body, 204)
+		if after := apiRequest(t, handler, admin.Key, "GET", path+"/status", "", 200).Body.String(); after != before {
+			t.Fatal("restart/retry changed persisted status")
+		}
+		if got := apiRequest(t, handler, admin.Key, "GET", path+"/report", "", 200).Body.String(); got != rawSuccessReport {
+			t.Fatal("restart lost original report")
+		}
+		entries, err := os.ReadDir(root)
+		if err != nil || len(entries) != 2 {
+			t.Fatal("restart/retry rewrote files or scavenged online", err)
+		}
+		if _, err := os.Stat(filepath.Join(root, orphan)); err != nil {
+			t.Fatal("startup removed unreferenced report")
+		}
 	})
 }

@@ -3,6 +3,7 @@ package httpapi
 import (
 	"errors"
 	"net/http"
+	"time"
 
 	"github.com/Bpoe/dsc-registry/internal/database"
 	"github.com/Bpoe/dsc-registry/internal/report"
@@ -28,8 +29,14 @@ func (a *adminAPI) uploadReport(w http.ResponseWriter, r *http.Request, id, name
 	}
 	storageFailure := false
 	previous, err := a.store.PublishReport(r.Context(), id, name, upload, func() (string, error) {
+		start := time.Now()
 		path, err := a.reports.Write(r.Context(), upload.Result)
 		storageFailure = err != nil
+		outcome := "written"
+		if err != nil {
+			outcome = "write_error"
+		}
+		a.logger.Info("report write", "outcome", outcome, "duration", time.Since(start))
 		return path, err
 	})
 	if err != nil {

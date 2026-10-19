@@ -41,7 +41,8 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	if err := run(ctx, settings, logger); err != nil {
-		logger.Error("server stopped", "error", err)
+		// OS and driver errors can contain protected paths or connection data.
+		logger.Error("server stopped", "reason", "startup_or_shutdown_failure")
 		os.Exit(1)
 	}
 }
@@ -54,16 +55,20 @@ func run(ctx context.Context, settings config.Settings, logger *slog.Logger) (er
 	defer cancel()
 	reports, err := reportstore.Open(startup, settings.ReportRoot)
 	if err != nil {
+		logger.Error("startup dependency failed", "dependency", "report_storage")
 		return fmt.Errorf("validate report storage: %w", err)
 	}
 	defer func() { err = errors.Join(err, reports.Close()) }()
 	db, err := database.Connect(startup, settings.DatabaseEngine, settings.DatabaseDSN, settings.SQLiteBusyTimeout)
 	if err != nil {
+		logger.Error("startup dependency failed", "dependency", "database")
 		return err
 	}
 	defer func() { err = errors.Join(err, db.DB.Close()) }()
+	db.Logger = logger
 	listener, err := (&net.ListenConfig{}).Listen(ctx, "tcp", settings.ListenAddress)
 	if err != nil {
+		logger.Error("HTTP listener startup failed")
 		return fmt.Errorf("listen HTTP: %w", err)
 	}
 	server := &http.Server{

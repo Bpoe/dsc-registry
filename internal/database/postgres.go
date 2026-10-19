@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"log/slog"
 	"time"
 
 	"github.com/Bpoe/dsc-registry/migrations"
@@ -73,6 +74,7 @@ func initializePostgres(ctx context.Context, db *sql.DB) error {
 type Store struct {
 	DB     *sql.DB
 	Engine string
+	Logger *slog.Logger
 }
 
 func Connect(ctx context.Context, engine, dsn string, busyTimeout time.Duration) (*Store, error) {

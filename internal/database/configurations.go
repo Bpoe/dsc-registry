@@ -35,15 +35,15 @@ type ConfigurationSnapshot struct {
 }
 
 func (s *Store) PutConfiguration(ctx context.Context, id, name string, content desired.Content) (ConfigurationResult, bool, error) {
-	tx, err := s.DB.BeginTx(ctx, nil)
+	tx, err := s.begin(ctx, "put_configuration")
 	if err != nil {
 		return ConfigurationResult{}, false, err
 	}
 	defer tx.Rollback()
-	if err := s.lockOwner(ctx, tx, apikey.Machine, id); err != nil {
+	if err := s.lockOwner(ctx, tx.Tx, apikey.Machine, id); err != nil {
 		return ConfigurationResult{}, false, err
 	}
-	current, err := getConfiguration(ctx, tx, id, name)
+	current, err := getConfiguration(ctx, tx.Tx, id, name)
 	created := errors.Is(err, ErrConfigurationNotFound)
 	if err != nil && !created {
 		return ConfigurationResult{}, false, err
@@ -161,12 +161,12 @@ func (s *Store) ListConfigurations(ctx context.Context, id, after string, limit 
 }
 
 func (s *Store) DeleteConfiguration(ctx context.Context, id, name string) error {
-	tx, err := s.DB.BeginTx(ctx, nil)
+	tx, err := s.begin(ctx, "delete_configuration")
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
-	if err := s.lockOwner(ctx, tx, apikey.Machine, id); err != nil {
+	if err := s.lockOwner(ctx, tx.Tx, apikey.Machine, id); err != nil {
 		return err
 	}
 	result, err := tx.ExecContext(ctx, "DELETE FROM configurations WHERE machine_id = $1 AND name = $2", id, name)
