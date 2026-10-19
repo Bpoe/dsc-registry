@@ -36,7 +36,7 @@ func reportSetup(t *testing.T, engine, dsn string) (*Store, *reportstore.Store, 
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { files.Close() })
-	machine, err := store.CreateMachine(context.Background(), "host")
+	machine, err := store.CreateMachine(context.Background(), "host-"+uuid.NewString())
 	if err != nil {
 		t.Fatal(err)
 	}

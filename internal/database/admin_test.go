@@ -54,11 +54,11 @@ func TestAdministrationBothEngines(t *testing.T) {
 			len(digest) != 32 || !bytes.Equal(digest, apikey.Digest(admin.Key)) || bytes.Contains(digest, []byte(admin.Key)) {
 			t.Fatal("credential was not stored as a digest")
 		}
-		first, err := store.CreateMachine(ctx, "duplicate display name")
+		first, err := store.CreateMachine(ctx, "first display name")
 		if err != nil {
 			t.Fatal(err)
 		}
-		second, err := store.CreateMachine(ctx, first.Name)
+		second, err := store.CreateMachine(ctx, "second display name")
 		if err != nil || first.ID == second.ID {
 			t.Fatalf("names used as identity: %v", err)
 		}
@@ -173,9 +173,9 @@ func TestAdministrationBothEngines(t *testing.T) {
 		if _, err := store.GetMachine(ctx, second.ID); err != nil {
 			t.Fatal("machine did not survive restart")
 		}
-		migrations := 2
+		migrations := 3
 		if engine == "postgres" {
-			migrations = 3
+			migrations = 4
 		}
 		assertCount(t, store.DB, "schema_migrations", migrations)
 	})
@@ -286,7 +286,7 @@ func TestPostgresMigrationRollbackAndVersion(t *testing.T) {
 	exec(t, raw, "INSERT INTO configurations VALUES ('preserved')")
 	exec(t, raw, "DROP TABLE configurations")
 	store := testStore(t, "postgres", dsn)
-	exec(t, store.DB, "INSERT INTO schema_migrations VALUES (4, 'future')")
+	exec(t, store.DB, "INSERT INTO schema_migrations VALUES (5, 'future')")
 	if db, err := OpenPostgres(ctx, dsn); db != nil || err == nil {
 		t.Fatal("future PostgreSQL schema accepted")
 	}
@@ -323,7 +323,7 @@ func TestSQLitePR1UpgradePreservesAllData(t *testing.T) {
 	for _, table := range []string{"machines", "admins", "api_keys", "configurations", "reports"} {
 		assertCount(t, store.DB, table, 1)
 	}
-	assertCount(t, store.DB, "schema_migrations", 2)
+	assertCount(t, store.DB, "schema_migrations", 3)
 	machine, err := store.GetMachine(context.Background(), id)
 	if err != nil || machine.Name != "preserved" || machine.ConfigurationRevision != 7 {
 		t.Fatal("PR 1 machine changed during upgrade")
@@ -369,7 +369,7 @@ func TestConcurrentPostgresMigration(t *testing.T) {
 			t.Error(result.err)
 			continue
 		}
-		assertCount(t, result.db, "schema_migrations", 3)
+		assertCount(t, result.db, "schema_migrations", 4)
 		if err := result.db.Close(); err != nil {
 			t.Error(err)
 		}

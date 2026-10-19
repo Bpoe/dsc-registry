@@ -46,6 +46,16 @@ Prefer fewer packages if the implementation remains small. Do **not** create emp
 
 **Done when:** authenticated admin provisions machine/key; machine key cannot access admin endpoints or another machine; revoked key is refused; secrets never appear in logs or GET responses.
 
+Implemented administration follow-up: `GET /v1/machines?name=...` returns the
+existing single-machine object or `404`; unfiltered listing is unchanged and
+name lookup rejects pagination. Names are globally unique under shared
+`NFC(full Unicode case fold(NFC(name)))`, backed by an indexed internal key in
+SQLite migration 2 and PostgreSQL migration 3. Original names and UUID identity
+are preserved. Duplicate creation returns `409`, including concurrent requests;
+no rename API is added. Both-engine tests cover Unicode case folding,
+composed/decomposed equivalence, accent/compatibility distinctions, raw storage
+constraints, concurrent creation, and transactional migration rollback/reopen.
+
 ## PR 3 — desired configurations and ETag sync API
 
 - PUT/GET/LIST/DELETE admin configuration CRUD using direct JSON-object template and optional JSON-object parameters; reject YAML/string-encoded documents/format wrappers; validate shape, size and duplicate keys without interpreting DSC resources.
@@ -98,7 +108,7 @@ UTF-8 JSON, original nested report bytes, exclusive private direct writes,
 successful sync/close before SQL publication, persisted history-wide idempotency,
 and machine-row/immediate transactions serializing publication, desired-state
 mutation and file reads across instances. SQL references are relative filenames.
-SQLite migration 2 and PostgreSQL migration 3 migrate initial latest-status
+SQLite migration 3 and PostgreSQL migration 4 migrate initial latest-status
 records to historical metadata without rewriting files, and remove the old
 independent status table. Machine status is derived from reports and current
 desired state; current/stale/removed/unreported revision states are distinct
