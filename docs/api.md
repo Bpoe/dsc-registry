@@ -244,9 +244,14 @@ so validators from different machines cannot match even at the same revision.
 GET performs weak comparison for `If-None-Match`, accepting strong/weak tags,
 comma-separated lists (including multiple field lines), and `*`. Malformed
 validator fields are ignored and return `200`. `Vary: Authorization` accompanies
-both `200` and `304`. Collection revision, content, and ETag come from a single
-ordered SQL statement's consistent snapshot, including during concurrent
-creation/deletion. No query parameters or caller-supplied machine identity are
+both `200` and `304`. After authentication, conditional GET first reads only the
+machine's collection revision; a matching validator returns a bodyless `304`
+without loading configuration documents. An unconditional GET skips this
+preliminary read. For every `200`, collection revision, content, and ETag come
+from a single ordered SQL statement's consistent snapshot, including during
+concurrent creation/deletion or a change after the preliminary read. A change
+immediately after a matching revision read is discovered on a subsequent poll.
+No query parameters or caller-supplied machine identity are
 accepted (`400`, `invalid_query`); administrator credentials receive `403`.
 
 Never add machine status, full reports, secret credentials, or server-side host paths to this response. Configure a maximum poll interval; agents add jitter and exponential backoff on failure, respecting `Retry-After` when provided. Agent must retain local desired state on HTTP errors, even prolonged outage.

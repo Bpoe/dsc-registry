@@ -3,6 +3,7 @@ package database
 import (
 	"context"
 	"database/sql"
+	"database/sql/driver"
 	"errors"
 	"fmt"
 	"sync"
@@ -148,6 +149,79 @@ func TestConfigurationsBothEngines(t *testing.T) {
 func validRevision(value string) bool {
 	id, err := uuid.Parse(value)
 	return err == nil && id.String() == value
+}
+
+func TestConfigurationRevisionBothEngines(t *testing.T) {
+	testdb.Engines(t, func(t *testing.T, engine, dsn string) {
+		store := testStore(t, engine, dsn)
+		ctx := context.Background()
+		machine, err := store.CreateMachine(ctx, "host")
+		if err != nil {
+			t.Fatal(err)
+		}
+		queries := 0
+		var queryError error
+		reader := &Store{Engine: engine, DB: testdb.ObserveQueries(t, store.DB, dsn,
+			func(ctx context.Context, query string, args []driver.NamedValue) error {
+				queries++
+				if query != "SELECT configuration_revision FROM machines WHERE id = $1" ||
+					len(args) != 1 || args[0].Value != machine.ID {
+					t.Fatal("revision lookup must select only the authenticated machine's revision")
+				}
+				return queryError
+			})}
+		assertRevision := func(want int64) {
+			t.Helper()
+			queries = 0
+			got, err := reader.ConfigurationRevision(ctx, machine.ID)
+			if err != nil || got != want || queries != 1 {
+				t.Fatalf("revision = %d, error = %v, queries = %d; want %d, nil, 1", got, err, queries, want)
+			}
+		}
+		assertRevision(0)
+		for i, body := range []string{
+			`{"template":{"value":1}}`,
+			`{"template":{"value":1.0},"parameters":null}`,
+			`{"template":{"value":2},"parameters":{}}`,
+		} {
+			if _, _, err := store.PutConfiguration(ctx, machine.ID, "one", parseDesired(t, body)); err != nil {
+				t.Fatal(err)
+			}
+			assertRevision([]int64{1, 1, 2}[i])
+		}
+		if err := store.DeleteConfiguration(ctx, machine.ID, "one"); err != nil {
+			t.Fatal(err)
+		}
+		assertRevision(3)
+
+		canceled, cancel := context.WithCancel(ctx)
+		cancel()
+		if _, err := reader.ConfigurationRevision(canceled, machine.ID); !errors.Is(err, context.Canceled) {
+			t.Fatalf("canceled lookup: %v", err)
+		}
+		expired, cancel := context.WithDeadline(ctx, time.Now().Add(-time.Second))
+		defer cancel()
+		if _, err := reader.ConfigurationRevision(expired, machine.ID); !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("expired lookup: %v", err)
+		}
+		queryError = errors.New("injected revision query failure")
+		if _, err := reader.ConfigurationRevision(ctx, machine.ID); !errors.Is(err, queryError) {
+			t.Fatalf("driver error not propagated: %v", err)
+		}
+		queryError = nil
+		if err := store.DeleteMachine(ctx, machine.ID); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := reader.ConfigurationRevision(ctx, machine.ID); !errors.Is(err, ErrNotFound) {
+			t.Fatalf("missing machine: %v", err)
+		}
+		if err := reader.DB.Close(); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := reader.ConfigurationRevision(ctx, machine.ID); err == nil || errors.Is(err, ErrNotFound) {
+			t.Fatalf("closed database lookup: %v", err)
+		}
+	})
 }
 
 func TestConfigurationMutationRollbackBothEngines(t *testing.T) {

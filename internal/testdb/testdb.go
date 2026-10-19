@@ -23,7 +23,7 @@ func Engines(t *testing.T, run func(*testing.T, string, string)) {
 	})
 }
 
-func Postgres(t *testing.T) string {
+func Postgres(t testing.TB) string {
 	t.Helper()
 	dsn := os.Getenv("DSCREGISTRY_TEST_POSTGRES_DSN")
 	if dsn == "" {
