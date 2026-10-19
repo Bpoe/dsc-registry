@@ -49,7 +49,7 @@ func TestReportHistoryAndMachineStatusBothEngines(t *testing.T) {
 			return decodeResponse[database.MachineStatus](t, apiRequest(t, handler, admin.Key, "GET", base+"/status", "", 200))
 		}
 		empty := status()
-		if empty.HasReport || empty.LatestReport != nil || empty.Outcome != "never_reported" ||
+		if empty.HasReport || empty.LatestReport != nil || empty.LatestReceivedReport != nil || empty.Outcome != "never_reported" ||
 			empty.LastExecutionAt != nil || empty.LastReportReceivedAt != nil || empty.Configurations == nil {
 			t.Fatal("never-reported machine not distinguished", empty)
 		}
@@ -114,7 +114,9 @@ func TestReportHistoryAndMachineStatusBothEngines(t *testing.T) {
 		second := decodeResponse[database.ReportMetadata](t, apiRequest(t, handler, key.Key, "POST", "/v1/agent/reports",
 			historyBody("docker", config.Revision, uuid.NewString(), failedReport("failed")), 201))
 		got = status()
-		if got.Outcome != "failed" || !got.HasStaleReports || got.LatestReport.ID != second.ID ||
+		if got.Outcome != "unknown" || !got.HasStaleReports || got.LatestReport != nil || got.LastExecutionAt != nil ||
+			got.LatestReceivedReport.ID != second.ID || got.Configurations[0].LatestReport != nil ||
+			got.Configurations[0].Outcome != "unknown" ||
 			got.Configurations[0].RevisionState != "stale" || *got.Configurations[0].DesiredRevision != changed.Revision {
 			t.Fatal("historical failure mislabeled as current", got)
 		}
@@ -176,7 +178,8 @@ func TestReportHistoryAndMachineStatusBothEngines(t *testing.T) {
 			historyBody("docker", config.Revision, uuid.NewString(), rawSuccessReport), 201))
 		got = status()
 		if got.Outcome != "unknown" || got.Configurations[0].RevisionState != "removed" ||
-			got.Configurations[0].DesiredRevision != nil || got.LatestReport.ID != deleted.ID {
+			got.Configurations[0].DesiredRevision != nil || got.LatestReceivedReport.ID != deleted.ID ||
+			got.LatestReport != nil || got.Configurations[0].LatestReport != nil {
 			t.Fatal("deleted configuration history not represented", got)
 		}
 		apiRequest(t, handler, admin.Key, "GET", fullPath+"/content", "", 200)
@@ -191,6 +194,136 @@ func TestReportHistoryAndMachineStatusBothEngines(t *testing.T) {
 		apiRequest(t, handler, admin.Key, "DELETE", base, "", 204)
 		for _, route := range []string{base + "/status", base + "/reports", fullPath, fullPath + "/content"} {
 			apiRequest(t, handler, admin.Key, "GET", route, "", 404)
+		}
+	})
+}
+
+func TestHistoricalReportsCannotRegressCurrentStatusBothEngines(t *testing.T) {
+	testdb.Engines(t, func(t *testing.T, engine, dsn string) {
+		handler, _, admin, machine, key := configurationAPI(t, engine, dsn, io.Discard)
+		base := "/v1/machines/" + machine.ID
+		configPath := base + "/configurations/docker"
+		status := func() database.MachineStatus {
+			t.Helper()
+			return decodeResponse[database.MachineStatus](t, apiRequest(t, handler, admin.Key, "GET", base+"/status", "", 200))
+		}
+		upload := func(revision, result string) database.ReportMetadata {
+			t.Helper()
+			return decodeResponse[database.ReportMetadata](t, apiRequest(t, handler, key.Key, "POST", "/v1/agent/reports",
+				historyBody("docker", revision, uuid.NewString(), result), 201))
+		}
+		assertCurrent := func(current, received database.ReportMetadata, content string) {
+			t.Helper()
+			got := status()
+			if got.Outcome != current.Outcome || got.HasStaleReports || got.LatestReport == nil || got.LatestReport.ID != current.ID ||
+				got.LatestReceivedReport == nil || got.LatestReceivedReport.ID != received.ID ||
+				got.LastExecutionAt == nil || *got.LastExecutionAt != current.FinishedAt ||
+				got.LastReportReceivedAt == nil || *got.LastReportReceivedAt != received.ReceivedAt || len(got.Configurations) != 1 {
+				t.Fatal("historical report changed current machine status", got)
+			}
+			item := got.Configurations[0]
+			if item.RevisionState != "current" || item.Outcome != current.Outcome ||
+				item.LatestReport == nil || item.LatestReport.ID != current.ID ||
+				item.LatestReceivedReport == nil || item.LatestReceivedReport.ID != received.ID {
+				t.Fatal("historical receipt replaced current per-configuration result", item)
+			}
+			summary := decodeResponse[database.ConfigurationStatus](t, apiRequest(t, handler, admin.Key, "GET", configPath+"/status", "", 200))
+			if summary.ReportID != current.ID || summary.ConfigurationRevision != current.ConfigurationRevision ||
+				summary.Outcome != current.Outcome || summary.ReceivedAt != current.ReceivedAt {
+				t.Fatal("named status selected a historical revision", summary)
+			}
+			if got := apiRequest(t, handler, admin.Key, "GET", configPath+"/report", "", 200).Body.String(); got != content {
+				t.Fatal("named report selected a historical revision")
+			}
+		}
+
+		oldConfig := decodeResponse[database.ConfigurationResult](t,
+			apiRequest(t, handler, admin.Key, "PUT", configPath, `{"template":{}}`, 201))
+		old := upload(oldConfig.Revision, failedReport("failed"))
+		config := decodeResponse[database.ConfigurationResult](t,
+			apiRequest(t, handler, admin.Key, "PUT", configPath, `{"template":{"changed":true}}`, 200))
+		if got := status(); got.Outcome != "unknown" || !got.HasStaleReports || got.LatestReport != nil ||
+			got.LastExecutionAt != nil || got.LatestReceivedReport.ID != old.ID {
+			t.Fatal("new desired revision inherited an old execution", got)
+		}
+		apiRequest(t, handler, admin.Key, "GET", configPath+"/status", "", 404)
+		apiRequest(t, handler, admin.Key, "GET", configPath+"/report", "", 404)
+		currentResult := strings.ReplaceAll(rawSuccessReport, "T12:00:", "T12:05:")
+		current := upload(config.Revision, currentResult)
+		assertCurrent(current, current, currentResult)
+		tag := assertAgentCache(t, agentRequest(handler, key.Key), 200)
+
+		// Use new upload IDs, not retries: each delayed failure is a distinct
+		// historical record that must not displace the current success.
+		for _, route := range []string{"/v1/agent/reports", "/v1/agent/configurations/docker/report"} {
+			body := historyBody("docker", oldConfig.Revision, uuid.NewString(), failedReport("failed"))
+			created, retried := 201, 200
+			if route != "/v1/agent/reports" {
+				body = strings.Replace(body, `"configurationName":"docker",`, "", 1)
+				created, retried = 204, 204
+			}
+			apiRequest(t, handler, key.Key, "POST", route, body, created)
+			page := decodeResponse[reportPage](t, apiRequest(t, handler, admin.Key, "GET", base+"/reports", "", 200))
+			delayed := page.Reports[0]
+			if delayed.ConfigurationRevision != oldConfig.Revision || delayed.Outcome != "failed" || delayed.ID == old.ID {
+				t.Fatal("late report was discarded or incorrectly associated", delayed)
+			}
+			assertCurrent(current, delayed, currentResult)
+			if got := apiRequest(t, handler, admin.Key, "GET", base+"/reports/"+delayed.ID+"/content", "", 200).Body.String(); got != failedReport("failed") {
+				t.Fatal("historical report bytes changed")
+			}
+			before := status()
+			apiRequest(t, handler, key.Key, "POST", route, body, retried)
+			if !reflect.DeepEqual(before, status()) {
+				t.Fatal("historical retry changed status")
+			}
+			assertAgentCache(t, agentRequest(handler, key.Key, tag), 304)
+		}
+
+		// New executions of the current revision can still change its outcome.
+		currentFailure := strings.ReplaceAll(failedReport("failed"), "T12:00:", "T12:10:")
+		current = upload(config.Revision, currentFailure)
+		assertCurrent(current, current, currentFailure)
+		// Revision matching takes priority even over a larger client timestamp.
+		delayed := upload(oldConfig.Revision, strings.ReplaceAll(rawSuccessReport, "2026-10-18", "2099-10-18"))
+		assertCurrent(current, delayed, currentFailure)
+		assertAgentCache(t, agentRequest(handler, key.Key, tag), 304)
+
+		apiRequest(t, handler, admin.Key, "DELETE", configPath, "", 204)
+		apiRequest(t, handler, admin.Key, "PUT", configPath, `{"template":{}}`, 201)
+		delayed = upload(config.Revision, currentResult)
+		got := status()
+		if got.Outcome != "unknown" || !got.HasStaleReports || got.LatestReport != nil || got.LastExecutionAt != nil ||
+			got.LatestReceivedReport.ID != delayed.ID || got.Configurations[0].RevisionState != "stale" ||
+			got.Configurations[0].LatestReport != nil {
+			t.Fatal("recreated name inherited a removed revision's status", got)
+		}
+		apiRequest(t, handler, admin.Key, "GET", configPath+"/status", "", 404)
+		apiRequest(t, handler, admin.Key, "GET", configPath+"/report", "", 404)
+		apiRequest(t, handler, admin.Key, "GET", base+"/reports/"+current.ID+"/content", "", 200)
+
+		otherConfig := decodeResponse[database.ConfigurationResult](t,
+			apiRequest(t, handler, admin.Key, "PUT", base+"/configurations/zeta", `{"template":{}}`, 201))
+		otherResult := strings.ReplaceAll(strings.ReplaceAll(currentResult, "docker", "zeta"), "T12:05:", "T12:20:")
+		other := decodeResponse[database.ReportMetadata](t, apiRequest(t, handler, key.Key, "POST", "/v1/agent/reports",
+			historyBody("zeta", otherConfig.Revision, uuid.NewString(), otherResult), 201))
+		delayed = upload(config.Revision, failedReport("failed"))
+		got = status()
+		if got.Outcome != "unknown" || got.LatestReport == nil || got.LatestReport.ID != other.ID ||
+			got.LatestReceivedReport.ID != delayed.ID || got.LastExecutionAt == nil || *got.LastExecutionAt != other.FinishedAt ||
+			len(got.Configurations) != 2 || got.Configurations[0].LatestReport != nil ||
+			got.Configurations[1].LatestReport == nil || got.Configurations[1].LatestReport.ID != other.ID ||
+			got.Configurations[1].RevisionState != "current" {
+			t.Fatal("historical receipt displaced another configuration's current execution", got)
+		}
+		reopened, err := database.Connect(context.Background(), engine, dsn, time.Second)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer reopened.DB.Close()
+		reloaded, err := reopened.GetMachineStatus(context.Background(), machine.ID)
+		if err != nil || !reflect.DeepEqual(got, reloaded) {
+			t.Fatal("current/history selection did not survive a new database connection", reloaded, err)
 		}
 	})
 }
@@ -351,7 +484,7 @@ func TestConcurrentHistoryUploadsBothEngines(t *testing.T) {
 			}
 		}
 		got := decodeResponse[database.MachineStatus](t, apiRequest(t, handlers[0], admin.Key, "GET", base+"/status", "", 200))
-		if got.LatestReport.ID != page.Reports[0].ID {
+		if got.LatestReport != nil || got.LatestReceivedReport.ID != page.Reports[0].ID {
 			t.Fatal("status differs from persisted history")
 		}
 	})

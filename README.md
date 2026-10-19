@@ -432,9 +432,11 @@ body and retains `204` for creation/retry, using the same history.
 
 Both routes accept valid historical reports after desired changes or
 configuration deletion. Revisions are agent-reported associations, not proof
-that the machine installed or executed specific inputs. Latest means server
-acceptance order, not agent clock order; delayed executions can become latest,
-but duplicate retries never do.
+that the machine installed or executed specific inputs. History uses server
+acceptance order, not agent clock order. Current execution status first matches
+the desired revision, then selects its latest accepted execution. Delayed
+historical reports remain visible without replacing a current-revision result;
+duplicate retries never change either ordering.
 Reports/status never change desired-state revisions, representations or ETags.
 
 Admin `GET /v1/machines/{machineId}/reports` lists metadata newest first with
@@ -444,21 +446,25 @@ Admin `GET /v1/machines/{machineId}/reports` lists metadata newest first with
 object bytes, including unknown fields and exact numbers, without the wrapper.
 Machine keys cannot use any admin read, even for their own machine.
 
-Admin `GET /v1/machines/{machineId}/status` derives its latest report/timestamps
+Admin `GET /v1/machines/{machineId}/status` derives current-revision execution
 and per-configuration outcomes directly from SQL history and desired state.
+`latestReport` and `lastExecutionAt` describe current desired-revision execution;
+`latestReceivedReport` and `lastReportReceivedAt` expose receipts independently.
+Per-configuration entries likewise separate current execution from latest receipt.
 It distinguishes never-reported, successful, failed and canceled executions,
 and flags current/stale/removed/unreported configuration revisions separately.
-The aggregate covers current desired names: failed, then canceled, then
-unknown for missing executions, otherwise succeeded. History without any
+The aggregate covers current desired revisions: failed, then canceled, then
+unknown for missing current executions (including stale-only history), otherwise succeeded. History without any
 current desired names is unknown. Neither successful execution nor a receive
 timestamp implies the machine is online, healthy or compliant.
 See [status semantics](docs/api.md#report-history-and-machine-status).
 
 The existing `/configurations/{name}/status` and `/report` admin reads remain
-available for desired names. Before any report they return `404`
+available for desired names and select only the current desired revision.
+Until that revision has a report they return `404`
 (`report_not_found`); after desired deletion they return `configuration_not_found`.
-History remains accessible by report ID. Recreating a name may expose an old
-report whose revision is no longer current. All report/status responses are
+History remains accessible by report ID. Recreating a name does not inherit an
+old revision's execution status. All report/status responses are
 `no-store`. Only machine deletion cascades to report metadata.
 
 The server creates a flat, server-generated UUID `.json` filename exclusively

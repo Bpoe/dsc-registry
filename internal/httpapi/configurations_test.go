@@ -217,8 +217,8 @@ func TestConfigurationsHTTPBothEngines(t *testing.T) {
 		if recreated.Revision == first.Revision {
 			t.Fatal("recreated revision reused")
 		}
-		apiRequest(t, handler, admin.Key, "GET", path+"/docker/status", "", 200)
-		apiRequest(t, handler, admin.Key, "GET", path+"/docker/report", "", 200)
+		apiRequest(t, handler, admin.Key, "GET", path+"/docker/status", "", 404)
+		apiRequest(t, handler, admin.Key, "GET", path+"/docker/report", "", 404)
 		apiRequest(t, handler, key.Key, "POST", "/v1/agent/configurations/docker/report", `{}`, 400)
 		missing := "/v1/machines/" + uuid.NewString() + "/configurations"
 		for _, method := range []string{"GET", "PUT", "DELETE"} {

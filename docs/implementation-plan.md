@@ -111,12 +111,15 @@ mutation and file reads across instances. SQL references are relative filenames.
 SQLite migration 3 and PostgreSQL migration 4 migrate initial latest-status
 records to historical metadata without rewriting files, and remove the old
 independent status table. Machine status is derived from reports and current
-desired state; current/stale/removed/unreported revision states are distinct
-from execution outcomes and online health. New upload receipts use server UUIDs;
+desired state, selecting current-revision executions separately from latest
+received history. Delayed historical uploads cannot replace current execution
+results. Current/stale/removed/unreported revision states are distinct from
+execution outcomes and online health. New upload receipts use server UUIDs;
 the existing named upload retains its 204 response.
 Tests cover file and SQL-commit faults, interrupted-write orphans, concurrency,
 role/machine isolation, historical/deleted configurations, pagination,
-migration/rollback, restart, conflicting retries and desired ETag invariance.
+migration/rollback, restart, conflicting retries, delayed historical failures
+and successes, and desired ETag invariance.
 Bounded **offline** orphan maintenance requires all replicas stopped; see the
 [procedure](../README.md#bounded-offline-orphan-cleanup). No online scavenger,
 retention policy, DSC execution or sync-agent implementation is included.

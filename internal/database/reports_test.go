@@ -128,10 +128,9 @@ func TestReportsBothEngines(t *testing.T) {
 		if err != nil {
 			t.Fatal("historical retry rejected", err)
 		}
-		// The old status remains explicitly associated with its old revision.
-		after, err = store.GetConfigurationStatus(ctx, machine.ID, "one")
-		if err != nil || after.ConfigurationRevision != config.Revision {
-			t.Fatal("desired change relabeled an old execution", err)
+		// Historical executions do not imply execution of the new revision.
+		if _, err := store.GetConfigurationStatus(ctx, machine.ID, "one"); !errors.Is(err, ErrReportNotFound) {
+			t.Fatal("desired change reused an old execution", err)
 		}
 		upload.ConfigurationRevision = changed.Revision
 		upload.ID = uuid.NewString()

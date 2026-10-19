@@ -32,8 +32,8 @@ All routes below require an administrator key.
 | `PUT` | `/v1/machines/{machineId}/configurations/{name}` | Create-or-replace complete embedded template and optional parameters |
 | `GET` | `/v1/machines/{machineId}/configurations/{name}` | Get desired content and revision |
 | `DELETE` | `/v1/machines/{machineId}/configurations/{name}` | Remove desired configuration; `204`; no rollback on machine |
-| `GET` | `/v1/machines/{machineId}/configurations/{name}/status` | Latest execution summary only |
-| `GET` | `/v1/machines/{machineId}/configurations/{name}/report` | Latest full `dscd` result envelope, `application/json` |
+| `GET` | `/v1/machines/{machineId}/configurations/{name}/status` | Latest execution summary for the current desired revision |
+| `GET` | `/v1/machines/{machineId}/configurations/{name}/report` | Latest current-revision `dscd` result envelope, `application/json` |
 | `POST` | `/v1/machines/{machineId}/api-keys` | Issue key for machine; show secret once |
 | `GET` | `/v1/machines/{machineId}/api-keys` | Key IDs and metadata only; never secret |
 | `DELETE` | `/v1/machines/{machineId}/api-keys/{keyId}` | Revoke machine key |
@@ -396,10 +396,11 @@ route identifies an **admin-only** resource; machine keys cannot GET it.
 
 This is the existing per-configuration `/status` shape. `hasReport` is a
 computed Boolean, not a storage key. Its `/report` sibling returns the original
-dscd JSON object. Both require an existing desired configuration and return
-`404` before its first report; after deletion, use machine history instead.
-Recreating the same name may expose an older report at its original revision.
-Neither endpoint exposes internal filenames.
+dscd JSON object. Both select only reports matching the configuration's current
+desired content revision and return `404` (`report_not_found`) until that revision
+has a report. After configuration deletion they return `configuration_not_found`;
+use machine history instead. Recreating a name does not inherit an old
+revision's result. Neither endpoint exposes internal filenames.
 
 ### Report history and machine status
 
@@ -457,37 +458,54 @@ history and current desired configurations. Before any report:
   "lastReportReceivedAt": null,
   "lastExecutionAt": null,
   "latestReport": null,
+  "latestReceivedReport": null,
   "outcome": "never_reported",
   "hasStaleReports": false,
   "configurations": []
 }
 ```
 
-After reports, `latestReport` contains the complete metadata object shown
-above, including its reported content revision and report ID.
-`lastReportReceivedAt` is that report's server receive time; `lastExecutionAt`
-is its agent-reported `finishedAt`, **not** an online/health indicator or the
-maximum execution timestamp. Top-level `configurationRevision` is the
+`latestReport` contains the metadata of the most recently accepted execution
+that matches a current desired configuration name **and content revision**,
+or null if none exists. `lastExecutionAt` is that report's agent-reported
+`finishedAt`, or null. It is **not** an online/health indicator or the maximum
+execution timestamp.
+
+`latestReceivedReport` contains the most recently accepted report of any
+revision, including historical/removed configurations, or null before any
+report. `lastReportReceivedAt` is that report's server receive time. A delayed
+historical upload updates these receipt fields but cannot replace an existing
+current-revision result or change its execution timestamp. `hasReport`
+indicates any persisted history, not necessarily a current-revision execution.
+Top-level `configurationRevision` is the
 **current desired collection revision**, not an inferred reported collection
 revision: dscd reports describe one configuration, not a whole collection.
 
 `configurations` is sorted by name and includes current desired names and
 historically reported names. Each entry has `name`, nullable `desiredRevision`,
-`revisionState`, `outcome`, and nullable `latestReport` (the same metadata
-shape). `revisionState` is `unreported` if no report exists, `current` if the
-latest reported revision matches desired, `stale` if it differs, or `removed`
-if no desired configuration of that name exists. Per-name `outcome` is the
-latest report's outcome, or `never_reported`. `hasStaleReports` is true if any
-current desired name has a stale latest report.
+`revisionState`, `outcome`, nullable `latestReport`, and nullable
+`latestReceivedReport` (both use the metadata shape above). `latestReport`
+selects only the current desired revision; `latestReceivedReport` selects the
+latest receipt for that name regardless of revision. `revisionState` is
+`unreported` if no report exists, `current` if a report matches the desired
+revision, `stale` if reports exist only for other revisions, or `removed` if
+no desired configuration exists. Per-name `outcome` is the current report's
+outcome, `never_reported` for an unreported name, or `unknown` for stale/removed
+names. Historical execution outcomes remain visible inside
+`latestReceivedReport` and history. `hasStaleReports` is true only if some
+current desired name has history but no report matching its current revision.
 
-Aggregate `outcome` covers current desired names: `failed` takes precedence,
-then `canceled`, then `unknown` when some names have never reported, otherwise
+Aggregate `outcome` covers current desired revisions: `failed` takes precedence,
+then `canceled`, then `unknown` when some names lack a current-revision report, otherwise
 `succeeded`. Without any machine reports it is `never_reported`; with reports
 but no current desired names it is `unknown`. Removed names do not contribute
-to aggregate outcome. Staleness is independent: successful execution of old
-content remains `succeeded` with `revisionState: "stale"`. A delayed report can
-become latest by acceptance order; retrying an existing record cannot. Success
-never asserts online health or DSC compliance.
+to aggregate outcome. A successful current-revision execution remains successful
+and current when a delayed failed report for an older revision arrives; the
+reverse is also true, so historical success cannot hide current failure.
+Within the same current revision, later accepted executions can still change
+the outcome; there is no agent-side execution sequencing protocol. Retrying
+an existing record never changes either selection. Success never asserts
+online health or DSC compliance.
 
 ### Envelope validation and persistence
 
@@ -559,5 +577,5 @@ digest; later retries need no filesystem access.
 - YAML-to-JSON conversion is outside the server (e.g., in a CLI). Reordered object keys and insignificant whitespace are no-op PUTs; real content changes bump revisions. Null/missing parameters produce no sidecar, while `{}` creates an empty JSON parameter object.
 - Agent contract uses `managed/{name}.json`, optional `managed/{name}.parameters.json`, and the corresponding `.json.result.json` output path.
 - Valid `dscd` failure and success envelopes; `test` drift is not an execution failure; raw result retrievable byte-for-byte as a JSON value.
-- Report history and idempotency, conflicting upload identities, historical/deleted configuration reports, pagination, machine status, file write failure, SQL commit failure, orphan behavior, retry after interruption.
+- Report history and idempotency, conflicting upload identities, historical/deleted configuration reports, pagination, machine status, late historical reports not replacing current execution status, file write failure, SQL commit failure, orphan behavior, retry after interruption.
 - PostgreSQL and SQLite migrations/data behavior parity; concurrent requests; readiness and graceful shutdown.

@@ -184,7 +184,7 @@ func (a *adminAPI) reportError(w http.ResponseWriter, err error) {
 	case errors.Is(err, database.ErrReportCursor):
 		writeError(w, http.StatusBadRequest, "invalid_pagination", "Report cursor does not belong to this machine")
 	case errors.Is(err, database.ErrReportNotFound):
-		writeError(w, http.StatusNotFound, "report_not_found", "No report has been received")
+		writeError(w, http.StatusNotFound, "report_not_found", "No matching report has been received")
 	default:
 		a.configurationError(w, err)
 	}

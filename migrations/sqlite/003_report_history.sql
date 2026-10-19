@@ -18,6 +18,7 @@ CREATE TABLE reports (
     UNIQUE (machine_id, name, upload_id)
 );
 CREATE INDEX reports_configuration_latest ON reports(machine_id, name, sequence DESC);
+CREATE INDEX reports_configuration_revision_latest ON reports(machine_id, name, configuration_revision, sequence DESC);
 CREATE INDEX reports_path ON reports(report_path);
 
 INSERT INTO reports

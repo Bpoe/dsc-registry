@@ -200,7 +200,8 @@ func (s *Store) latestConfigurationReport(ctx context.Context, id, name string, 
 		}
 		var path string
 		err := tx.QueryRowContext(ctx, `SELECT `+reportColumns+`,report_path FROM reports
-			WHERE machine_id = $1 AND name = $2 ORDER BY sequence DESC LIMIT 1`, id, name).
+			WHERE machine_id = $1 AND name = $2 AND configuration_revision = $3
+			ORDER BY sequence DESC LIMIT 1`, id, name, revision).
 			Scan(append(item.fields(), &path)...)
 		if errors.Is(err, sql.ErrNoRows) {
 			return ErrReportNotFound
