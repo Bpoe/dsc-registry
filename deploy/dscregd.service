@@ -1,0 +1,23 @@
+[Unit]
+Description=DSC Registry configuration delivery API
+After=network-online.target
+Wants=network-online.target
+# Add RequiresMountsFor=/var/lib/dscregd/reports in a drop-in for an NFS root.
+
+[Service]
+User=dscregd
+Group=dscregd
+ExecStart=/usr/local/bin/dscregd -config /etc/dscregd/config.json
+Restart=on-failure
+RestartSec=5s
+TimeoutStopSec=25s
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/dscregd
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+[Install]
+WantedBy=multi-user.target

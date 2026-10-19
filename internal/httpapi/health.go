@@ -53,11 +53,7 @@ func New(db *database.Store, reports *reportstore.Store, timeout, requestTimeout
 		start := time.Now()
 		response := &responseWriter{ResponseWriter: w, status: http.StatusOK}
 		handler.ServeHTTP(response, r)
-		route := "unmatched"
-		if r.URL.Path == "/health/live" || r.URL.Path == "/health/ready" {
-			route = r.URL.Path
-		}
-		logger.Info("http request", "method", r.Method, "route", route,
+		logger.Info("http request", "method", methodLabel(r.Method), "route", routeLabel(r.URL.Path),
 			"status", response.status, "duration", time.Since(start))
 	})
 }
@@ -136,10 +132,26 @@ type apiError struct {
 
 type responseWriter struct {
 	http.ResponseWriter
-	status int
+	status      int
+	wroteHeader bool
 }
 
 func (w *responseWriter) WriteHeader(status int) {
-	w.status = status
+	if w.wroteHeader {
+		return
+	}
+	if status >= 200 {
+		w.wroteHeader = true
+		w.status = status
+	}
 	w.ResponseWriter.WriteHeader(status)
 }
+
+func (w *responseWriter) Write(p []byte) (int, error) {
+	if !w.wroteHeader {
+		w.WriteHeader(http.StatusOK)
+	}
+	return w.ResponseWriter.Write(p)
+}
+
+func (w *responseWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }

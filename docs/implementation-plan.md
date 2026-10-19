@@ -1,6 +1,6 @@
 # DSC Registry — staged Copilot implementation plan
 
-The product behavior is defined by [design.md](design.md) and [api.md](api.md). Implement in small, reviewable PRs. **Do not implement the whole roadmap in one PR.** PR 1 through PR 4 are implemented; the CI-only portion of PR 5 is moved forward below. The remaining production-readiness work (PR 5) remains a separate milestone.
+The product behavior is defined by [design.md](design.md) and [api.md](api.md). Implement in small, reviewable PRs. **Do not implement the whole roadmap in one PR.** PR 1 through PR 4 are implemented. PR 5's production-readiness implementation is described below; its real-NFS demonstration remains an explicit external acceptance gate.
 
 ## Repository shape
 
@@ -104,6 +104,27 @@ and requires it in CI. This does not start PR 3 or the rest of PR 5.
 - Demonstrate two active API replicas sharing PostgreSQL and an NFS mount under a load balancer. This **does not** prove a machine-count capacity guarantee.
 
 **Done when:** repeatable install, safe restart and recovery, readable operator docs, and fault tests.
+
+Implemented: bounded per-route/method request signals, report direct-write
+timings, SQL transaction outcomes/timings/pool-wait signals, redaction tests,
+persisted report/idempotency/ETag restart coverage on both engines, report
+envelope fuzzing, and bounded CI fuzz smoke runs. Existing write/sync/close,
+commit, locking, migration, auth and input-bound fault tests are retained.
+The [operator runbook](operations.md) covers Linux/systemd and container
+installation, database connections/migrations, real NFS mount startup gates,
+TLS, key rotation/lost-key recovery, paired cold backup/restore and monitoring.
+A disposable two-replica PostgreSQL/TLS harness exercises shared-volume
+dependency failures, restart, cold restore, rotation and log canaries in CI.
+
+**Not fully demonstrated:** default CI uses a shared Docker volume, not NFS.
+The harness's opt-in real-NFS mode checks an operator-provided existing
+`nfs`/`nfs4` mount and never provisions it. No such export is available on
+the current Windows host or standard hosted CI. Record a successful NFS-mode
+run against the delivered commit before closing this acceptance gate. Local
+Windows execution also cannot run Docker/PostgreSQL or the race detector
+without the missing external tools. CI supplies Linux normal/race parity
+and amd64/arm64 validation; it is not multi-host HA, NFS server-failure
+certification, or a machine-capacity guarantee. No sync-agent work is included.
 
 ## Separate project: dscsyncd
 
