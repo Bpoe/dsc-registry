@@ -43,6 +43,8 @@ jobs:
       - name: Test asset verification
         run: python3 -m unittest discover -s packaging -p 'test_*.py'
       - name: Install pinned packager
+        env:
+          GOTOOLCHAIN: go1.26.4
         run: |
           GOBIN="$RUNNER_TEMP/package-tools" go install github.com/goreleaser/nfpm/v2/cmd/nfpm@v2.47.0
           echo "$RUNNER_TEMP/package-tools" >> "$GITHUB_PATH"

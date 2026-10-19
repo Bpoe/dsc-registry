@@ -32,7 +32,7 @@ try {
     Copy-Item docs -Destination $package -Recurse
     Copy-Item "$PSScriptRoot\config.example.json" -Destination $package
     Compress-Archive -Path $package -DestinationPath "$output\dscregd-$Version-windows-amd64.zip"
-    dotnet build "$PSScriptRoot\msi\dscregd.wixproj" --configuration Release --nologo --no-incremental `
+    dotnet build "$PSScriptRoot\msi\dscregd.wixproj" --configuration Release --nologo --no-incremental --verbosity diagnostic `
         "-p:ReleaseVersion=$Version" "-p:ProductVersion=$productVersion" "-p:BinaryPath=$binary" `
         "-p:BaseIntermediateOutputPath=$stage\obj\" "-p:MSBuildProjectExtensionsPath=$stage\obj\" `
         "-p:OutputPath=$stage\msi\"
