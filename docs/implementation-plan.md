@@ -1,6 +1,6 @@
 # DSC Registry — staged Copilot implementation plan
 
-The product behavior is defined by [design.md](design.md) and [api.md](api.md). Implement in small, reviewable PRs. **Do not implement the whole roadmap in one PR.** No GitHub repository changes have been made by this document package.
+The product behavior is defined by [design.md](design.md) and [api.md](api.md). Implement in small, reviewable PRs. **Do not implement the whole roadmap in one PR.** PR 1 and PR 2 are implemented; the CI-only portion of PR 5 is moved forward below.
 
 ## Repository shape
 
@@ -66,9 +66,15 @@ Prefer fewer packages if the implementation remains small. Do **not** create emp
 
 ## PR 5 — production readiness
 
-- Run integration tests against a disposable PostgreSQL instance plus SQLite; race tests and fuzz/input bounds where useful.
+**CI moved forward after PR 2:** [the CI workflow](../.github/workflows/ci.yml)
+checks formatting with an explicit failure, module verification, vet, normal
+and race tests against SQLite and a disposable PostgreSQL 16 service, and Linux
+amd64/arm64 builds. It uses the existing `DSCREGISTRY_TEST_POSTGRES_DSN` test hook
+and requires it in CI. This does not start PR 3 or the rest of PR 5.
+
+- Continue expanding integration coverage against PostgreSQL plus SQLite as features land; add fuzz/input bounds where useful.
 - Document Linux/container deployment, database connection strings/migrations, filesystem/NFS mounts, TLS termination, API-key rotation/recovery and backup/restore.
-- Set up CI for format, `go vet`, tests, race on supported targets, and build for Linux amd64/arm64. Optional Windows executable support is separate from running a Windows sync client.
+- Keep CI coverage aligned with new features. Optional Windows executable support is separate from running a Windows sync client.
 - Observability: request rate/error/latency, report write times, DB transaction/error metrics, readiness, redaction verification.
 - Demonstrate two active API replicas sharing PostgreSQL and an NFS mount under a load balancer. This **does not** prove a machine-count capacity guarantee.
 

@@ -1,0 +1,92 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  checks:
+    name: Go checks (SQLite and PostgreSQL)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: dscregistry
+          POSTGRES_PASSWORD: ci-only-password
+          POSTGRES_DB: dscregistry_test
+        ports:
+          - 5432/tcp
+        options: >-
+          --health-cmd "pg_isready -U dscregistry -d dscregistry_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    env:
+      CGO_ENABLED: "1"
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version-file: go.mod
+      - name: Check formatting
+        shell: bash
+        run: |
+          mapfile -d '' files < <(git ls-files -z -- '*.go')
+          unformatted="$(gofmt -l "${files[@]}")"
+          if [[ -n "$unformatted" ]]; then
+            printf 'Unformatted Go files:\n%s\n' "$unformatted"
+            exit 1
+          fi
+      - name: Verify modules
+        run: go mod verify
+      - name: Vet
+        run: go vet ./...
+      - name: Configure PostgreSQL integration
+        shell: bash
+        env:
+          POSTGRES_PORT: ${{ job.services.postgres.ports['5432'] }}
+        run: |
+          : "${POSTGRES_PORT:?PostgreSQL service port must be available}"
+          printf 'DSCREGISTRY_TEST_POSTGRES_DSN=postgres://dscregistry:ci-only-password@127.0.0.1:%s/dscregistry_test?sslmode=disable\n' "$POSTGRES_PORT" >> "$GITHUB_ENV"
+      - name: Test SQLite and PostgreSQL
+        shell: bash
+        run: |
+          : "${DSCREGISTRY_TEST_POSTGRES_DSN:?PostgreSQL integration must be configured}"
+          go test -count=1 -timeout=5m -v ./...
+      - name: Race test SQLite and PostgreSQL
+        run: go test -race -count=1 -timeout=5m -v ./...
+
+  build:
+    name: Build Linux ${{ matrix.arch }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [amd64, arm64]
+    env:
+      CGO_ENABLED: "0"
+      GOOS: linux
+      GOARCH: ${{ matrix.arch }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version-file: go.mod
+      - name: Build
+        run: go build ./...
