@@ -1,0 +1,20 @@
+#!/bin/sh
+set -eu
+
+if ! getent passwd dscregd >/dev/null; then
+    useradd --system --user-group --home-dir /var/lib/dscregd --shell /usr/sbin/nologin dscregd
+fi
+for directory in /etc/dscregd /var/lib/dscregd /var/lib/dscregd/reports; do
+    if [ ! -d "$directory" ]; then
+        install -d -o dscregd -g dscregd -m 0700 "$directory"
+    fi
+done
+
+# Configuration and one-time administrator bootstrap remain explicit operator actions.
+if [ -d /run/systemd/system ]; then
+    systemctl daemon-reload
+    case "$1" in
+        configure) if [ -n "${2:-}" ]; then systemctl try-restart dscregd.service; fi ;;
+        2) systemctl try-restart dscregd.service ;;
+    esac
+fi

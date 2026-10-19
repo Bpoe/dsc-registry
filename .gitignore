@@ -34,6 +34,10 @@ go.work.sum
 /registry.db
 /registry.db-wal
 /registry.db-shm
+/dist/
+/packaging/windows/msi/bin/
+/packaging/windows/msi/obj/
+__pycache__/
 
 # Editor/IDE
 # .idea/

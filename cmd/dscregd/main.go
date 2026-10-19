@@ -23,10 +23,20 @@ import (
 )
 
 func main() {
+	if printVersion(os.Args[1:], os.Stdout) {
+		return
+	}
 	logger := slog.New(slog.NewJSONHandler(os.Stderr, nil))
 	if len(os.Args) > 1 && os.Args[1] == "bootstrap" {
 		if err := bootstrap(context.Background(), os.Args[2:], os.Stdout); err != nil && !errors.Is(err, flag.ErrHelp) {
 			logger.Error("bootstrap failed", "error", err)
+			os.Exit(1)
+		}
+		return
+	}
+	if handled, err := platformService(os.Args[1:]); handled {
+		if err != nil {
+			logger.Error("Windows service failed", "reason", "service_dispatch_failure")
 			os.Exit(1)
 		}
 		return
@@ -49,6 +59,10 @@ func main() {
 }
 
 func run(ctx context.Context, settings config.Settings, logger *slog.Logger) (err error) {
+	return runWithReady(ctx, settings, logger, nil)
+}
+
+func runWithReady(ctx context.Context, settings config.Settings, logger *slog.Logger, ready func()) (err error) {
 	if err := settings.Validate(); err != nil {
 		return err
 	}
@@ -95,6 +109,9 @@ func run(ctx context.Context, settings config.Settings, logger *slog.Logger) (er
 		TLSConfig:         tlsConfig,
 	}
 	logger.Info("server listening", "address", listener.Addr().String())
+	if ready != nil {
+		ready()
+	}
 	return serve(ctx, server, listener, settings, logger)
 }
 

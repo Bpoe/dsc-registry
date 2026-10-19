@@ -1,0 +1,7 @@
+#!/bin/sh
+set -eu
+
+if [ -d /run/systemd/system ]; then
+    systemctl daemon-reload
+fi
+# Preserve the service account, configuration, database and reports, including on purge.

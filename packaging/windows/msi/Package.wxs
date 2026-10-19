@@ -1,0 +1,72 @@
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Package Name="DSC Registry" Manufacturer="DSC Registry contributors"
+           Version="$(var.ProductVersion)" UpgradeCode="{B1A10519-46A9-4C27-8051-97987B228384}"
+           Scope="perMachine" InstallerVersion="500" Language="1033">
+    <SummaryInformation Description="dscregd $(var.ReleaseVersion) Windows x64 installer" />
+    <MajorUpgrade DowngradeErrorMessage="A newer version of DSC Registry is already installed."
+                  Schedule="afterInstallInitialize" />
+    <MediaTemplate EmbedCab="yes" />
+    <Property Id="ARPNOMODIFY" Value="1" />
+    <StandardDirectory Id="ProgramFiles64Folder">
+      <Directory Id="INSTALLFOLDER" Name="dscregd">
+        <Component Id="Daemon" Guid="{5D1F6D3E-8D11-4C26-AEAE-027455923A73}" Bitness="always64">
+          <File Id="DaemonFile" Source="$(var.BinaryPath)" Name="dscregd.exe" KeyPath="yes"
+                DefaultVersion="$(var.ProductVersion).0" DefaultLanguage="0" />
+          <!-- Manual start: operators must configure TLS and bootstrap privately first. -->
+          <ServiceInstall Id="RegistryService" Name="dscregd" DisplayName="DSC Registry"
+                          Description="Delivers machine-scoped DSC configuration and stores execution reports."
+                          Type="ownProcess" Start="demand" ErrorControl="normal"
+                          Account="NT AUTHORITY\LocalService" Vital="yes"
+                          Arguments='-config "[DATAFOLDER]config.json"' />
+          <ServiceControl Id="RegistryControl" Name="dscregd" Stop="both" Remove="uninstall" Wait="yes" />
+        </Component>
+        <Component Id="Documentation" Guid="{66AA4799-B00E-4579-A426-9B9423346BDB}" Bitness="always64">
+          <File Source="$(sys.SOURCEFILEDIR)..\..\..\LICENSE" KeyPath="yes" />
+          <File Source="$(sys.SOURCEFILEDIR)..\..\..\README.md" />
+          <File Source="$(sys.SOURCEFILEDIR)..\config.example.json" />
+        </Component>
+        <Directory Id="DOCSFOLDER" Name="docs">
+          <Component Id="Operations" Guid="{E2C986E8-3CD9-464E-8BD0-E210B1199A2A}" Bitness="always64">
+            <File Source="$(sys.SOURCEFILEDIR)..\..\..\docs\operations.md" KeyPath="yes" />
+            <File Source="$(sys.SOURCEFILEDIR)..\..\..\docs\api.md" />
+            <File Source="$(sys.SOURCEFILEDIR)..\..\..\docs\design.md" />
+            <File Source="$(sys.SOURCEFILEDIR)..\..\..\docs\implementation-plan.md" />
+          </Component>
+        </Directory>
+        <Component Id="EventSource" Guid="{A70F8F98-4327-4C94-B311-9DB159323AE5}" Bitness="always64">
+          <RegistryKey Root="HKLM" Key="SYSTEM\CurrentControlSet\Services\EventLog\Application\dscregd"
+                       ForceDeleteOnUninstall="yes">
+            <RegistryValue Name="EventMessageFile" Type="expandable"
+                           Value="[System64Folder]EventCreate.exe" KeyPath="yes" />
+            <RegistryValue Name="TypesSupported" Type="integer" Value="7" />
+            <RegistryValue Name="CustomSource" Type="integer" Value="1" />
+          </RegistryKey>
+        </Component>
+      </Directory>
+    </StandardDirectory>
+    <StandardDirectory Id="CommonAppDataFolder">
+      <Directory Id="DATAFOLDER" Name="dscregd">
+        <Component Id="DataDirectory" Guid="{CEB9E949-E9B6-4566-A755-BB623763AD19}" Bitness="always64" Permanent="yes">
+          <CreateFolder>
+            <PermissionEx Sddl="O:SYG:SYD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;FA;;;LS)" />
+          </CreateFolder>
+        </Component>
+        <Directory Id="REPORTSFOLDER" Name="reports">
+          <Component Id="ReportsDirectory" Guid="{93B51C42-2B73-4C7F-BA5A-37B52C87AC34}" Bitness="always64" Permanent="yes">
+            <CreateFolder>
+              <PermissionEx Sddl="O:SYG:SYD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;FA;;;LS)" />
+            </CreateFolder>
+          </Component>
+        </Directory>
+      </Directory>
+    </StandardDirectory>
+    <Feature Id="Complete" Title="DSC Registry" Level="1">
+      <ComponentRef Id="Daemon" />
+      <ComponentRef Id="Documentation" />
+      <ComponentRef Id="Operations" />
+      <ComponentRef Id="EventSource" />
+      <ComponentRef Id="DataDirectory" />
+      <ComponentRef Id="ReportsDirectory" />
+    </Feature>
+  </Package>
+</Wix>

@@ -1,0 +1,9 @@
+#!/bin/sh
+set -eu
+
+if [ "$1" = remove ] || [ "$1" = deconfigure ] || [ "$1" = 0 ]; then
+    if [ -d /run/systemd/system ]; then
+        systemctl stop dscregd.service
+    fi
+    systemctl disable dscregd.service
+fi

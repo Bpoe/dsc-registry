@@ -1,0 +1,125 @@
+name: Package lifecycle
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        type: string
+        required: true
+      commit:
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  linux:
+    name: Linux ${{ matrix.arch }} packages
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            rpm_arch: x86_64
+            runner: ubuntu-24.04
+          - arch: arm64
+            rpm_arch: aarch64
+            runner: ubuntu-24.04-arm
+    env:
+      VERSION: ${{ inputs.version }}
+      COMMIT: ${{ inputs.commit }}
+      GOARCH: ${{ matrix.arch }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ inputs.commit }}
+          persist-credentials: false
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version-file: go.mod
+      - name: Test asset verification
+        run: python3 -m unittest discover -s packaging -p 'test_*.py'
+      - name: Install pinned packager
+        run: |
+          GOBIN="$RUNNER_TEMP/package-tools" go install github.com/goreleaser/nfpm/v2/cmd/nfpm@v2.47.0
+          echo "$RUNNER_TEMP/package-tools" >> "$GITHUB_PATH"
+      - name: Build archives, DEB and RPM
+        run: bash packaging/linux/build.sh "$RUNNER_TEMP/packages"
+      - name: Verify package checksums
+        working-directory: ${{ runner.temp }}/packages
+        run: sha256sum --check --strict SHA256SUMS
+      - name: DEB lifecycle with systemd
+        run: |
+          sudo env GITHUB_ACTIONS=true VERSION="$VERSION" COMMIT="$COMMIT" GOARCH="$GOARCH" \
+            bash packaging/linux/test-install.sh \
+            "$RUNNER_TEMP/packages/dscregd_${VERSION#v}_${GOARCH}.deb" \
+            "$RUNNER_TEMP/packages/dscregd-$VERSION-linux-$GOARCH.tar.gz"
+      - name: RPM lifecycle in Fedora (no systemd)
+        env:
+          RPM_ARCH: ${{ matrix.rpm_arch }}
+        run: |
+          docker run --rm -e GITHUB_ACTIONS=true -e VERSION -e COMMIT -e GOARCH -e RPM_ARCH \
+            -v "$RUNNER_TEMP/packages:/packages:ro" -v "$GITHUB_WORKSPACE:/source:ro" \
+            -w /source fedora:43 bash -euc '
+              dnf install -y python3 shadow-utils util-linux systemd
+              bash packaging/linux/test-install.sh "/packages/dscregd-${VERSION#v}-1.$RPM_ARCH.rpm" \
+                "/packages/dscregd-$VERSION-linux-$GOARCH.tar.gz"
+            '
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: dscregd-linux-${{ matrix.arch }}
+          path: ${{ runner.temp }}/packages/*
+          if-no-files-found: error
+          overwrite: true
+
+  windows:
+    name: Windows amd64 ZIP and MSI
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ inputs.commit }}
+          persist-credentials: false
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version-file: go.mod
+      - uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
+        with:
+          dotnet-version: 10.0.x
+      - name: Test MSI version mapping
+        run: .\packaging\windows\msi\test-version.ps1
+      - name: Build ZIP and MSI
+        env:
+          VERSION: ${{ inputs.version }}
+          COMMIT: ${{ inputs.commit }}
+        run: |
+          .\packaging\windows\build.ps1 -Version $env:VERSION -Commit $env:COMMIT `
+            -OutputDirectory "$env:RUNNER_TEMP\packages"
+      - name: Verify package checksums
+        shell: bash
+        working-directory: ${{ runner.temp }}/packages
+        run: sha256sum --check --strict SHA256SUMS
+      - name: MSI lifecycle under SCM
+        env:
+          VERSION: ${{ inputs.version }}
+          COMMIT: ${{ inputs.commit }}
+        run: |
+          .\packaging\windows\test-install.ps1 -Version $env:VERSION -Commit $env:COMMIT `
+            -PackageDirectory "$env:RUNNER_TEMP\packages"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: dscregd-windows-amd64
+          path: ${{ runner.temp }}/packages/*
+          if-no-files-found: error
+          overwrite: true
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: failure()
+        with:
+          name: windows-msi-diagnostics
+          path: ${{ runner.temp }}/dscregd-msi-install.log
+          if-no-files-found: ignore
+          overwrite: true

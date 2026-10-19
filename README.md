@@ -16,6 +16,22 @@ for installation, mounts, TLS, key recovery and paired backup/restore.
 See [the staged plan](docs/implementation-plan.md)
 and the [API](docs/api.md) and [design](docs/design.md) contracts.
 
+## Releases
+
+Stable `vMAJOR.MINOR.PATCH` tags on commits already in `main` run the
+[release pipeline](.github/workflows/release.yml). It reruns CI and creates a
+**draft GitHub release** with Linux amd64/arm64 tarballs, DEB/RPM packages,
+a Windows amd64 ZIP/MSI, and `SHA256SUMS`. Review the draft before publishing.
+No Microsoft DSC executable is bundled or required.
+
+Packages register services but do not start them, install an active
+configuration, or bootstrap credentials. See
+[release installation and maintainer instructions](docs/operations.md#release-packages)
+for verification, protected configuration, Windows service hosting and release
+recovery. Builds are unsigned; checksums detect corruption, not publisher identity.
+`dscregd --version` prints the embedded release version and source commit
+without opening configuration, database or report storage.
+
 ## Local startup
 
 Requires Go 1.26 or newer. The pure-Go SQLite driver does not require a C compiler.
@@ -480,10 +496,15 @@ normal and race suites on a non-root Linux host. Both suites configure
 `DSCREGISTRY_TEST_POSTGRES_DSN` against a disposable PostgreSQL 16 service, so
 the existing SQLite and PostgreSQL integration cases run together; missing
 PostgreSQL configuration fails CI rather than opting out. Separate builds
-check Linux amd64 and arm64 with CGO disabled. CI does not publish artifacts
-or deploy the server. A Windows job also exercises server transports (including
+check Linux amd64 and arm64 with CGO disabled. A Windows job also exercises server transports (including
 verified native HTTPS), configuration and SQLite startup/shutdown, and builds
-the executable.
+the executable. After these checks, the reusable
+[package workflow](.github/workflows/packages.yml) builds archives and native
+installers, exercises fresh install, authorization/ETag/restart and uninstall
+on disposable Linux amd64/arm64 and Windows amd64 runners, and uploads the
+verified packages as run artifacts. RPM tests run in Fedora without systemd;
+DEB tests use systemd and Windows MSI tests use SCM. CI does not deploy the
+server or publish a GitHub release; the tag workflow creates a draft separately.
 
 CI additionally runs bounded desired/report fuzz smoke tests and the isolated
 two-replica PostgreSQL/TLS demo with dependency faults and cold paired restore.
