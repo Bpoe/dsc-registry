@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -51,14 +50,9 @@ func reportSetup(t *testing.T, engine, dsn string) (*Store, *reportstore.Store, 
 func publish(t *testing.T, store *Store, files *reportstore.Store, id string, upload report.Upload) string {
 	t.Helper()
 	ctx := context.Background()
-	previous, err := store.PublishReport(ctx, id, "one", upload, func() (string, error) { return files.Write(ctx, upload.Result) })
+	_, err := store.PublishReport(ctx, id, "one", upload, func() (string, error) { return files.Write(ctx, upload.Result) }, reportReader(ctx, files))
 	if err != nil {
 		t.Fatal(err)
-	}
-	if previous != "" {
-		if err := store.RetireReport(ctx, previous, files.Remove); err != nil {
-			t.Fatal(err)
-		}
 	}
 	var current string
 	if err := store.ReadReport(ctx, id, "one", func(path string) error {
@@ -72,6 +66,10 @@ func publish(t *testing.T, store *Store, files *reportstore.Store, id string, up
 		t.Fatal(err)
 	}
 	return current
+}
+
+func reportReader(ctx context.Context, files *reportstore.Store) func(string) ([]byte, error) {
+	return func(path string) ([]byte, error) { return files.Read(ctx, path, 1<<20) }
 }
 
 func TestReportsBothEngines(t *testing.T) {
@@ -89,11 +87,11 @@ func TestReportsBothEngines(t *testing.T) {
 		}
 		// The same upload survives a new API instance/connection pool.
 		second := testStore(t, engine, dsn)
-		previous, err := second.PublishReport(ctx, machine.ID, "one", upload, func() (string, error) {
+		retried, err := second.PublishReport(ctx, machine.ID, "one", upload, func() (string, error) {
 			t.Error("retry wrote a second file")
 			return "", errors.New("must not write")
-		})
-		if err != nil || previous != "" {
+		}, reportReader(ctx, files))
+		if err != nil || retried.Created || retried.Report.ID != before.ReportID {
 			t.Fatal("retry failed", err)
 		}
 		after, err := second.GetConfigurationStatus(ctx, machine.ID, "one")
@@ -111,8 +109,8 @@ func TestReportsBothEngines(t *testing.T) {
 		if next == first {
 			t.Fatal("new execution reused file")
 		}
-		if _, err := os.Stat(filepath.Join(root, first)); !errors.Is(err, os.ErrNotExist) {
-			t.Fatal("previous report not retired", err)
+		if _, err := os.Stat(filepath.Join(root, first)); err != nil {
+			t.Fatal("historical report was retired", err)
 		}
 		snapshot, err := store.ConfigurationSnapshot(ctx, machine.ID)
 		if err != nil || snapshot.ConfigurationRevision != config.MachineConfigurationRevision ||
@@ -124,18 +122,18 @@ func TestReportsBothEngines(t *testing.T) {
 			t.Fatal(err)
 		}
 		_, err = store.PublishReport(ctx, machine.ID, "one", upload, func() (string, error) {
-			t.Error("stale upload wrote a file")
+			t.Error("historical retry wrote a file")
 			return "", nil
-		})
-		if !errors.Is(err, ErrStaleRevision) {
-			t.Fatal("stale retry accepted", err)
+		}, reportReader(ctx, files))
+		if err != nil {
+			t.Fatal("historical retry rejected", err)
 		}
-		// The old status remains explicitly associated with its old revision.
-		after, err = store.GetConfigurationStatus(ctx, machine.ID, "one")
-		if err != nil || after.ConfigurationRevision != config.Revision {
-			t.Fatal("desired change relabeled an old execution", err)
+		// Historical executions do not imply execution of the new revision.
+		if _, err := store.GetConfigurationStatus(ctx, machine.ID, "one"); !errors.Is(err, ErrReportNotFound) {
+			t.Fatal("desired change reused an old execution", err)
 		}
 		upload.ConfigurationRevision = changed.Revision
+		upload.ID = uuid.NewString()
 		publish(t, store, files, machine.ID, upload)
 		if err := store.DeleteConfiguration(ctx, machine.ID, "one"); err != nil {
 			t.Fatal(err)
@@ -143,12 +141,16 @@ func TestReportsBothEngines(t *testing.T) {
 		_, err = store.PublishReport(ctx, machine.ID, "one", upload, func() (string, error) {
 			t.Error("removed configuration wrote report")
 			return "", nil
-		})
-		if !errors.Is(err, ErrConfigurationNotFound) {
-			t.Fatal("removed configuration accepted", err)
+		}, reportReader(ctx, files))
+		if err != nil {
+			t.Fatal("removed configuration retry rejected", err)
 		}
 		if _, err := store.GetConfigurationStatus(ctx, machine.ID, "one"); !errors.Is(err, ErrConfigurationNotFound) {
 			t.Fatal("status survived deletion", err)
+		}
+		reports, err := store.ListReports(ctx, machine.ID, "", 100)
+		if err != nil || len(reports) != 3 {
+			t.Fatal("configuration deletion lost report history", reports, err)
 		}
 	})
 }
@@ -166,7 +168,7 @@ func TestReportFailuresBothEngines(t *testing.T) {
 		upload.ID = uuid.NewString()
 		_, err = store.PublishReport(ctx, machine.ID, "one", upload, func() (string, error) {
 			return "", errors.New("injected file write/close failure")
-		})
+		}, reportReader(ctx, files))
 		if err == nil {
 			t.Fatal("file failure acknowledged")
 		}
@@ -175,16 +177,16 @@ func TestReportFailuresBothEngines(t *testing.T) {
 			t.Fatal("file failure changed prior status", err)
 		}
 		// Both engines reject this deferred FK at COMMIT, after the new
-		// report file and the status INSERT/UPDATE have succeeded.
+		// report file and the metadata INSERT have succeeded.
 		exec(t, store.DB, `CREATE TABLE fault_parent(id INTEGER PRIMARY KEY)`)
 		exec(t, store.DB, `CREATE TABLE fault_child(id INTEGER REFERENCES fault_parent(id) DEFERRABLE INITIALLY DEFERRED)`)
 		if engine == "sqlite" {
-			exec(t, store.DB, `CREATE TRIGGER fail_commit AFTER UPDATE ON configuration_status
+			exec(t, store.DB, `CREATE TRIGGER fail_commit AFTER INSERT ON reports
 				BEGIN INSERT INTO fault_child VALUES (1); END`)
 		} else {
 			exec(t, store.DB, `CREATE FUNCTION fail_commit() RETURNS trigger LANGUAGE plpgsql AS $$
 				BEGIN INSERT INTO fault_child VALUES (1); RETURN NEW; END $$`)
-			exec(t, store.DB, `CREATE TRIGGER fail_commit AFTER UPDATE ON configuration_status
+			exec(t, store.DB, `CREATE TRIGGER fail_commit AFTER INSERT ON reports
 				FOR EACH ROW EXECUTE FUNCTION fail_commit()`)
 		}
 		var orphan string
@@ -192,7 +194,7 @@ func TestReportFailuresBothEngines(t *testing.T) {
 			var err error
 			orphan, err = files.Write(ctx, upload.Result)
 			return orphan, err
-		})
+		}, reportReader(ctx, files))
 		if err == nil || orphan == "" {
 			t.Fatal("commit failure not injected after write", err)
 		}
@@ -224,7 +226,7 @@ func TestReportFailuresBothEngines(t *testing.T) {
 		if engine == "sqlite" {
 			exec(t, store.DB, "DROP TRIGGER fail_commit")
 		} else {
-			exec(t, store.DB, "DROP TRIGGER fail_commit ON configuration_status")
+			exec(t, store.DB, "DROP TRIGGER fail_commit ON reports")
 		}
 		publish(t, store, files, machine.ID, upload)
 	})
@@ -269,11 +271,8 @@ func TestConcurrentReportsAndReadsBothEngines(t *testing.T) {
 					} else {
 						next := upload
 						next.ID = uuid.NewString()
-						old, err := db.PublishReport(ctx, machine.ID, "one", next,
-							func() (string, error) { return fs.Write(ctx, next.Result) })
-						if err == nil && old != "" {
-							err = db.RetireReport(ctx, old, fs.Remove)
-						}
+						_, err := db.PublishReport(ctx, machine.ID, "one", next,
+							func() (string, error) { return fs.Write(ctx, next.Result) }, reportReader(ctx, fs))
 						if err != nil {
 							errs <- err
 							return
@@ -288,9 +287,10 @@ func TestConcurrentReportsAndReadsBothEngines(t *testing.T) {
 			t.Fatal(err)
 		}
 		entries, err := os.ReadDir(root)
-		if err != nil || len(entries) != 1 {
+		if err != nil || len(entries) != 65 {
 			t.Fatal("concurrent publications leaked/missed files", len(entries), err)
 		}
+		assertCount(t, store.DB, "reports", 65)
 	})
 }
 
@@ -313,12 +313,12 @@ func TestConcurrentReportRetriesBothEngines(t *testing.T) {
 				if worker%2 == 1 {
 					db = second
 				}
-				old, err := db.PublishReport(ctx, machine.ID, "one", upload, func() (string, error) {
+				result, err := db.PublishReport(ctx, machine.ID, "one", upload, func() (string, error) {
 					writes.Add(1)
 					return files.Write(ctx, upload.Result)
-				})
-				if err == nil && old != "" {
-					err = errors.New("same upload replaced current file")
+				}, reportReader(ctx, files))
+				if err == nil && !validRevision(result.Report.ID) {
+					err = errors.New("missing server report ID")
 				}
 				errs <- err
 			}()
@@ -355,7 +355,7 @@ func TestReportPublicationBlocksDesiredMutationBothEngines(t *testing.T) {
 					return "", ctx.Err()
 				}
 				return path, err
-			})
+			}, reportReader(ctx, files))
 			published <- err
 		}()
 		<-entered
@@ -414,12 +414,8 @@ func TestReportReadBlocksRetirementAndDeletionBothEngines(t *testing.T) {
 					switch mutation {
 					case "replace":
 						upload.ID = uuid.NewString()
-						var old string
-						old, err = second.PublishReport(ctx, machine.ID, "one", upload,
-							func() (string, error) { return files.Write(ctx, upload.Result) })
-						if err == nil {
-							err = second.RetireReport(ctx, old, files.Remove)
-						}
+						_, err = second.PublishReport(ctx, machine.ID, "one", upload,
+							func() (string, error) { return files.Write(ctx, upload.Result) }, reportReader(ctx, files))
 					case "configuration":
 						err = second.DeleteConfiguration(ctx, machine.ID, "one")
 					case "machine":
@@ -444,13 +440,15 @@ func TestReportReadBlocksRetirementAndDeletionBothEngines(t *testing.T) {
 				if err := <-mutated; err != nil {
 					t.Fatal("mutation failed", err)
 				}
-				if mutation != "replace" {
+				if mutation == "machine" {
 					if err := second.RetireReport(ctx, first, files.Remove); err != nil {
 						t.Fatal(err)
 					}
 					if _, err := os.Stat(filepath.Join(root, first)); !errors.Is(err, os.ErrNotExist) {
-						t.Fatal(fmt.Sprintf("deleted configuration's orphan not reclaimed: %v", err))
+						t.Fatalf("deleted machine's orphan not reclaimed: %v", err)
 					}
+				} else if _, err := os.Stat(filepath.Join(root, first)); err != nil {
+					t.Fatal("historical report removed", err)
 				}
 			})
 		}

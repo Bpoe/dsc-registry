@@ -93,28 +93,36 @@ response serialization are included. PostgreSQL benchmarks use the existing
 `DSCREGISTRY_TEST_POSTGRES_DSN` disposable-database hook and skip when unset.
 Results are measurements, not fixed performance-ratio assertions.
 
-## PR 4 — full-report ingestion and latest status
+## PR 4 — full-report ingestion and latest status, extended with history
 
-- Accept a wrapped real dscd envelope; validate required fields and current configuration revision; preserve nested JSON.
-- Write each report directly to a unique file under the single configured report root; close it successfully, then commit its relative path and status in SQL. No temporary file or atomic rename. Retire the previous report file only after commit.
-- Idempotency via persisted last upload ID and agent retry contract; reject stale-revision uploads.
-- Implement admin status and full-report GET; failed writes must not corrupt prior report/status.
+- Accept a wrapped real dscd envelope; validate required fields and reported configuration revision UUID; preserve nested JSON.
+- Write each report directly to a unique file under the single configured report root; sync/close it successfully, then commit its relative path and metadata in SQL. No temporary file or filesystem rename. Preserve previous report files for historical reads.
+- Persist idempotency across history by machine/name/upload ID. Accept old revisions and removed configurations; reject conflicting reuse of an upload identity.
+- Implement admin machine status, paginated history, metadata and original-content GET; failed writes must not corrupt prior report/status. Preserve existing named routes.
 - Fault-injection tests for interrupted file writes, DB commit failure, concurrent requests, and orphan handling.
 
 **Done when:** full `dscd` schemaVersion=1 report reaches admin GET unchanged; SQLite and PostgreSQL versions pass the same tests.
 
 Implemented with source-verified dscd envelope validation, bounded/unambiguous
 UTF-8 JSON, original nested report bytes, exclusive private direct writes,
-successful sync/close before SQL publication, persisted last-upload idempotency,
+successful sync/close before SQL publication, persisted history-wide idempotency,
 and machine-row/immediate transactions serializing publication, desired-state
-mutation and file reads across instances. SQL references are relative filenames;
-retirement checks for remaining references after commit. No new schema migration
-is necessary: the initial latest-status table already contains these fields.
+mutation and file reads across instances. SQL references are relative filenames.
+SQLite migration 3 and PostgreSQL migration 4 migrate initial latest-status
+records to historical metadata without rewriting files, and remove the old
+independent status table. Machine status is derived from reports and current
+desired state, selecting current-revision executions separately from latest
+received history. Delayed historical uploads cannot replace current execution
+results. Current/stale/removed/unreported revision states are distinct from
+execution outcomes and online health. New upload receipts use server UUIDs;
+the existing named upload retains its 204 response.
 Tests cover file and SQL-commit faults, interrupted-write orphans, concurrency,
-role/machine isolation, stale/deleted configurations and desired ETag invariance.
+role/machine isolation, historical/deleted configurations, pagination,
+migration/rollback, restart, conflicting retries, delayed historical failures
+and successes, and desired ETag invariance.
 Bounded **offline** orphan maintenance requires all replicas stopped; see the
 [procedure](../README.md#bounded-offline-orphan-cleanup). No online scavenger,
-report history, DSC execution or sync-agent implementation is included.
+retention policy, DSC execution or sync-agent implementation is included.
 
 ## PR 5 — production readiness
 

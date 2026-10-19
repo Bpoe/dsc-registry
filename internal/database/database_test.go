@@ -89,9 +89,9 @@ func checkSchemaIntegrityAndCascade(t *testing.T, db *sql.DB) {
 	configSQL := "INSERT INTO configurations VALUES ($1, $2, $3, $4, $5, $6, $7)"
 	exec(t, db, configSQL, id, "one", "content-revision", "{}", nil, make([]byte, 32), now)
 	exec(t, db, configSQL, id, "two", "another-revision", "{}", "{}", make([]byte, 32), now)
-	exec(t, db, `INSERT INTO configuration_status (
-		machine_id, name, configuration_revision, received_at, started_at, finished_at, outcome, report_path, last_upload_id
-	) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`, id, "one", "content-revision", now, now, now, "failed", "uuid/report.json", "upload-id")
+	exec(t, db, `INSERT INTO reports (
+		id,sequence,machine_id,name,configuration_revision,received_at,started_at,finished_at,outcome,report_path,upload_id
+	) VALUES ('report-id',1,$1,$2,$3,$4,$5,$6,$7,$8,$9)`, id, "one", "content-revision", now, now, now, "failed", "uuid/report.json", "upload-id")
 	for name, statement := range map[string]struct {
 		query string
 		args  []any
@@ -109,7 +109,7 @@ func checkSchemaIntegrityAndCascade(t *testing.T, db *sql.DB) {
 		"array template":        {configSQL, []any{id, "three", "r", "[]", nil, make([]byte, 32), now}},
 		"null parameters JSON":  {configSQL, []any{id, "three", "r", "{}", "null", make([]byte, 32), now}},
 		"bad JSON":              {configSQL, []any{id, "three", "r", "{", nil, make([]byte, 32), now}},
-		"orphan status":         {"UPDATE configuration_status SET name = $1", []any{"missing"}},
+		"orphan report":         {"UPDATE reports SET machine_id = $1", []any{"missing"}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			if _, err := db.Exec(statement.query, statement.args...); err == nil {
@@ -118,10 +118,11 @@ func checkSchemaIntegrityAndCascade(t *testing.T, db *sql.DB) {
 		})
 	}
 	exec(t, db, "DELETE FROM configurations WHERE machine_id = $1 AND name = $2", id, "one")
-	assertCount(t, db, "configuration_status", 0)
+	assertCount(t, db, "reports", 1)
 	assertCount(t, db, "configurations", 1)
 	exec(t, db, "DELETE FROM machines WHERE id = $1", id)
 	assertCount(t, db, "configurations", 0)
+	assertCount(t, db, "reports", 0)
 	assertCount(t, db, "api_keys", 1)
 	exec(t, db, "DELETE FROM admins WHERE id = $1", id)
 	assertCount(t, db, "api_keys", 0)
@@ -162,7 +163,7 @@ func TestRejectFutureSchemaAndCanceledStartup(t *testing.T) {
 		t.Fatal(err)
 	}
 	exec(t, raw, "CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)")
-	exec(t, raw, "INSERT INTO schema_migrations VALUES (3, 'future')")
+	exec(t, raw, "INSERT INTO schema_migrations VALUES (4, 'future')")
 	if err := raw.Close(); err != nil {
 		t.Fatal(err)
 	}

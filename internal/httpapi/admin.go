@@ -69,6 +69,10 @@ func (a *adminAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			a.agentConfigurations(w, r, principal.OwnerID)
 			return
 		}
+		if len(parts) == 3 && parts[2] == "reports" {
+			a.uploadReport(w, r, principal.OwnerID, "")
+			return
+		}
 		if len(parts) == 5 && parts[2] == "configurations" && parts[4] == "report" {
 			if !desired.ValidName(parts[3]) {
 				writeError(w, http.StatusBadRequest, "invalid_name", "Expected a safe lowercase configuration name of 1-64 characters")
@@ -96,6 +100,24 @@ func (a *adminAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if len(parts) == 3 && parts[1] == "machines" {
 		a.machine(w, r, parts[2])
 		return
+	}
+	if parts[1] == "machines" && len(parts) == 4 && parts[3] == "status" {
+		a.machineStatus(w, r, parts[2])
+		return
+	}
+	if parts[1] == "machines" && len(parts) >= 4 && parts[3] == "reports" {
+		if len(parts) == 4 {
+			a.machineReports(w, r, parts[2])
+			return
+		}
+		if len(parts) == 5 || (len(parts) == 6 && parts[5] == "content") {
+			if !validUUID(parts[4]) {
+				writeError(w, http.StatusBadRequest, "invalid_id", "Expected a canonical report UUID")
+			} else {
+				a.machineReport(w, r, parts[2], parts[4], len(parts) == 6)
+			}
+			return
+		}
 	}
 	if parts[1] == "machines" && (len(parts) == 4 || len(parts) == 5) && parts[3] == "configurations" {
 		if len(parts) == 4 {

@@ -3,12 +3,12 @@
 `dscregd` is the DSC Registry configuration-delivery server. It does not execute
 DSC. The separate `dscsyncd` sync agent and `dscd` reconciler are not included.
 
-**Current milestone: PR 5 production readiness (real-NFS validation pending).**
+**Current milestone: report history and machine status (real-NFS validation pending).**
 The executable provides local administrator bootstrap,
 API-key authentication, machine and credential administration, SQLite/PostgreSQL
 migrations, desired-configuration CRUD and conditional machine polling,
-full dscd report ingestion, latest execution summaries and admin-only report
-retrieval, report-storage checks, graceful shutdown, and health endpoints.
+full dscd report ingestion, persistent report history, derived machine status,
+admin-only report retrieval, report-storage checks, graceful shutdown, and health endpoints.
 Production-readiness additions include redacted structured operation timings,
 recovery/fuzz coverage, Linux/container examples and a bounded two-replica
 PostgreSQL/TLS/recovery harness. See the [operator runbook](docs/operations.md)
@@ -413,47 +413,92 @@ use administration endpoints, even for their own machine.
 
 ## Latest reports and execution status
 
-Machine credentials can POST `/v1/agent/configurations/{name}/report`, containing
+Machine credentials can POST `/v1/agent/reports`, containing `configurationName`,
 `configurationRevision` (the installed opaque content UUID), `uploadId` (a stable
 UUID retained across retries), and the original dscd schemaVersion=1 `result`.
 The result must identify `managed/{name}.json`; its optional sidecar identifies
-`managed/{name}.parameters.json`. See the [upload contract](docs/api.md#upload-latest-dscd-result)
+`managed/{name}.parameters.json`. See the [upload contract](docs/api.md#upload-a-dscd-result)
 for validation and examples. No DSC binary or resource-schema interpretation is
 involved. A successful `test` with drift is still execution success.
 
-Only current configurations/revisions accept reports: removed configurations
-return `404`; stale revisions return `409`, including retries after a desired
-change. A retry of the last upload ID returns `204` without changing its report
-or received timestamp. V1 assumes one ordered sync-agent writer per machine;
-the last ID is not an upload history or a cross-agent sequencing protocol.
+Creation returns `201` with server-generated report metadata and a Location.
+Exact retries return `200` with the original receipt, without changing its
+receive time or history position. Deduplication is persistent across all
+records for the authenticated machine, configuration name and upload ID;
+conflicting revision or nested result bytes return `409`. Preserve original
+result bytes across retries, including formatting. The existing
+`POST /v1/agent/configurations/{name}/report` omits `configurationName` from its
+body and retains `204` for creation/retry, using the same history.
+
+Both routes accept valid historical reports after desired changes or
+configuration deletion. Revisions are agent-reported associations, not proof
+that the machine installed or executed specific inputs. History uses server
+acceptance order, not agent clock order. Current execution status first matches
+the desired revision, then selects its latest accepted execution. Delayed
+historical reports remain visible without replacing a current-revision result;
+duplicate retries never change either ordering.
 Reports/status never change desired-state revisions, representations or ETags.
 
-Admin GET `/v1/machines/{machineId}/configurations/{name}/status` returns only the
-latest small summary. GET at the same prefix plus `/report` returns the original
-nested dscd object bytes, including opaque unknown fields and exact numbers,
-without the upload wrapper. Both are `no-store`; before the first report they
-return `404` (`report_not_found`). Updating desired content retains the previous
-execution summary with its original revision until a new report arrives.
-Deleting a configuration or machine removes its SQL status by cascade.
+Admin `GET /v1/machines/{machineId}/reports` lists metadata newest first with
+`limit` (default 100, maximum 1000) and report-ID `cursor` pagination.
+`GET .../reports/{reportId}` retrieves metadata without filesystem access;
+`GET .../reports/{reportId}/content` returns the exact original nested dscd
+object bytes, including unknown fields and exact numbers, without the wrapper.
+Machine keys cannot use any admin read, even for their own machine.
+
+Admin `GET /v1/machines/{machineId}/status` derives current-revision execution
+and per-configuration outcomes directly from SQL history and desired state.
+`latestReport` and `lastExecutionAt` describe current desired-revision execution;
+`latestReceivedReport` and `lastReportReceivedAt` expose receipts independently.
+Per-configuration entries likewise separate current execution from latest receipt.
+It distinguishes never-reported, successful, failed and canceled executions,
+and flags current/stale/removed/unreported configuration revisions separately.
+The aggregate covers current desired revisions: failed, then canceled, then
+unknown for missing current executions (including stale-only history), otherwise succeeded. History without any
+current desired names is unknown. Neither successful execution nor a receive
+timestamp implies the machine is online, healthy or compliant.
+See [status semantics](docs/api.md#report-history-and-machine-status).
+
+The existing `/configurations/{name}/status` and `/report` admin reads remain
+available for desired names and select only the current desired revision.
+Until that revision has a report they return `404`
+(`report_not_found`); after desired deletion they return `configuration_not_found`.
+History remains accessible by report ID. Recreating a name does not inherit an
+old revision's execution status. All report/status responses are
+`no-store`. Only machine deletion cascades to report metadata.
 
 The server creates a flat, server-generated UUID `.json` filename exclusively
 under its opened `os.Root`, with mode `0600`. It writes directly to that new
-file, syncs and closes it successfully **before** committing the SQL summary and
+file, syncs and closes it successfully **before** committing the SQL metadata and
 relative pointer. There is no temporary file or rename. Files are never reused.
-SQL locks protect readers until their file is read and closed, so another
-replica cannot retire an in-flight report. The previous file is retired only
-after commit and an SQL check that no status references it. A retirement failure
-is logged without paths or report data; the committed upload still succeeds.
+SQL commit makes a complete file visible atomically to API readers; partial or
+uncommitted files have no accessible report record. Machine locks protect
+publication and reads across API replicas. Previous files are retained because
+history still references them. SQL stores summary fields, relative paths and a
+payload digest, not full report JSON.
 Write/sync/close failures leave the previous valid status/file intact.
 SQL/commit errors likewise preserve the previous valid reference; the new file
 is left for cleanup, because a lost commit acknowledgement might mean it was
 actually committed. Retry with the same upload ID to resolve that uncertainty.
 
+Existing settings remain `-report-root` (one local/shared filesystem root) and
+`-max-report-bytes` (default 16 MiB, bounding the whole upload independently of
+the general request limit). There is no new service, worker or storage provider.
+History is retained without automatic expiration; monitor storage growth.
+
+Stop all API instances before upgrading. SQLite migration 3 / PostgreSQL
+migration 4 preserve existing latest report references and assign server report
+IDs, then remove the independently maintained status table. Old discarded
+reports cannot be recovered. Migrated records acquire a retry digest by reading
+the existing file on their first matching retry; that first retry needs working
+report storage. Later retries need only SQL. Do not run old and new schema
+generations together; back up SQL and report storage as a pair before upgrading.
+
 ### Bounded offline orphan cleanup
 
 V1 deliberately has **no online age-based scavenger**: an unreferenced file may
-belong to an active transaction on another replica. Configuration/machine
-deletion, a crash during direct writes, SQL failure or failed retirement may
+belong to an active transaction on another replica. Machine
+deletion, a crash during direct writes or SQL failure may
 leave orphaned files. Perform bounded maintenance as follows:
 
 1. Stop **all** API instances sharing the database/root, and keep them stopped
@@ -462,7 +507,7 @@ leave orphaned files. Perform bounded maintenance as follows:
    batch in the canonical report root (retain an enumeration cursor for the
    next batch). Consider only regular, non-symlink files named exactly a
    lowercase canonical UUID plus `.json`; never recurse or follow symlinks.
-3. For each candidate, query `SELECT EXISTS(SELECT 1 FROM configuration_status
+3. For each candidate, query `SELECT EXISTS(SELECT 1 FROM reports
    WHERE report_path = $1)` using a bound relative filename. Delete only if the
    query succeeds and returns false. On any SQL/filesystem error, stop and
    investigate; never delete by a filename-only glob. Keep all referenced files.
@@ -495,7 +540,7 @@ go test -race ./...
 
 The normal suite always exercises SQLite. To also run real PostgreSQL migration,
 constraint, CRUD, concurrent-bootstrap/deletion/configuration updates,
-report write/commit faults, concurrent publication/read/retirement,
+report write/commit faults, history upgrades, concurrent publication/reads,
 polling, CLI, and HTTP tests, set
 `DSCREGISTRY_TEST_POSTGRES_DSN` to a **disposable test database** before running
 `go test ./...`. Its account must be allowed to create schemas. Each test creates

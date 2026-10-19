@@ -64,6 +64,30 @@ func TestRealEnvelopes(t *testing.T) {
 	}
 }
 
+func TestNamedUpload(t *testing.T) {
+	body := append([]byte(`{"configurationName":"docker",`), wrapped(success)[1:]...)
+	got, err := Parse(body, "")
+	if err != nil || got.Name != "docker" || !bytes.Equal(got.Result, []byte(success)) {
+		t.Fatal("named upload changed original envelope", err)
+	}
+	for _, invalid := range []string{
+		string(wrapped(success)),
+		strings.Replace(string(body), `"configurationName":"docker"`, `"configurationName":null`, 1),
+		strings.Replace(string(body), `"configurationName"`, `"ConfigurationName"`, 1),
+		strings.Replace(string(body), `"configurationName":"docker"`, `"configurationName":"other"`, 1),
+		strings.Replace(string(body), `"configurationName":"docker"`, `"configurationName":"../docker"`, 1),
+		strings.Replace(string(body), `"configurationName":"docker"`, `"configurationName":"docker","configurationName":"docker"`, 1),
+		strings.Replace(string(body), `"configurationName"`, `"machineId":"untrusted","configurationName"`, 1),
+	} {
+		if _, err := Parse([]byte(invalid), ""); err == nil {
+			t.Fatal("invalid named upload accepted")
+		}
+	}
+	if _, err := Parse(body, "docker"); err == nil {
+		t.Fatal("legacy path accepted a configuration override")
+	}
+}
+
 func FuzzReportEnvelope(f *testing.F) {
 	f.Add(wrapped(success))
 	f.Add([]byte(`{}`))
