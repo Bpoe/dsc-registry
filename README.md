@@ -58,11 +58,74 @@ database errors, or an unsupported migration version.
 
 ## Settings
 
-Use `go run .\cmd\dscregd -h` and `bootstrap -h` for flags. Settings are command-line flags;
-no environment-variable or configuration-file overrides are currently read.
+Use `go run .\cmd\dscregd -h` and `bootstrap -h` for flags. Optionally pass
+`-config` to read a JSON configuration file once at startup. For example, a
+complete production configuration using PostgreSQL is:
+
+```json
+{
+  "listenAddress": "127.0.0.1:8080",
+  "externalHttps": true,
+  "developmentHttp": false,
+  "database": {
+    "engine": "postgres",
+    "dsn": "postgres://registry@localhost/registry?sslmode=verify-full"
+  },
+  "reportRoot": "/var/lib/dscregd/reports",
+  "pollMaxAge": "5m",
+  "maxRequestBytes": 1048576,
+  "maxReportBytes": 16777216,
+  "readHeaderTimeout": "5s",
+  "readTimeout": "30s",
+  "writeTimeout": "30s",
+  "idleTimeout": "1m",
+  "startupTimeout": "10s",
+  "shutdownTimeout": "15s",
+  "probeTimeout": "2s",
+  "sqliteBusyTimeout": "5s"
+}
+```
+
+```sh
+dscregd bootstrap -config /etc/dscregd/config.json -name operator
+dscregd -config /etc/dscregd/config.json
+dscregd -config /etc/dscregd/config.json -listen 127.0.0.1:9090
+```
+
+The same `-config` flag works on Windows, for example
+`dscregd -config C:\ProgramData\dscregd\config.json`. For SQLite, use
+`"database": {"engine": "sqlite", "dsn": "data/registry.db"}`. For loopback
+development, set `"developmentHttp": true` and `"externalHttps": false`.
+
+Precedence is **built-in defaults, then file properties, then explicitly supplied
+CLI flags**, including flags explicitly set to their default or `false` value.
+Omitted properties keep existing defaults; explicit empty strings, zero, and
+false are not treated as missing. Durations use Go strings such as `"500ms"`,
+`"5s"`, or `"5m"`. Unknown properties (including nested database properties),
+duplicate keys, nulls, invalid types/durations, malformed JSON, and extra JSON
+documents are rejected. Final merged settings must pass normal validation.
+An unreadable file is fatal when `-config` is supplied. Without it, existing
+CLI behavior is unchanged. There is no implicit file discovery, environment
+override, or hot reload; restart to apply file changes.
+
+Relative `reportRoot` and SQLite `database.dsn` values **supplied in the file**
+are resolved against the configuration file's directory, not the current
+working directory. Absolute paths stay unchanged. Omitted path defaults and
+paths explicitly supplied through CLI flags retain working-directory semantics.
+The final database engine determines whether a file-supplied DSN is a SQLite
+path; PostgreSQL connection strings are never resolved as filesystem paths.
+Create the SQLite parent and report directories before starting the server.
+
+Configuration files can contain database credentials. Keep them out of source
+control and shared logs; restrict read/write access to the service account and
+authorized operators (POSIX mode `0600`, or equivalent Windows ACLs). Protect
+the containing directory against replacement by untrusted users. Prefer a
+protected PostgreSQL password file when possible. Configuration errors identify
+settings without printing their values or file contents.
 
 | Flag | Default | Meaning |
 | --- | --- | --- |
+| `-config` | none | Optional JSON configuration file |
 | `-listen` | `127.0.0.1:8080` | Literal IP and numeric port |
 | `-development-http` | `false` | Explicit loopback-only HTTP development |
 | `-external-https` | `false` | Operator assertion that a trusted proxy enforces HTTPS |
@@ -126,8 +189,12 @@ authorized administrators on future admin routes).
 ## Bootstrap and credential rotation
 
 The local `dscregd bootstrap` command opens only the database, not the HTTP
-listener or report storage. It accepts `-database-engine`, `-database-dsn`,
+listener or report storage. It accepts `-config`, `-database-engine`, `-database-dsn`,
 `-startup-timeout`, `-sqlite-busy-timeout`, and `-name` (default `administrator`).
+It reads the same JSON format and precedence rules, but validates only database
+settings, startup timeout, and SQLite busy timeout. Server-only values need not
+pass server validation; malformed JSON, unknown fields, and invalid property
+types/duration strings are still rejected. `-name` remains bootstrap-only.
 Run as the service account or an authorized local operator. It prints one JSON
 object with `adminId`, `keyId`, `key`, and `createdAt` **once**. Run in a private
 terminal, not a recorded/shared session or CI log, and store the key in a secret

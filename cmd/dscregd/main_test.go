@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
@@ -153,6 +154,22 @@ func testRunStartupHealthShutdownAndRestart(t *testing.T, engine, dsn string) {
 	settings.DatabaseDSN = dsn
 	settings.ReportRoot = filepath.Join(root, "reports")
 	if err := os.Mkdir(settings.ReportRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	data, err := json.Marshal(map[string]any{
+		"listenAddress": settings.ListenAddress, "developmentHttp": true,
+		"database":   map[string]string{"engine": engine, "dsn": dsn},
+		"reportRoot": settings.ReportRoot,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	configPath := filepath.Join(root, "config.json")
+	if err := os.WriteFile(configPath, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	settings, err = config.Parse([]string{"-config", configPath}, io.Discard)
+	if err != nil {
 		t.Fatal(err)
 	}
 	for range 2 {

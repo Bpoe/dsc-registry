@@ -50,6 +50,7 @@ func Parse(args []string, help io.Writer) (Settings, error) {
 	s := Defaults()
 	f := flag.NewFlagSet("dscregd", flag.ContinueOnError)
 	f.SetOutput(io.Discard)
+	configPath := f.String("config", "", "JSON configuration file (read once at startup)")
 	f.StringVar(&s.ListenAddress, "listen", s.ListenAddress, "HTTP listen IP and port")
 	f.BoolVar(&s.ExternalHTTPS, "external-https", false, "HTTPS is enforced by a trusted reverse proxy")
 	f.BoolVar(&s.DevelopmentHTTP, "development-http", false, "allow HTTP on a literal loopback IP only")
@@ -75,6 +76,9 @@ func Parse(args []string, help io.Writer) (Settings, error) {
 	if f.NArg() != 0 {
 		return s, errors.New("unexpected positional arguments")
 	}
+	if err := mergeFile(f, *configPath, &s); err != nil {
+		return s, err
+	}
 	return s, s.Validate()
 }
 
@@ -87,10 +91,10 @@ func databaseFlags(f *flag.FlagSet, s *Settings) {
 
 func ParseBootstrap(args []string, help io.Writer) (Settings, string, error) {
 	s := Defaults()
-	s.DevelopmentHTTP = true
 	name := "administrator"
 	f := flag.NewFlagSet("dscregd bootstrap", flag.ContinueOnError)
 	f.SetOutput(io.Discard)
+	configPath := f.String("config", "", "JSON configuration file (database settings only)")
 	databaseFlags(f, &s)
 	f.StringVar(&name, "name", name, "initial administrator display name (recovery reuses the first identity)")
 	if err := f.Parse(args); err != nil {
@@ -104,7 +108,10 @@ func ParseBootstrap(args []string, help io.Writer) (Settings, string, error) {
 	if f.NArg() != 0 || !ValidDisplayName(name, 256) {
 		return s, name, errors.New("invalid bootstrap arguments or administrator name")
 	}
-	return s, name, s.Validate()
+	if err := mergeFile(f, *configPath, &s); err != nil {
+		return s, name, err
+	}
+	return s, name, s.validateDatabase()
 }
 
 func ValidDisplayName(value string, maxBytes int) bool {
@@ -134,16 +141,8 @@ func (s Settings) Validate() error {
 	if s.DevelopmentHTTP && !net.ParseIP(host).IsLoopback() {
 		return errors.New("development-http requires a loopback listen IP")
 	}
-	if s.DatabaseEngine != "sqlite" && s.DatabaseEngine != "postgres" {
-		return errors.New("database-engine must be sqlite or postgres")
-	}
-	if strings.TrimSpace(s.DatabaseDSN) == "" {
-		return errors.New("database-dsn must not be empty")
-	}
-	if s.DatabaseEngine == "sqlite" && (strings.HasPrefix(s.DatabaseDSN, "file:") ||
-		s.DatabaseDSN == ":memory:" || strings.HasPrefix(s.DatabaseDSN, `\\`) ||
-		strings.HasPrefix(s.DatabaseDSN, "//")) {
-		return errors.New("database-dsn must be a persistent local SQLite file path, not a URI")
+	if err := s.validateDatabase(); err != nil {
+		return err
 	}
 	if strings.TrimSpace(s.ReportRoot) == "" {
 		return errors.New("report-root must not be empty")
@@ -170,7 +169,7 @@ func (s Settings) Validate() error {
 	}{
 		{"read-header-timeout", s.ReadHeaderTimeout}, {"read-timeout", s.ReadTimeout},
 		{"write-timeout", s.WriteTimeout}, {"idle-timeout", s.IdleTimeout},
-		{"startup-timeout", s.StartupTimeout}, {"shutdown-timeout", s.ShutdownTimeout},
+		{"shutdown-timeout", s.ShutdownTimeout},
 		{"probe-timeout", s.ProbeTimeout},
 	} {
 		if limit.value <= 0 {
@@ -179,6 +178,24 @@ func (s Settings) Validate() error {
 	}
 	if s.ReadHeaderTimeout > s.ReadTimeout || s.ProbeTimeout >= s.WriteTimeout {
 		return errors.New("header timeout must not exceed read timeout; probe timeout must be less than write timeout")
+	}
+	return nil
+}
+
+func (s Settings) validateDatabase() error {
+	if s.DatabaseEngine != "sqlite" && s.DatabaseEngine != "postgres" {
+		return errors.New("database-engine must be sqlite or postgres")
+	}
+	if strings.TrimSpace(s.DatabaseDSN) == "" {
+		return errors.New("database-dsn must not be empty")
+	}
+	if s.DatabaseEngine == "sqlite" && (strings.HasPrefix(s.DatabaseDSN, "file:") ||
+		s.DatabaseDSN == ":memory:" || strings.HasPrefix(s.DatabaseDSN, `\\`) ||
+		strings.HasPrefix(s.DatabaseDSN, "//")) {
+		return errors.New("database-dsn must be a persistent local SQLite file path, not a URI")
+	}
+	if s.StartupTimeout <= 0 {
+		return errors.New("startup-timeout must be positive")
 	}
 	if s.SQLiteBusyTimeout <= 0 || s.SQLiteBusyTimeout > time.Minute ||
 		s.SQLiteBusyTimeout%time.Millisecond != 0 {
