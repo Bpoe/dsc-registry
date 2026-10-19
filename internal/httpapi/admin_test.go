@@ -70,7 +70,7 @@ func TestAdministrationHTTPBothEngines(t *testing.T) {
 		}
 		t.Cleanup(func() { reports.Close() })
 		logs := &bytes.Buffer{}
-		handler := New(store, reports, time.Second, time.Second, 2048, slog.New(slog.NewJSONHandler(logs, nil)))
+		handler := New(store, reports, time.Second, time.Second, 5*time.Minute, 2048, slog.New(slog.NewJSONHandler(logs, nil)))
 		admin, err := store.Bootstrap(ctx, "operator")
 		if err != nil {
 			t.Fatal(err)
@@ -186,8 +186,8 @@ func TestAdministrationHTTPBothEngines(t *testing.T) {
 		apiRequest(t, handler, rotated.Key, "POST", "/v1/admins", `{"name":"new admin"}`, 400)
 		apiRequest(t, handler, rotated.Key, "PUT", firstPath, `{}`, 405)
 		apiRequest(t, handler, rotated.Key, "PUT", "/v1/machines", `{}`, 405)
-		apiRequest(t, handler, rotated.Key, "GET", firstPath+"/configurations", "", 404)
-		apiRequest(t, handler, rotated.Key, "GET", "/v1/agent/configurations", "", 404)
+		apiRequest(t, handler, rotated.Key, "GET", firstPath+"/configurations", "", 200)
+		apiRequest(t, handler, rotated.Key, "GET", "/v1/agent/configurations", "", 403)
 		for _, contentType := range []string{"", "text/yaml", "application/json; charset=iso-8859-1"} {
 			r := httptest.NewRequest("POST", "/v1/machines", strings.NewReader(`{"name":"host"}`))
 			r.Header.Set("Authorization", "ApiKey "+rotated.Key)

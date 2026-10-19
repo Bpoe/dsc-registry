@@ -41,8 +41,9 @@ Initial administrator identity/key creation is a **local bootstrap CLI** action.
 
 ### PR 2 administration details
 
-PR 2 implements only machine and credential administration in this table; the
-configuration/status/report and agent routes remain deferred. All implemented
+PR 2 implements machine and credential administration in this table. PR 3 adds
+desired-configuration administration and machine GET polling; status/report
+routes remain deferred. All implemented
 administration routes authorize the administrator role before validating resource
 IDs or querying machine data. Machine keys receive `403` even for their own UUID;
 missing, malformed, forged-role, and revoked credentials receive `401` with
@@ -130,6 +131,35 @@ Response for new content: `201 Created`; for replacement: `200 OK` (or `204` if 
 
 Identical JSON values are no-ops: reordering object keys or changing insignificant JSON whitespace must **not** change the per-configuration revision, machine collection revision, or ETag. Use deterministic serialization of parsed JSON objects for storage, comparisons, and delivery; preserve nested JSON values, including unknown DSC fields, without interpreting them. An absent/null `parameters` mapping means no sidecar and is distinct from `{}`. A substantive JSON document/parameter change generates a new content revision. `dscd.inputHash` hashes the **serialized local file bytes**, not the original CLI's YAML text or raw HTTP request bytes; `dscsyncd` must track the installed bytes/revision association.
 
+### PR 3 configuration details
+
+PUT returns `201` with `Location` on creation and `200` on replacement/no-op.
+GET returns the same desired-content shape shown above, including
+`machineConfigurationRevision`. DELETE returns `204`; a repeated DELETE returns
+`404` without incrementing the collection revision. Missing machines use
+`machine_not_found`; missing configurations use `configuration_not_found`.
+Unknown wrapper properties, duplicate keys anywhere (including escaped aliases),
+invalid UTF-8/unpaired Unicode surrogates, and JSON nesting beyond 128 levels
+return `400` (`invalid_configuration`). Unsupported media types/charsets return
+`415`; the complete request exceeding `-max-request-bytes` returns `413`.
+The default limit is 1 MiB for template, parameters, and wrapper together.
+
+Canonical documents use sorted keys, compact JSON and exact decimal
+coefficient/exponent normalization. Numbers never pass through floating-point;
+arbitrarily large integers/exponents and unknown nested DSC values are retained.
+Numerically equal spellings (`1`, `1.0`, `10e-1`) are no-ops, and delivered
+numbers may use exponent notation. Array order remains significant. Missing
+and null parameters produce an omitted response property; `{}` stays present.
+No-op PUTs do not update timestamps or any revision. A material create/change
+gets a fresh random UUID; delete/recreate never reuses the removed revision.
+
+Configuration listing uses `limit`/`cursor` with defaults and bounds matching
+machine listing, ordered by name. The cursor is the last returned safe name:
+`{"configurations":[{"name":"docker","revision":"..."}],"nextCursor":"docker"}`.
+The final page omits `nextCursor`; an empty collection is `[]`. Summaries never
+include template/parameters or status. Invalid names use `invalid_name`;
+invalid pagination uses `invalid_pagination`. All admin responses are `no-store`.
+
 ### Credential issuance
 
 ```http
@@ -208,6 +238,16 @@ Cache-Control: private, max-age=300
 ```
 
 The quoted ETag example is illustrative; generate correct HTTP validator syntax and compare according to HTTP conditional-request rules. Do not omit `Cache-Control` from 304. A change to any desired configuration, including deletion, invalidates the collection ETag. New execution results, API-key churn, and machine `lastSeen` must not.
+
+PR 3 uses a quoted validator containing machine UUID and collection revision,
+so validators from different machines cannot match even at the same revision.
+GET performs weak comparison for `If-None-Match`, accepting strong/weak tags,
+comma-separated lists (including multiple field lines), and `*`. Malformed
+validator fields are ignored and return `200`. `Vary: Authorization` accompanies
+both `200` and `304`. Collection revision, content, and ETag come from a single
+ordered SQL statement's consistent snapshot, including during concurrent
+creation/deletion. No query parameters or caller-supplied machine identity are
+accepted (`400`, `invalid_query`); administrator credentials receive `403`.
 
 Never add machine status, full reports, secret credentials, or server-side host paths to this response. Configure a maximum poll interval; agents add jitter and exponential backoff on failure, respecting `Retry-After` when provided. Agent must retain local desired state on HTTP errors, even prolonged outage.
 
