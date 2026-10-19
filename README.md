@@ -243,8 +243,10 @@ enforce deletion cascades.
 Keep the SQLite database and its WAL/SHM siblings on a **local filesystem**,
 never NFS/SMB. UNC paths are rejected, but mounted/mapped network storage cannot
 be detected reliably; correct placement is the operator's responsibility.
-The PR 1 SQLite migration and schema version are unchanged; upgrading preserves
-all existing rows, desired-state revisions, and report references.
+The initial SQLite migration is unchanged. Migration `002_machine_names.sql`
+adds an indexed Unicode-normalized name key, bringing the schema to version 2.
+Upgrading preserves original names, UUIDs, desired-state revisions, and report
+references; unexpectedly colliding names fail the migration without data loss.
 
 For PostgreSQL, create a database owned by the service/migration account and use
 `-database-engine postgres -database-dsn "host=... dbname=... user=... sslmode=verify-full"`.
@@ -258,6 +260,8 @@ lock. Migration `002_lossless_json.sql` replaces JSONB-based shape constraints
 with JSON-based checks, preserving existing rows, revisions, status pointers,
 and the original migration. This permits opaque JSON numbers beyond PostgreSQL's
 numeric range and escaped NUL strings without changing the text storage.
+Migration `003_machine_names.sql` adds the same name-key uniqueness and lookup
+semantics as SQLite, bringing PostgreSQL to schema version 3.
 The pool allows ten connections. PostgreSQL uses text UUID/timestamp
 representations to match SQLite's existing schema, with `BIGINT` revisions and
 `BYTEA` digests. Both schemas enforce owner existence, immutable identities,
@@ -312,7 +316,8 @@ Send `Authorization: ApiKey <key>` over HTTPS. An administrator can:
 
 - `POST /v1/machines` with `{"name":"host-1"}`, then separately
   `POST /v1/machines/{id}/api-keys` with `{"description":"sync agent"}` (or `{}`).
-- `GET /v1/machines`, `GET /v1/machines/{id}`, or `DELETE /v1/machines/{id}`.
+- `GET /v1/machines` for a collection, `GET /v1/machines?name=host-1` for one
+  exact name match, `GET /v1/machines/{id}`, or `DELETE /v1/machines/{id}`.
 - `GET /v1/machines/{id}/api-keys` or
   `DELETE /v1/machines/{id}/api-keys/{keyId}` to list metadata or revoke.
 - Issue/list/revoke keys at the analogous `/v1/admins/{adminId}/api-keys`
@@ -326,7 +331,21 @@ are rejected from every admin route before any machine data is read, including
 routes targeting their own UUID. Display names do not confer identity or access.
 Machine/key operations never change `configurationRevision`.
 
-Machine names are 1-256 UTF-8 bytes; descriptions are optional, at most 1024
+Machine names are 1-256 UTF-8 bytes and globally unique under
+`NFC(full Unicode case fold(NFC(name)))`. Creation conflicts return `409`
+(`machine_name_conflict`), including concurrent attempts. Original names/casing
+are preserved; composed/decomposed Unicode equivalents match. There is no
+compatibility normalization, accent removal, or culture-dependent conversion.
+Names remain display/lookup labels, not authorization identities, and there
+is no rename operation.
+
+`GET /v1/machines?name=HOST-1` returns the same single-object schema as UUID
+lookup, or `404` (`machine_not_found`). It accepts exactly one URL-encoded
+`name`, with the same validation as creation; combining it with pagination or
+other query parameters returns `400`. Matching is not a substring, prefix, or
+wildcard search. Without `name`, listing is unchanged.
+
+Credential descriptions are optional, at most 1024
 UTF-8 bytes. Nonempty values cannot contain controls or surrounding whitespace.
 Request bodies must be UTF-8 JSON objects with string fields; unknown/duplicate
 fields, null strings, and extra documents are rejected. Resource UUIDs use

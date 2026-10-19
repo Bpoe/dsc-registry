@@ -99,7 +99,7 @@ func TestAdministrationHTTPBothEngines(t *testing.T) {
 		if first.Name != "host-1" || first.ConfigurationRevision != 0 || response.Header().Get("Location") != firstPath {
 			t.Fatal("incorrect machine creation response")
 		}
-		second := decodeResponse[database.Machine](t, apiRequest(t, handler, admin.Key, "POST", "/v1/machines", `{"name":"host-1"}`, 201))
+		second := decodeResponse[database.Machine](t, apiRequest(t, handler, admin.Key, "POST", "/v1/machines", `{"name":"host-2"}`, 201))
 		secondPath := "/v1/machines/" + second.ID
 		got := decodeResponse[database.Machine](t, apiRequest(t, handler, admin.Key, "GET", firstPath, "", 200))
 		if got != first {

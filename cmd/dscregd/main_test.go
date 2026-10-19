@@ -217,7 +217,8 @@ func testRunStartupHealthShutdownAndRestart(t *testing.T, engine, dsn, mode stri
 			t.Fatal(err)
 		}
 		db := store.DB
-		if _, err := db.Exec("INSERT INTO machines VALUES ($1, $2, 0, $3) ON CONFLICT DO NOTHING",
+		if _, err := db.Exec(`INSERT INTO machines(id, name, configuration_revision, created_at, name_folded)
+			VALUES ($1, $2, 0, $3, $2) ON CONFLICT (id) DO NOTHING`,
 			"550e8400-e29b-41d4-a716-446655440000", "persisted", "2026-10-18T00:00:00Z"); err != nil {
 			db.Close()
 			t.Fatal(err)

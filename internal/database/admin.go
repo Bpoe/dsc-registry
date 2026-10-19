@@ -115,8 +115,11 @@ func (s *Store) CreateMachine(ctx context.Context, name string) (Machine, error)
 		return Machine{}, err
 	}
 	defer tx.Rollback()
-	if _, err := tx.ExecContext(ctx, `INSERT INTO machines(id, name, configuration_revision, created_at)
-		VALUES ($1, $2, 0, $3)`, machine.ID, name, timestamp()); err != nil {
+	if _, err := tx.ExecContext(ctx, `INSERT INTO machines(id, name, configuration_revision, created_at, name_folded)
+		VALUES ($1, $2, 0, $3, $4)`, machine.ID, name, timestamp(), foldMachineName(name)); err != nil {
+		if machineNameConflict(err) {
+			return Machine{}, ErrMachineNameConflict
+		}
 		return Machine{}, err
 	}
 	if err := tx.Commit(); err != nil {
