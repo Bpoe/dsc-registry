@@ -106,7 +106,7 @@ def main():
                 require(result[0] == status, "HTTP status did not match the expected recovery contract")
                 return result
 
-            def ready(base):
+            def ready(base, label="TLS edge"):
                 deadline = time.monotonic() + 60
                 while time.monotonic() < deadline:
                     try:
@@ -115,7 +115,7 @@ def main():
                     except (urllib.error.URLError, TimeoutError, ConnectionError):
                         pass
                     time.sleep(1)
-                raise RuntimeError("readiness deadline exceeded")
+                raise RuntimeError("readiness deadline exceeded for " + label)
 
             print("Building isolated demo and starting PostgreSQL", flush=True)
             started = True
@@ -128,9 +128,21 @@ def main():
             compose("up", "-d", "api1", "api2", "proxy")
             base = endpoint("proxy", 8443, "https")
             backends = [endpoint(name, 8080, "http") for name in ("api1", "api2")]
-            for backend in backends:
-                ready(backend)
+            for name, backend in zip(("api1", "api2"), backends):
+                ready(backend, name)
             ready(base)
+
+            def restart_apis():
+                nonlocal base, backends
+                compose("start", "api1", "api2")
+                # Docker may allocate different ephemeral host ports/IPs on
+                # restart. Refresh direct ports and Nginx's startup DNS.
+                backends = [endpoint(name, 8080, "http") for name in ("api1", "api2")]
+                for name, backend in zip(("api1", "api2"), backends):
+                    ready(backend, name)
+                compose("restart", "proxy")
+                base = endpoint("proxy", 8443, "https")
+                ready(base)
 
             seen = {expect(base, "/health/ready", 200)[1].get("X-Demo-Upstream") for _ in range(8)}
             require(len(seen) == 2 and None not in seen, "load balancer did not reach both replicas")
@@ -168,17 +180,19 @@ def main():
             compose("stop", "-t", "10", "api1")
             for _ in range(4):
                 unchanged()
-            compose("start", "api1")
-            ready(backends[0])
+            print("Restarting replica and refreshing Docker endpoints", flush=True)
+            restart_apis()
+            print("Stopping and recovering PostgreSQL", flush=True)
             compose("stop", "-t", "10", "postgres")
             for backend in backends:
                 expect(backend, "/health/live", 200)
                 expect(backend, "/health/ready", 503)
             expect(base, upload_path, 503, key=key, method="POST", body=upload)
             compose("start", "postgres")
-            for backend in backends:
-                ready(backend)
+            for name, backend in zip(("api1", "api2"), backends):
+                ready(backend, name)
             unchanged()
+            print("Checking unwritable report storage", flush=True)
             try:
                 storage("chmod 0500 /reports")
                 for backend in backends:
@@ -189,26 +203,29 @@ def main():
                 unchanged()
             finally:
                 storage("chmod 0700 /reports")
-            for backend in backends:
-                ready(backend)
+            for name, backend in zip(("api1", "api2"), backends):
+                ready(backend, name)
 
             print("Checking cold paired backup/restore and persisted credential recovery", flush=True)
             compose("stop", "-t", "20", "api1", "api2")
             dump = compose("exec", "-T", "postgres", "pg_dump", "-U", "registry", "-d", "registry",
                            "--clean", "--if-exists", "--no-owner")
             archive = storage("tar -C /reports -cf - .")
-            compose("start", "api1", "api2")
-            for backend in backends:
-                ready(backend)
+            restart_apis()
             # Make the running state different, then restore the exact cold pair.
-            expect(base, config_path, 200, key=admin, method="PUT", body={"template": {"changed": True}})
+            changed = json.loads(expect(base, config_path, 200, key=admin, method="PUT",
+                                        body={"template": {"changed": True}})[2])
+            later_report = dict(report, error={"kind": "start", "message": "after-backup-canary"})
+            expect(base, upload_path, 204, key=key, method="POST",
+                   body={"configurationRevision": changed["revision"], "uploadId": str(uuid.uuid4()),
+                         "result": later_report})
+            require(expect(base, config_path + "/report", 200, key=admin)[2] != original,
+                    "post-backup report was not replaced")
             compose("stop", "-t", "20", "api1", "api2")
             compose("exec", "-T", "postgres", "psql", "-U", "registry", "-d", "registry",
                     "-v", "ON_ERROR_STOP=1", data=dump)
             storage("tar -C /reports -xf -", data=archive)
-            compose("start", "api1", "api2")
-            for backend in backends:
-                ready(backend)
+            restart_apis()
             unchanged()
             expect(base, upload_path, 204, key=key, method="POST", body=upload)
             unchanged()
@@ -220,9 +237,14 @@ def main():
             expect(base, path + "/api-keys/" + key_id, 204, key=admin, method="DELETE")
             for _ in range(4):
                 expect(base, "/v1/agent/configurations", 401, key=key)
+            compose("stop", "-t", "20", "api1", "api2")
+            restart_apis()
+            expect(base, "/v1/agent/configurations", 200, key=replacement)
+            for _ in range(4):
+                expect(base, "/v1/agent/configurations", 401, key=key)
             logs = compose("logs", "--no-color", "api1", "api2")
             for secret in (admin, key, replacement, "template-canary", "parameters-canary",
-                           "dsc-error-canary", "stderr-canary", "demo-machine-canary",
+                           "dsc-error-canary", "after-backup-canary", "stderr-canary", "demo-machine-canary",
                            "postgres://", "/reports/"):
                 require(secret.encode() not in logs, "sensitive canary found in API logs")
             for event in (b'"msg":"database transaction"', b'"msg":"report write"', b'"route":"/v1/agent/configurations"'):
