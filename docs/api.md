@@ -42,8 +42,8 @@ Initial administrator identity/key creation is a **local bootstrap CLI** action.
 ### PR 2 administration details
 
 PR 2 implements machine and credential administration in this table. PR 3 adds
-desired-configuration administration and machine GET polling; status/report
-routes remain deferred. All implemented
+desired-configuration administration and machine GET polling; PR 4 adds the
+status/report routes. All implemented
 administration routes authorize the administrator role before validating resource
 IDs or querying machine data. Machine keys receive `403` even for their own UUID;
 missing, malformed, forged-role, and revoked credentials receive `401` with
@@ -311,6 +311,62 @@ The local sync agent must remember an upload ID while retrying, and must not inf
 ```
 
 `hasReport` is a computed Boolean, not the underlying storage key. Do not expose internal filenames to callers. Report GET returns the original dscd JSON object and requires admin role. No history endpoint.
+
+### PR 4 report details
+
+POST returns `204`, including a retry of the persisted last upload ID. Revision
+validation precedes idempotency, so an old retry after content change returns
+`409` (`stale_configuration_revision`); a removed configuration returns `404`
+(`configuration_not_found`). There is no history-based deduplication or
+cross-agent ordering guarantee. Both admin GETs return `404` (`report_not_found`)
+before the first execution, and all report/status responses use `no-store`.
+Desired content changes retain the last execution at its original revision;
+they never relabel its status as an execution of the new desired content.
+
+The complete POST wrapper is bounded by `-max-report-bytes` (default 16 MiB),
+independently of `-max-request-bytes`. Oversize input returns `413`; unsupported
+media type/charset returns `415`; malformed envelopes return `400`
+(`invalid_report`). JSON has the same duplicate-key (including escaped aliases),
+UTF-8, surrogate and 128-level nesting rules as desired-state input. Wrapper
+fields are exactly `configurationRevision`, `uploadId`, `result`, with canonical
+lowercase hyphenated UUIDs. Unknown additive envelope/payload fields are
+preserved; case aliases of known envelope/error fields are rejected so Go
+consumers cannot interpret a different summary. No query parameters are accepted
+for POST or either admin GET.
+
+Envelope semantics were verified against
+[`dsc-reconciler` at cce7df1](https://github.com/Bpoe/dsc-reconciler/tree/cce7df1764c2f25fe5e1d1066a77e387d2b218b5):
+`internal/dsc/result.go`, `client.go`, `protocol.go` and
+`internal/reconcile/reconciler.go`, `input.go`.
+`schemaVersion` is integer 1; `configuration` is exactly the managed path.
+`startedAt`/`finishedAt` must be nonzero UTC RFC3339 timestamps ending in `Z`,
+with finish not before start; `durationMs` is a nonnegative int64.
+Duration need not exactly equal wall-clock subtraction (dscd uses a monotonic
+duration). `operation`, when present/non-null, is `set` or `test`. Optional/null
+failure fields (`operation`, `parameters`, `inputHash`, `exitCode`, `dscResult`,
+`stderr`) are allowed. A present nonempty `parameters` path must be the managed
+sidecar; a present nonempty `inputHash` is `sha256:` plus 64 lowercase hex digits.
+It is never compared to a server content revision.
+
+Real outcomes are `succeeded`, `failed`, `canceled`. Success requires an
+operation, object-valued `dscResult`, no error and no exit code. Failed/canceled
+attempts require an error object with string `kind`/`message`; known kinds are
+`input`, `start`, `dsc`, `output`, `exit`, `canceled`. Only `canceled` pairs with
+outcome `canceled`; the others pair with `failed`. `exitCode` is nullable or a
+nonnegative integer. `dscResult` is object/null/omitted, and its contents are
+never interpreted: `hadErrors`/resource compliance do not override the envelope.
+A successful test with drift stays `succeeded`. Messages, stderr, opaque
+payloads and filenames never enter the SQL summary or routine logs.
+
+Full-report GET returns exactly the nested `result` bytes (including internal
+formatting and unknown fields), without reserializing it or returning the
+wrapper. File writes/sync/close must finish before SQL commit. Dependencies
+return `503` (`database_unavailable` or `report_storage_unavailable`), without
+paths or underlying diagnostics. Failed writes and failed SQL commits do not
+replace the previous valid report. See the
+[storage and orphan maintenance contract](../README.md#latest-reports-and-execution-status)
+for cross-instance reader protection, ambiguous commit acknowledgements and
+bounded offline cleanup.
 
 ## 4. Health
 

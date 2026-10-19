@@ -3,11 +3,11 @@
 `dscregd` is the DSC Registry configuration-delivery server. It does not execute
 DSC. The separate `dscsyncd` sync agent and `dscd` reconciler are not included.
 
-**Current milestone: PR 3.** The executable provides local administrator bootstrap,
+**Current milestone: PR 4.** The executable provides local administrator bootstrap,
 API-key authentication, machine and credential administration, SQLite/PostgreSQL
 migrations, desired-configuration CRUD and conditional machine polling,
-report-storage checks, graceful shutdown, and health endpoints.
-Report ingestion/status/retrieval remain deferred to PR 4.
+full dscd report ingestion, latest execution summaries and admin-only report
+retrieval, report-storage checks, graceful shutdown, and health endpoints.
 See [the staged plan](docs/implementation-plan.md)
 and the [API](docs/api.md) and [design](docs/design.md) contracts.
 
@@ -25,7 +25,7 @@ go run .\cmd\dscregd -development-http -database-dsn .\data\registry.db -report-
 
 Protect `data` with permissions/ACLs granting access only to the service account
 and authorized operators. On POSIX systems, create both directories with mode
-`0700`. New database and probe files request mode `0600`; Windows permissions
+`0700`. New database, report and probe files request mode `0600`; Windows permissions
 must be controlled using ACLs. Existing permissions are not rewritten.
 
 ```powershell
@@ -135,7 +135,7 @@ settings without printing their values or file contents.
 | `-report-root` | `reports` | Existing private directory, local or shared |
 | `-poll-max-age` | `5m` | Positive whole seconds; private agent response cache max age |
 | `-max-request-bytes` | `1048576` | Administration/configuration JSON body limit, including template and parameters |
-| `-max-report-bytes` | `16777216` | Reserved report request limit, at least the request limit |
+| `-max-report-bytes` | `16777216` | Complete report-upload wrapper limit, at least the request limit |
 | `-read-header-timeout` | `5s` | HTTP header read deadline |
 | `-read-timeout` | `30s` | HTTP read deadline and administration request context timeout |
 | `-write-timeout` | `30s` | HTTP response write deadline |
@@ -181,14 +181,15 @@ The pool allows ten connections. PostgreSQL uses text UUID/timestamp
 representations to match SQLite's existing schema, with `BIGINT` revisions and
 `BYTEA` digests. Both schemas enforce owner existence, immutable identities,
 object-shaped configuration JSON, and deletion cascades. PostgreSQL owner checks
-lock against concurrent deletion. This milestone performs no report ingestion
-or orphan-report cleanup.
+lock against concurrent deletion. Report publication and full-report reads use
+the machine row lock on PostgreSQL and an immediate transaction on SQLite,
+also across independent API instances. No in-process mutex is required.
 
 Logs are structured JSON on stderr. Request logs contain only the method,
 known route label, status, and duration, not raw URLs, queries, headers, or
 bodies. Health endpoints are unauthenticated. Administration endpoints require
 an administrator API key even in development mode; there is no auth bypass.
-Status and report APIs remain unimplemented (`404` for authorized callers).
+Full reports are sensitive and are available only to administrator credentials.
 
 ## Bootstrap and credential rotation
 
@@ -307,6 +308,72 @@ them. Errors are not cached and must not cause the agent to erase local state.
 Administrator keys cannot use this machine endpoint, and machine keys cannot
 use administration endpoints, even for their own machine.
 
+## Latest reports and execution status
+
+Machine credentials can POST `/v1/agent/configurations/{name}/report`, containing
+`configurationRevision` (the installed opaque content UUID), `uploadId` (a stable
+UUID retained across retries), and the original dscd schemaVersion=1 `result`.
+The result must identify `managed/{name}.json`; its optional sidecar identifies
+`managed/{name}.parameters.json`. See the [upload contract](docs/api.md#upload-latest-dscd-result)
+for validation and examples. No DSC binary or resource-schema interpretation is
+involved. A successful `test` with drift is still execution success.
+
+Only current configurations/revisions accept reports: removed configurations
+return `404`; stale revisions return `409`, including retries after a desired
+change. A retry of the last upload ID returns `204` without changing its report
+or received timestamp. V1 assumes one ordered sync-agent writer per machine;
+the last ID is not an upload history or a cross-agent sequencing protocol.
+Reports/status never change desired-state revisions, representations or ETags.
+
+Admin GET `/v1/machines/{machineId}/configurations/{name}/status` returns only the
+latest small summary. GET at the same prefix plus `/report` returns the original
+nested dscd object bytes, including opaque unknown fields and exact numbers,
+without the upload wrapper. Both are `no-store`; before the first report they
+return `404` (`report_not_found`). Updating desired content retains the previous
+execution summary with its original revision until a new report arrives.
+Deleting a configuration or machine removes its SQL status by cascade.
+
+The server creates a flat, server-generated UUID `.json` filename exclusively
+under its opened `os.Root`, with mode `0600`. It writes directly to that new
+file, syncs and closes it successfully **before** committing the SQL summary and
+relative pointer. There is no temporary file or rename. Files are never reused.
+SQL locks protect readers until their file is read and closed, so another
+replica cannot retire an in-flight report. The previous file is retired only
+after commit and an SQL check that no status references it. A retirement failure
+is logged without paths or report data; the committed upload still succeeds.
+Write/sync/close failures leave the previous valid status/file intact.
+SQL/commit errors likewise preserve the previous valid reference; the new file
+is left for cleanup, because a lost commit acknowledgement might mean it was
+actually committed. Retry with the same upload ID to resolve that uncertainty.
+
+### Bounded offline orphan cleanup
+
+V1 deliberately has **no online age-based scavenger**: an unreferenced file may
+belong to an active transaction on another replica. Configuration/machine
+deletion, a crash during direct writes, SQL failure or failed retirement may
+leave orphaned files. Perform bounded maintenance as follows:
+
+1. Stop **all** API instances sharing the database/root, and keep them stopped
+   through cleanup. Do not merely stop one replica or rely on file age.
+2. In a protected maintenance process, enumerate at most 1,000 entries per
+   batch in the canonical report root (retain an enumeration cursor for the
+   next batch). Consider only regular, non-symlink files named exactly a
+   lowercase canonical UUID plus `.json`; never recurse or follow symlinks.
+3. For each candidate, query `SELECT EXISTS(SELECT 1 FROM configuration_status
+   WHERE report_path = $1)` using a bound relative filename. Delete only if the
+   query succeeds and returns false. On any SQL/filesystem error, stop and
+   investigate; never delete by a filename-only glob. Keep all referenced files.
+4. Repeat bounded batches as needed, then restart the API instances. Treat
+   report files and any maintenance output as sensitive.
+
+This is an operator maintenance procedure, not an additional daemon or storage
+provider. Back up/restore the database and its referenced files together.
+Filesystem calls cannot be forcibly interrupted portably; HTTP/context
+deadlines are checked between operations. Storage must honor successful
+write/sync/close and SQL commit acknowledgements; this is not a distributed
+filesystem/database transaction or a claim of power-loss durability on every
+network filesystem.
+
 ## Development checks
 
 From the repository root in PowerShell:
@@ -324,7 +391,8 @@ go test -race ./...
 ```
 
 The normal suite always exercises SQLite. To also run real PostgreSQL migration,
-constraint, CRUD, concurrent-bootstrap/deletion/configuration updates and
+constraint, CRUD, concurrent-bootstrap/deletion/configuration updates,
+report write/commit faults, concurrent publication/read/retirement,
 polling, CLI, and HTTP tests, set
 `DSCREGISTRY_TEST_POSTGRES_DSN` to a **disposable test database** before running
 `go test ./...`. Its account must be allowed to create schemas. Each test creates
@@ -347,5 +415,5 @@ PostgreSQL configuration fails CI rather than opting out. Separate builds
 check Linux amd64 and arm64 with CGO disabled. CI does not publish artifacts
 or deploy the server.
 
-This CI-only portion of PR 5 was moved forward after PR 2. Report ingestion and
-the remaining production-readiness work are still deferred.
+This CI-only portion of PR 5 was moved forward after PR 2. The remaining
+production-readiness work and the separate sync agent are still deferred.

@@ -35,17 +35,9 @@ func ValidName(name string) bool {
 }
 
 func Parse(body []byte) (Content, error) {
-	if !utf8.Valid(body) || !validSurrogates(body) {
-		return Content{}, ErrInvalid
-	}
-	d := json.NewDecoder(bytes.NewReader(body))
-	d.UseNumber()
-	value, err := readValue(d, 0)
+	value, err := parseJSON(body)
 	if err != nil {
-		return Content{}, ErrInvalid
-	}
-	if _, err := d.Token(); err != io.EOF {
-		return Content{}, ErrInvalid
+		return Content{}, err
 	}
 	object, ok := value.(map[string]any)
 	if !ok {
@@ -68,6 +60,29 @@ func Parse(body []byte) (Content, error) {
 		}
 	}
 	return Content{Template: template, Parameters: parameters}, nil
+}
+
+// ValidateJSON applies the same lossless, bounded-depth and unambiguous JSON
+// rules to opaque reports without reserializing their original bytes.
+func ValidateJSON(body []byte) error {
+	_, err := parseJSON(body)
+	return err
+}
+
+func parseJSON(body []byte) (any, error) {
+	if !utf8.Valid(body) || !validSurrogates(body) {
+		return nil, ErrInvalid
+	}
+	d := json.NewDecoder(bytes.NewReader(body))
+	d.UseNumber()
+	value, err := readValue(d, 0)
+	if err != nil {
+		return nil, ErrInvalid
+	}
+	if _, err := d.Token(); err != io.EOF {
+		return nil, ErrInvalid
+	}
+	return value, nil
 }
 
 func document(value any) (json.RawMessage, bool) {

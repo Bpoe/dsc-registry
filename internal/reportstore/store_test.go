@@ -111,6 +111,17 @@ func TestRetargetedSymlinkDoesNotRedirectStorage(t *testing.T) {
 	if err != nil || !os.SameFile(original, opened) {
 		t.Fatalf("storage was redirected: %v", err)
 	}
+	name, err := store.Write(context.Background(), []byte(`{"original":true}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(first, name)); err != nil {
+		t.Fatal("report did not use original root", err)
+	}
+	entries, err := os.ReadDir(second)
+	if err != nil || len(entries) != 0 {
+		t.Fatal("report write followed retargeted symlink", err)
+	}
 }
 
 func TestReplacedRootIsNotReady(t *testing.T) {
