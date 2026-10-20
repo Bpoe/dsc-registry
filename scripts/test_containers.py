@@ -21,6 +21,13 @@ tags = load("container-aliases")
 
 
 class ContainerTest(unittest.TestCase):
+    def test_dockerfile_defaults_to_mounted_configuration(self):
+        root = Path(__file__).resolve().parents[1]
+        commands = [json.loads(line.removeprefix("CMD ").strip())
+                    for line in (root / "Dockerfile").read_text().splitlines()
+                    if line.startswith("CMD ")]
+        self.assertEqual(commands, [["-config", "/etc/dscregd/config.json"]])
+
     def test_docker_context_allows_only_exact_binary_paths(self):
         root = Path(__file__).resolve().parents[1]
         patterns = [line for line in (root / ".dockerignore").read_text().splitlines()
@@ -52,6 +59,15 @@ class ContainerTest(unittest.TestCase):
         def docker(*args):
             calls.append(args)
             if args[1] == "create":
+                self.assertEqual(args[-1], "local:arm64", "The smoke test must not override the image CMD.")
+                mount = args[args.index("--mount") + 1]
+                options = dict(field.split("=", 1) for field in mount.split(",") if "=" in field)
+                self.assertEqual(options["target"], "/etc/dscregd/config.json")
+                self.assertIn("readonly", mount.split(","))
+                settings = json.loads(Path(options["source"]).read_text())
+                self.assertTrue(settings["externalHttps"])
+                self.assertEqual(settings["database"]["dsn"], "/data/registry.db")
+                self.assertEqual(settings["reportRoot"], "/reports")
                 return b"isolated-container\n"
             if args[1] == "inspect":
                 return b"platform-image-id\n"
@@ -60,6 +76,7 @@ class ContainerTest(unittest.TestCase):
                 return json.dumps([{
                     "Os": "linux", "Architecture": "arm64",
                     "Config": {"User": "65532:65532", "Entrypoint": ["dscregd"],
+                               "Cmd": ["-config", "/etc/dscregd/config.json"],
                                "ExposedPorts": {"8080/tcp": {}}},
                 }]).encode()
             if args[1] == "cp":

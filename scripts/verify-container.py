@@ -59,13 +59,21 @@ def main():
     container = None
     with tempfile.TemporaryDirectory(prefix="dscregd-image-") as scratch:
         scratch = Path(scratch)
+        settings = scratch / "config.json"
+        settings.write_text(json.dumps({
+            "listenAddress": "0.0.0.0:8080",
+            "externalHttps": True,
+            "database": {"engine": "sqlite", "dsn": "/data/registry.db"},
+            "reportRoot": "/reports",
+        }), encoding="utf-8")
+        # This nonsensitive fixture must be readable by the container's non-root UID.
+        settings.chmod(0o644)
         try:
             container = run(
                 "docker", "create", "--platform", platform,
                 "--tmpfs", "/data:rw,mode=0700,uid=65532,gid=65532",
+                "--mount", f"type=bind,source={settings},target=/etc/dscregd/config.json,readonly",
                 "--publish", "127.0.0.1::8080", args.image,
-                "-external-https", "-listen=0.0.0.0:8080",
-                "-database-dsn=/data/registry.db", "-report-root=/reports",
             ).decode().strip()
             # Resolve the selected platform's image, even with a multi-platform image store.
             image_id = run("docker", "inspect", "--format", "{{.Image}}", container).decode().strip()
@@ -75,6 +83,8 @@ def main():
             config = image["Config"]
             require(config["User"] == "65532:65532", "Container must run as UID/GID 65532.")
             require(config["Entrypoint"] == ["dscregd"], "Unexpected container entrypoint.")
+            require(config.get("Cmd") == ["-config", "/etc/dscregd/config.json"],
+                    "Container must load the mounted configuration by default.")
             require("8080/tcp" in config["ExposedPorts"], "Container must expose port 8080.")
             binary = scratch / "dscregd"
             bundle = scratch / "ca-certificates.crt"
@@ -109,7 +119,7 @@ def main():
             require(run("docker", "inspect", "--format", "{{.State.ExitCode}}", container) == b"0\n",
                     "Container did not shut down cleanly.")
             print(f"PASS: {platform}, archive/image executable SHA-256 {digest}, "
-                  "version/commit, non-root runtime, CA trust and HTTP health")
+                  "version/commit, default configuration startup, non-root runtime, CA trust and HTTP health")
         finally:
             if container:
                 run("docker", "rm", "--force", container)

@@ -191,8 +191,9 @@ The Dockerfile **does not compile Go or download application dependencies**.
 It copies the exact `bin/dscregd` from each checksummed Linux release archive.
 CI validates each image natively, including SHA-256 equality between the
 archive member and the executable extracted from the image, its embedded
-version/commit, non-root runtime, CA trust and HTTP health. The AMD64 image
-also runs the two-replica PostgreSQL/TLS recovery tests.
+version/commit, non-root runtime, CA trust and HTTP health using the image's
+default command with a mounted configuration, not replacement startup flags.
+The AMD64 image also runs the two-replica PostgreSQL/TLS recovery tests.
 
 After manual release publication, `publish-container.yml` downloads only that
 release's two Linux archives and `SHA256SUMS`, verifies them again, and uses
@@ -228,7 +229,15 @@ are intentionally mutable and are not deployment locks.
 ### Single-instance homelab Compose
 
 The runtime uses a digest-pinned Alpine image with verified bundled CA roots,
-port 8080, and UID/GID `65532:65532`, not root. This example assumes an existing
+port 8080, and UID/GID `65532:65532`, not root. Its default command is
+`dscregd -config /etc/dscregd/config.json`. Mount a readable configuration at
+that path selecting exactly one transport mode; the image does not ship an
+active configuration or silently enable plaintext HTTP. Without a mounted
+configuration, startup fails rather than exposing an unconfigured service.
+Explicit container arguments replace the default command, so `--version`,
+`bootstrap -config ...`, and custom server flags remain available.
+
+This example assumes an existing
 TLS reverse proxy on the same host. Save this as `compose.yml` in a private
 operator directory, **not** in the source checkout:
 
@@ -238,7 +247,6 @@ services:
   registry:
     image: ghcr.io/bpoe/dsc-registry:v0.1.0
     user: "65532:65532"
-    command: ["-config", "/etc/dscregd/config.json"]
     read_only: true
     tmpfs:
       - /tmp:rw,noexec,nosuid,size=16m,mode=1777
