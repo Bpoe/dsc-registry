@@ -347,7 +347,11 @@ func TestReportHistoryFailuresBothEngines(t *testing.T) {
 			strings.Replace(body, `"configurationName":"docker",`, "", 1),
 			strings.Replace(body, `"configurationName"`, `"machineId"`, 1),
 			strings.Replace(body, `"configurationName":"docker"`, `"configurationName":"../x"`, 1),
-			strings.Replace(body, "managed/docker.json", "managed/other.json", 1),
+			strings.Replace(body, `"configuration":"managed/docker.json",`, "", 1),
+			strings.Replace(body, `"configuration":"managed/docker.json"`, `"configuration":""`, 1),
+			strings.Replace(body, `"configuration":"managed/docker.json"`, `"configuration":null`, 1),
+			strings.Replace(body, `"configuration":"managed/docker.json"`, `"configuration":7`, 1),
+			strings.Replace(body, `"parameters":"managed/docker.parameters.json"`, `"parameters":[]`, 1),
 			strings.Replace(body, `"schemaVersion":1`, `"schemaVersion":2`, 1),
 			strings.Replace(body, `"operation":"test"`, `"operation":"get"`, 1),
 		} {

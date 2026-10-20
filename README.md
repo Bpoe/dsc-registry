@@ -416,8 +416,15 @@ use administration endpoints, even for their own machine.
 Machine credentials can POST `/v1/agent/reports`, containing `configurationName`,
 `configurationRevision` (the installed opaque content UUID), `uploadId` (a stable
 UUID retained across retries), and the original dscd schemaVersion=1 `result`.
-The result must identify `managed/{name}.json`; its optional sidecar identifies
-`managed/{name}.parameters.json`. See the [upload contract](docs/api.md#upload-a-dscd-result)
+The result's `configuration` must be a nonempty string; `parameters` may be
+omitted, null, or a string (including empty). Both are informational client
+paths preserved unchanged: `dscregsync/docker.json`, `managed/docker.json`,
+`custom/docker.yaml`, and other nonempty configuration paths are accepted.
+Registry enforces no local directory or filename convention, including for
+parameter paths. These values never determine authorization, database record
+selection, or server filesystem paths; identity comes from the authenticated
+machine and `configurationName` (or `{name}` on the legacy route).
+See the [upload contract](docs/api.md#upload-a-dscd-result)
 for validation and examples. No DSC binary or resource-schema interpretation is
 involved. A successful `test` with drift is still execution success.
 

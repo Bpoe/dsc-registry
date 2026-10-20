@@ -24,7 +24,7 @@ func (a *adminAPI) uploadReport(w http.ResponseWriter, r *http.Request, id, name
 	}
 	upload, err := report.Parse(body, name)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid_report", "Expected a valid wrapped dscd v1 report for this managed configuration")
+		writeError(w, http.StatusBadRequest, "invalid_report", "Expected a valid wrapped dscd v1 report")
 		return
 	}
 	storageFailure := false

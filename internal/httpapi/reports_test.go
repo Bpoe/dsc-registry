@@ -33,6 +33,101 @@ func reportBody(revision, uploadID, result string) string {
 	return `{"configurationRevision":"` + revision + `","uploadId":"` + uploadID + `","result":` + result + `}`
 }
 
+func TestReportPathsHTTPBothEngines(t *testing.T) {
+	testdb.Engines(t, func(t *testing.T, engine, dsn string) {
+		logs := &bytes.Buffer{}
+		_, db, admin, machine, key := configurationAPI(t, engine, dsn, logs)
+		root := t.TempDir()
+		files, err := reportstore.Open(context.Background(), root)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer files.Close()
+		handler := New(db, files, time.Second, 5*time.Second, 37*time.Second, 2048, 4096, slog.New(slog.NewJSONHandler(logs, nil)))
+		base := "/v1/machines/" + machine.ID
+		configPath := base + "/configurations/docker"
+		config := decodeResponse[database.ConfigurationResult](t,
+			apiRequest(t, handler, admin.Key, "PUT", configPath, `{"template":{},"parameters":{}}`, 201))
+		paths := []struct {
+			name, configuration, parameters string
+		}{
+			{"managed", "managed/docker.json", "managed/docker.parameters.json"},
+			{"dscregsync", "dscregsync/docker.json", "dscregsync/docker.parameters.json"},
+			{"yaml", "custom/docker.yaml", "custom/docker.parameters.yaml"},
+			{"different-stem", "managed/other.json", "shared/values.json"},
+			{"bare", "docker", "parameters"},
+			{"absolute-unix", "/etc/dsc/config.d/docker.json", "/var/lib/dsc/values.json"},
+			{"absolute-windows", `C:\ProgramData\DSC\config.d\docker.json`, `D:\Shared Inputs\values.json`},
+			{"parent-relative", "../custom/docker.yaml", "../parameters/values.yaml"},
+		}
+		routes := []struct {
+			name, path     string
+			created, retry int
+		}{
+			{"collection", "/v1/agent/reports", 201, 200},
+			{"legacy", "/v1/agent/configurations/docker/report", 204, 204},
+		}
+		created := 0
+		for _, route := range routes {
+			for _, pathCase := range paths {
+				t.Run(route.name+"/"+pathCase.name, func(t *testing.T) {
+					configuration, err := json.Marshal(pathCase.configuration)
+					if err != nil {
+						t.Fatal(err)
+					}
+					parameters, err := json.Marshal(pathCase.parameters)
+					if err != nil {
+						t.Fatal(err)
+					}
+					result := strings.NewReplacer(
+						`"managed/docker.json"`, string(configuration),
+						`"managed/docker.parameters.json"`, string(parameters),
+					).Replace(rawSuccessReport)
+					body := reportBody(config.Revision, uuid.NewString(), result)
+					if route.name == "collection" {
+						body = `{"configurationName":"docker",` + body[1:]
+					}
+					apiRequest(t, handler, key.Key, "POST", route.path, body, route.created)
+					created++
+					apiRequest(t, handler, key.Key, "POST", route.path, body, route.retry)
+					for _, changed := range []string{
+						strings.Replace(body, `"configuration":`+string(configuration), `"configuration":"changed"`, 1),
+						strings.Replace(body, `"parameters":`+string(parameters), `"parameters":"changed"`, 1),
+					} {
+						apiRequest(t, handler, key.Key, "POST", route.path, changed, 409)
+					}
+					status := decodeResponse[database.ConfigurationStatus](t,
+						apiRequest(t, handler, admin.Key, "GET", configPath+"/status", "", 200))
+					for _, path := range []string{configPath + "/report", base + "/reports/" + status.ReportID + "/content"} {
+						if got := apiRequest(t, handler, admin.Key, "GET", path, "", 200); got.Body.String() != result {
+							t.Fatal("retrieved report paths or original bytes changed")
+						}
+					}
+					metadata, err := db.GetReport(context.Background(), machine.ID, status.ReportID, func(path string) error {
+						if filepath.Base(path) != path || !strings.HasSuffix(path, ".json") ||
+							!validUUID(strings.TrimSuffix(path, ".json")) {
+							t.Fatal("report storage key is not a server-generated UUID filename", path)
+						}
+						stored, err := os.ReadFile(filepath.Join(root, path))
+						if err == nil && string(stored) != result {
+							t.Fatal("stored report paths or original bytes changed")
+						}
+						return err
+					})
+					if err != nil || metadata.MachineID != machine.ID || metadata.ConfigurationName != "docker" ||
+						metadata.ConfigurationRevision != config.Revision {
+						t.Fatal("embedded paths changed report identity", metadata, err)
+					}
+				})
+			}
+		}
+		entries, err := os.ReadDir(root)
+		if err != nil || len(entries) != created {
+			t.Fatal("retries or conflicting paths created extra report files", entries, err)
+		}
+	})
+}
+
 func TestReportsHTTPBothEngines(t *testing.T) {
 	testdb.Engines(t, func(t *testing.T, engine, dsn string) {
 		logs := &bytes.Buffer{}
@@ -192,7 +287,11 @@ func TestReportBoundsAndStorageFailureBothEngines(t *testing.T) {
 			strings.Replace(body, `"schemaVersion":1`, `"schemaVersion":2`, 1),
 			strings.Replace(body, `"schemaVersion":1`, `"schemaVersion":1,"schemaVersion":1`, 1),
 			strings.Replace(body, `"operation":"test"`, `"operation":"get"`, 1),
-			strings.Replace(body, "managed/docker.json", "managed/other.json", 1),
+			strings.Replace(body, `"configuration":"managed/docker.json",`, "", 1),
+			strings.Replace(body, `"configuration":"managed/docker.json"`, `"configuration":""`, 1),
+			strings.Replace(body, `"configuration":"managed/docker.json"`, `"configuration":null`, 1),
+			strings.Replace(body, `"configuration":"managed/docker.json"`, `"configuration":7`, 1),
+			strings.Replace(body, `"parameters":"managed/docker.parameters.json"`, `"parameters":[]`, 1),
 			strings.Replace(body, `"unknown"`, "\"\xff\"", 1),
 		} {
 			// Larger invalid representations may first hit the body bound.
