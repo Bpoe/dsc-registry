@@ -153,8 +153,8 @@ leading zeroes and build metadata are not accepted.
 The tag run reruns all Go/SQLite/PostgreSQL and race/fuzz checks before native
 package builds. Container and shared-volume deployment checks then reuse the
 validated package artifacts from that same run, without another Go build.
-It tests the **same packaged
-binaries** against their archive counterparts, one-time bootstrap, health,
+Package lifecycle tests check the **same packaged binaries** against their
+archive counterparts, one-time bootstrap, health,
 authorization, configuration ETags, report upload/retry and retrieval after
 restart. All platforms check that uninstall retains a stored report alongside
 SQL and configuration. DEB tests use Ubuntu systemd (amd64/arm64), RPM tests
@@ -166,7 +166,7 @@ capacity, RPM systemd behavior, or Authenticode/package signatures.
 Only successful package jobs upload artifacts. The release job downloads from
 that invoking run, verifies the exact eight-asset set and all checksums, rechecks
 the remote tag's commit, and creates a draft with generated notes and combined
-checksums only after both container architectures pass validation. Only that
+checksums only after both container startup/readiness smoke tests pass. Only that
 final draft job receives `contents: write`. Existing releases,
 including drafts, are never intentionally overwritten; a failed partial draft
 requires manual inspection/removal before rerunning. Do not move a published
@@ -182,27 +182,23 @@ anything to a server.
 
 Published stable releases provide `ghcr.io/bpoe/dsc-registry` for `linux/amd64`
 and `linux/arm64`. The multi-platform manifest lets Docker select the native
-architecture. For release `v0.1.0`, version tags are `v0.1.0` and `0.1.0`;
-`0.1` follows the highest published patch in that series, and `latest` follows
-the highest published stable version. Older releases never move these aliases
-backward. Drafts, prereleases and pull requests do not publish images.
+architecture. Each release publishes only its exact `vX.Y.Z` tag, for example
+`ghcr.io/bpoe/dsc-registry:v0.1.0`. There are no unprefixed, minor-version or
+`latest` aliases. Drafts, prereleases and pull requests do not publish images.
 
 The Dockerfile **does not compile Go or download application dependencies**.
-It copies the exact `bin/dscregd` from each checksummed Linux release archive.
-CI validates each image natively, including SHA-256 equality between the
-archive member and the executable extracted from the image, its embedded
-version/commit, non-root runtime, CA trust and HTTP health using the image's
-default command with a mounted configuration, not replacement startup flags.
-The AMD64 image also runs the two-replica PostgreSQL/TLS recovery tests.
+It copies `bin/dscregd` from the existing Linux release archives. Package
+lifecycle tests remain responsible for binary validation. Container CI
+downloads those same-run artifacts, builds each image on its native runner,
+and checks `/health/ready` using the default command and a mounted
+configuration. The AMD64 image also runs the existing two-replica
+PostgreSQL/TLS recovery test.
 
 After manual release publication, `publish-container.yml` downloads only that
-release's two Linux archives and `SHA256SUMS`, verifies them again, and uses
-the **Dockerfile at the release's tagged commit**. It validates both images
-(ARM64 under QEMU), publishes version tags, and verifies the resulting index
-and binaries before promoting eligible aliases to the same digest. A single
-queued publishing concurrency group covers alias decisions and writes;
-eligibility is refreshed against all published stable versions, rather than
-publication dates or GitHub's manually selected "latest" release.
+release's two Linux archives and `SHA256SUMS`, verifies the archive checksums,
+and extracts the executables. One Buildx build/push uses the **Dockerfile at
+the release's tagged commit** to publish both architectures to GHCR. It does
+not rebuild Go, rerun package tests, or rebuild and retest the images.
 
 The workflow authenticates with `GITHUB_TOKEN`, with `contents: read` and
 `packages: write` only; no PAT is needed. All other build/validation jobs lack
@@ -213,22 +209,19 @@ If the package already exists, ensure this repository has Actions write
 access. Do not put registry credentials into the image or Compose file.
 
 The publishing job summary reports `ghcr.io/bpoe/dsc-registry@sha256:...`
-and the tags attached to that multi-platform index. A failed publication can
+for that multi-platform index. A failed publication can
 be retried by rerunning the failed workflow; it still uses that release's
-assets, not a recent CI run. A failure after the version push may leave version
-tags published without alias promotion; inspect the failure before retrying.
-Never move a release tag or replace its assets.
+assets, not a recent CI run. Never move a release tag or replace its assets.
 
 Use a reviewed version such as `ghcr.io/bpoe/dsc-registry:v0.1.0` to select a
 release. For an immutable deployment, use the **index digest** from the job
 summary as the Compose `image`, for example
 `ghcr.io/bpoe/dsc-registry@sha256:<index-digest>`. Version tags can be republished
-by workflow retries; digest pinning is stronger. `latest` and minor aliases
-are intentionally mutable and are not deployment locks.
+by workflow retries; digest pinning is stronger.
 
 ### Single-instance homelab Compose
 
-The runtime uses a digest-pinned Alpine image with verified bundled CA roots,
+The runtime uses a digest-pinned Alpine image with bundled CA roots,
 port 8080, and UID/GID `65532:65532`, not root. Its default command is
 `dscregd -config /etc/dscregd/config.json`. Mount a readable configuration at
 that path selecting exactly one transport mode; the image does not ship an
@@ -325,17 +318,8 @@ docker build --platform linux/amd64 -t dscregd:local .
 ```
 
 For ARM64 use `dist/container/arm64/dscregd` and `--platform linux/arm64`.
-For a verified release archive, use the shared staging command instead of
-manually copying the binary (the staging destination must not already exist):
-
-```sh
-python3 packaging/verify-assets.py --directory /path/to/downloaded-release \
-  --version v0.1.0 --stage-container amd64 --output dist/container
-docker build --platform linux/amd64 -t dscregd:v0.1.0 .
-```
-
-That download directory must contain the exact archive and its trusted
-`SHA256SUMS`. Verification checks the archive before reading its executable.
+For a release binary, first verify and extract the archive as described in
+[release packages](#release-packages), then stage its `bin/dscregd` above.
 Only the two exact staged binary paths are allowed by `.dockerignore`; even
 other files under `dist` are excluded. Generated executables stay gitignored.
 Docker does not build source. For local source testing, build once outside
@@ -799,8 +783,8 @@ mount startup gates and your actual DB/NFS/edge failure domains.
 
 CI runs the local-volume recovery demo and normal/race SQLite/PostgreSQL
 suites plus bounded fuzz smoke runs and Linux amd64/arm64 builds. Container
-checks reuse that run's package archives, including native ARM64 execution
-and direct archive/image binary SHA-256 comparisons. Hosted CI
+checks reuse that run's package archives for native AMD64/ARM64 build and
+readiness smoke tests. Hosted CI
 has no operator-provided NFS export. Therefore real-NFS execution remains an
 **external acceptance gate** until an operator records the exact commit,
 mount/client/server configuration and successful NFS-mode result. This

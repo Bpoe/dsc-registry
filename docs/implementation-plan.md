@@ -173,13 +173,12 @@ Packages never auto-bootstrap or start an unconfigured service. See the
 This does not close the existing real-NFS gate or add DSC/sync-agent code.
 
 Container publication reuses those Linux archive binaries without another Go
-build. After package lifecycle jobs, native amd64/arm64 image checks verify
-archive/image executable SHA-256 equality, version/commit, CA trust and health;
-the AMD64 image also runs the existing two-replica recovery harness. Only manual
-stable-release publication triggers GHCR upload, using that release's checksums,
-archives and tagged Dockerfile. Version tags share a multi-platform index;
-serialized, semantic-version-gated alias promotion prevents `latest` and minor
-aliases from moving backward. No workflow deploys the published image.
+build. After package lifecycle jobs, native amd64/arm64 images receive a
+startup/readiness smoke test; the AMD64 image also runs the existing two-replica
+recovery harness. Only manual stable-release publication triggers GHCR upload.
+The publishing workflow verifies that release's archive checksums, extracts the
+binaries, and builds/pushes one multi-platform image with only the `vX.Y.Z` tag,
+using the tagged Dockerfile. No workflow deploys the published image.
 
 ## Separate project: dscsyncd
 
