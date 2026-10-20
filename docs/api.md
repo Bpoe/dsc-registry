@@ -324,7 +324,7 @@ Content-Type: application/json
   "uploadId": "95951a72-7b8f-43e2-b602-1802d091c91d",
   "result": {
     "schemaVersion": 1,
-    "configuration": "managed/docker.json",
+    "configuration": "dscregsync/docker.json",
     "operation": "test",
     "startedAt": "2026-10-18T12:00:00Z",
     "finishedAt": "2026-10-18T12:00:00.005Z",
@@ -363,10 +363,19 @@ Server validation:
 
 1. Authenticate machine; obtain its immutable machine ID from the API key only. Reject supplied machine-ID fields.
 2. Require a safe `configurationName` and canonical UUID `configurationRevision`. Accept historical revisions and removed configuration names. These are reported associations, not a server-verified assertion that particular inputs executed.
-3. Validate wrapper, `uploadId`, `result.schemaVersion == 1`, expected managed `configuration` path **`managed/{name}.json`**, timestamps, outcome/error enum *as specified by dscd*; allow legal null/optional fields. The managed sidecar, when present, is `managed/{name}.parameters.json`. Reject malformed JSON/oversize payloads. Never interpret nested DSC resource status.
+3. Validate wrapper, `uploadId`, `result.schemaVersion == 1`, a nonempty string `result.configuration`, timestamps, outcome/error enum *as specified by dscd*; allow legal null/optional fields. `result.parameters` may be omitted, null, or a string (including empty). Neither path is restricted to a directory, basename, or extension. Reject malformed JSON/oversize payloads. Never interpret nested DSC resource status.
 4. Preserve the original nested `result` JSON as the full report (no summary-only truncation). Write it directly to a new, uniquely named private file, sync and close it successfully before committing its relative path and metadata in SQL. The SQL commit atomically publishes the report to API readers; no temporary file or filesystem rename is used. Previous reports remain referenced by history.
 5. Deduplicate by authenticated machine, configuration name and `uploadId`. An exact retry returns `200` and the original metadata/Location without another file, new receive time or order change. Reusing that identity with another revision or different nested `result` bytes returns `409` (`upload_id_conflict`). Preserve the envelope bytes across retries; formatting changes inside `result` count as different bytes. Wrapper formatting is immaterial. Distinct upload IDs represent distinct records.
 6. Do not bump machine desired-state collection revision or collection ETag.
+
+`result.configuration` and `result.parameters` are informational client paths,
+preserved unchanged in the original envelope. For example,
+`managed/docker.json`, `dscregsync/docker.json`, and `custom/docker.yaml` are all
+valid configuration values; `dscregsync/` is an example, not an API requirement.
+Neither embedded path is used for authorization, database record selection,
+or server filesystem paths. Configuration identity comes from
+`configurationName` (or `{name}` on the named route), scoped to the authenticated
+machine.
 
 The local sync agent must remember an upload ID while retrying, and must not infer a service revision by comparing it with `dscd.inputHash`. The client can maintain a dot-prefixed managed metadata file, ignored by `dscd`, mapping a published local configuration/sidecar snapshot to its server-provided revision.
 
@@ -526,14 +535,16 @@ Envelope semantics were verified against
 [`dsc-reconciler` at cce7df1](https://github.com/Bpoe/dsc-reconciler/tree/cce7df1764c2f25fe5e1d1066a77e387d2b218b5):
 `internal/dsc/result.go`, `client.go`, `protocol.go` and
 `internal/reconcile/reconciler.go`, `input.go`.
-`schemaVersion` is integer 1; `configuration` is exactly the managed path.
+`schemaVersion` is integer 1; `configuration` is a required nonempty string
+describing the client's local input, without directory or filename restrictions.
 `startedAt`/`finishedAt` must be nonzero UTC RFC3339 timestamps ending in `Z`,
 with finish not before start; `durationMs` is a nonnegative int64.
 Duration need not exactly equal wall-clock subtraction (dscd uses a monotonic
 duration). `operation`, when present/non-null, is `set` or `test`. Optional/null
 failure fields (`operation`, `parameters`, `inputHash`, `exitCode`, `dscResult`,
-`stderr`) are allowed. A present nonempty `parameters` path must be the managed
-sidecar; a present nonempty `inputHash` is `sha256:` plus 64 lowercase hex digits.
+`stderr`) are allowed. A present non-null `parameters` value must be a string,
+with no directory or filename restrictions; empty strings are allowed.
+A present nonempty `inputHash` is `sha256:` plus 64 lowercase hex digits.
 It is never compared to a server content revision.
 
 Real outcomes are `succeeded`, `failed`, `canceled`. Success requires an
@@ -575,7 +586,7 @@ digest; later retries need no filesystem access.
 - `304` on matching validator including cache headers; `200` after change. Distinguish HTTP cache headers on 200/304.
 - Direct JSON-object `template` and optional JSON-object `parameters`; reject YAML HTTP bodies, embedded document strings, `{format,content}` wrappers, arrays and scalars; `.parameters`-suffix naming rejected.
 - YAML-to-JSON conversion is outside the server (e.g., in a CLI). Reordered object keys and insignificant whitespace are no-op PUTs; real content changes bump revisions. Null/missing parameters produce no sidecar, while `{}` creates an empty JSON parameter object.
-- Agent contract uses `managed/{name}.json`, optional `managed/{name}.parameters.json`, and the corresponding `.json.result.json` output path.
+- Both upload routes accept client-defined configuration and parameter paths, including `managed/`, `dscregsync/`, other directories and YAML filenames; preserve those values byte-for-byte and never use them as machine/configuration identities or server storage paths.
 - Valid `dscd` failure and success envelopes; `test` drift is not an execution failure; raw result retrievable byte-for-byte as a JSON value.
 - Report history and idempotency, conflicting upload identities, historical/deleted configuration reports, pagination, machine status, late historical reports not replacing current execution status, file write failure, SQL commit failure, orphan behavior, retry after interruption.
 - PostgreSQL and SQLite migrations/data behavior parity; concurrent requests; readiness and graceful shutdown.

@@ -19,7 +19,7 @@ administrator ── admin API ──┐
         machine API  ◀────────┘
              ▲
       dscsyncd (Go, independent)
-       ├── GET desired configurations; write files under managed/
+       ├── GET desired configurations; write to a client-owned directory
        └── POST latest dscd result envelopes
              │
           dscd (Go, independent)
@@ -106,6 +106,15 @@ A configuration `PUT` is create-or-replace. Identical content should be a no-op.
 
 Agent uploads submit the original v1 `dscd` result envelope, wrapped with the configuration name, service content revision and stable idempotency identifier. The server extracts only the small stable envelope fields needed for the status summary; `dscResult` is preserved unchanged and is **not** interpreted for resource compliance. Valid historical uploads are accepted even after desired-state changes or configuration deletion. Revision UUIDs are agent-reported associations, not proof of execution of particular inputs; the server does not retain historical desired documents to verify them. The local sync agent must map its installed inputs to the matching service revision, including outstanding results from an older revision.
 
+The envelope's `configuration` is a required nonempty string; `parameters` may
+be omitted, null, or a string (including empty). Both are informational client
+paths, preserved unchanged. Registry enforces no local directory, basename or
+extension: `managed/docker.json`, `dscregsync/docker.json`, and
+`custom/docker.yaml` are all valid examples. Only `configurationName` (or the
+legacy route's `{name}`) and the authenticated machine identify a report's
+configuration. Embedded paths never select database records, authorize access,
+or determine server filesystem paths.
+
 The service accepts retries safely, avoids reinterpreting raw report content, and bounds request body size and processing time. The machine-row lock serializes server acceptance and assigns an increasing report sequence independently of desired-state revisions. History uses this acceptance order, never machine wall-clock ordering. Current execution status selects only reports whose machine, configuration name and content revision match current desired state. A delayed historical upload can become `latestReceivedReport`, but cannot replace a current-revision result, change its outcome or execution timestamp, or make it stale. Among reports for the same current revision, the latest accepted execution still wins; stronger agent-side sequencing is not implemented. Retrying any accepted upload does not reorder it or change its timestamps. Reusing its machine/name/upload-ID identity with different revision or nested report bytes returns a conflict.
 
 Machine status is computed from reports and current desired configurations in a machine-locked transaction, not an independently maintained status table. `latestReport` and `lastExecutionAt` describe current-revision execution; `latestReceivedReport` and `lastReportReceivedAt` describe receipts independently. Per-name status also exposes current execution and latest receipt separately. It is current when a matching revision has a report, stale when only other revisions have reports, unreported when no report exists, and removed when no desired configuration exists. Aggregate execution outcome covers current desired revisions only: failed takes precedence over canceled, then unknown for missing current executions (including stale-only history), then succeeded. A machine without any reports is never_reported; one with history but no desired names is unknown. Removed names remain inspectable through their latest received report. No outcome implies online health or compliance.
@@ -148,9 +157,9 @@ Expose liveness/readiness endpoints, structured request logs without sensitive b
 The current [`dsc-reconciler`](https://github.com/Bpoe/dsc-reconciler) design is authoritative for `dscd` behavior:
 
 - Local inputs: Linux `/etc/dsc/config.d`; Windows `%ProgramData%\\dsc\\config.d`. `dscd` discovers recursively, skipping dot-prefixed names and symlinks.
-- `dscd` **in general** accepts `.yaml` or `.json` templates and matching `.parameters.yaml` or `.parameters.json` sidecars, including local administrator-owned YAML files. **DSC Registry-managed files are always JSON**: `managed/{name}.json` and, if parameters are present, `managed/{name}.parameters.json`. Each configuration is independent; filename sorting is **execution order only**, not dependency semantics.
-- Managed sync-agent files belong under an owned `managed/` subdirectory and must not overwrite administrator-owned local files.
-- Result files are mirrored under the results root, with suffix `.result.json` **after the template extension**. For Registry-managed `managed/docker.json`, the local result is `managed/docker.json.result.json`.
+- `dscd` **in general** accepts `.yaml` or `.json` templates and matching `.parameters.yaml` or `.parameters.json` sidecars, including local administrator-owned YAML files. **Registry sync writes JSON files**, for example `dscregsync/{name}.json` and, if parameters are present, `dscregsync/{name}.parameters.json`. This client writing convention does not restrict filenames in uploaded reports. Each configuration is independent; filename sorting is **execution order only**, not dependency semantics.
+- Managed sync-agent files belong under a client-owned subdirectory, for example `dscregsync/`, and must not overwrite administrator-owned local files. Registry does not enforce a specific local configuration directory.
+- Result files are mirrored under the results root, with suffix `.result.json` **after the template extension**. For example, a local `dscregsync/docker.json` produces `dscregsync/docker.json.result.json`. This is a client filesystem convention, not a Registry upload requirement.
 - Envelope `schemaVersion: 1` exposes `configuration`, `operation`, `parameters?`, `inputHash?`, `startedAt`, `finishedAt`, `durationMs`, `outcome`, `exitCode`, `dscResult`, `error`, and `stderr`. Some nullable/optional fields legitimately do not exist on failure.
 - `inputHash` follows `dscd-input-v2` framing over the **actual serialized file bytes** and effective `set`/`test` operation. It is **not** the server's opaque configuration revision or naïve content SHA-256. The sync agent must track revision-to-installed-input identity and must not fabricate equivalence. JSON input normalization by the Registry means the client's initial YAML/JSON formatting is not part of that identity.
 - The existing `dscd` default full-pass interval in repository documentation is currently **5 minutes**, not 15. Changing it to ~15 minutes plus jitter is a *separate proposed change* for fleet economics; do not silently describe it as already implemented.

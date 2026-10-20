@@ -70,11 +70,14 @@ func TestNamedUpload(t *testing.T) {
 	if err != nil || got.Name != "docker" || !bytes.Equal(got.Result, []byte(success)) {
 		t.Fatal("named upload changed original envelope", err)
 	}
+	got, err = Parse(bytes.Replace(body, []byte(`"configurationName":"docker"`), []byte(`"configurationName":"other"`), 1), "")
+	if err != nil || got.Name != "other" || !bytes.Equal(got.Result, []byte(success)) {
+		t.Fatal("embedded path overrode configuration name", err)
+	}
 	for _, invalid := range []string{
 		string(wrapped(success)),
 		strings.Replace(string(body), `"configurationName":"docker"`, `"configurationName":null`, 1),
 		strings.Replace(string(body), `"configurationName"`, `"ConfigurationName"`, 1),
-		strings.Replace(string(body), `"configurationName":"docker"`, `"configurationName":"other"`, 1),
 		strings.Replace(string(body), `"configurationName":"docker"`, `"configurationName":"../docker"`, 1),
 		strings.Replace(string(body), `"configurationName":"docker"`, `"configurationName":"docker","configurationName":"docker"`, 1),
 		strings.Replace(string(body), `"configurationName"`, `"machineId":"untrusted","configurationName"`, 1),
@@ -85,6 +88,45 @@ func TestNamedUpload(t *testing.T) {
 	}
 	if _, err := Parse(body, "docker"); err == nil {
 		t.Fatal("legacy path accepted a configuration override")
+	}
+}
+
+func TestReportPathFields(t *testing.T) {
+	for _, field := range []struct {
+		name, original string
+		optional       bool
+	}{
+		{"configuration", `"managed/docker.json"`, false},
+		{"parameters", `"managed/docker.parameters.json"`, true},
+	} {
+		for _, value := range []struct {
+			name, raw string
+		}{
+			{"missing", ""},
+			{"empty", `""`},
+			{"null", `null`},
+			{"number", `7`},
+			{"boolean", `true`},
+			{"array", `[]`},
+			{"object", `{}`},
+		} {
+			t.Run(field.name+"/"+value.name, func(t *testing.T) {
+				replacement := ""
+				if value.raw != "" {
+					replacement = `"` + field.name + `":` + value.raw + ","
+				}
+				result := strings.Replace(success, `"`+field.name+`":`+field.original+",", replacement, 1)
+				got, err := Parse(wrapped(result), "docker")
+				valid := field.optional && (value.raw == "" || value.raw == `""` || value.raw == "null")
+				if valid {
+					if err != nil || !bytes.Equal(got.Result, []byte(result)) {
+						t.Fatal("optional parameter value rejected or changed", err)
+					}
+				} else if err == nil {
+					t.Fatal("invalid path field accepted")
+				}
+			})
+		}
 	}
 }
 
@@ -113,8 +155,8 @@ func FuzzReportEnvelope(f *testing.F) {
 
 func TestInvalidEnvelopes(t *testing.T) {
 	for name, replacement := range map[string]string{
-		"schemaVersion": `2`, "configuration": `"managed/other.json"`, "operation": `"get"`,
-		"parameters": `"../docker.parameters.json"`, "inputHash": `"not-the-server-revision"`,
+		"schemaVersion": `2`, "configuration": `""`, "operation": `"get"`,
+		"parameters": `[]`, "inputHash": `"not-the-server-revision"`,
 		"startedAt": `null`, "finishedAt": `"2026-10-18T11:00:00Z"`, "durationMs": `-1`,
 		"outcome": `"compliant"`, "exitCode": `"1"`, "dscResult": `[]`, "error": `{"kind":"unknown","message":""}`, "stderr": `7`,
 	} {

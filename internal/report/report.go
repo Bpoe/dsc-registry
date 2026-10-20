@@ -69,7 +69,7 @@ func Parse(body []byte, name string) (Upload, error) {
 	var configuration string
 	var duration int64
 	if json.Unmarshal(fields["schemaVersion"], &version) != nil || version != 1 ||
-		!requiredString(fields["configuration"], &configuration) || configuration != "managed/"+name+".json" ||
+		!requiredString(fields["configuration"], &configuration) || configuration == "" ||
 		!requiredString(fields["startedAt"], &upload.StartedAt) ||
 		!requiredString(fields["finishedAt"], &upload.FinishedAt) ||
 		!requiredString(fields["outcome"], &upload.Outcome) ||
@@ -89,9 +89,6 @@ func Parse(body []byte, name string) (Upload, error) {
 		return Upload{}, ErrInvalid
 	}
 	if upload.Operation != nil && *upload.Operation != "set" && *upload.Operation != "test" {
-		return Upload{}, ErrInvalid
-	}
-	if parameters != nil && *parameters != "" && *parameters != "managed/"+name+".parameters.json" {
 		return Upload{}, ErrInvalid
 	}
 	if upload.InputHash != nil && *upload.InputHash != "" {

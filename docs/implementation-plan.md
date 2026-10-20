@@ -95,7 +95,7 @@ Results are measurements, not fixed performance-ratio assertions.
 
 ## PR 4 — full-report ingestion and latest status, extended with history
 
-- Accept a wrapped real dscd envelope; validate required fields and reported configuration revision UUID; preserve nested JSON.
+- Accept a wrapped real dscd envelope; validate required fields and reported configuration revision UUID; preserve nested JSON. Require a nonempty string `result.configuration` and allow omitted/null/string `result.parameters`, without directory, basename or extension restrictions. These client paths are informational only; use the wrapper/route configuration name and authenticated machine for identity, never embedded paths for authorization, database selection or server storage.
 - Write each report directly to a unique file under the single configured report root; sync/close it successfully, then commit its relative path and metadata in SQL. No temporary file or filesystem rename. Preserve previous report files for historical reads.
 - Persist idempotency across history by machine/name/upload ID. Accept old revisions and removed configurations; reject conflicting reuse of an upload identity.
 - Implement admin machine status, paginated history, metadata and original-content GET; failed writes must not corrupt prior report/status. Preserve existing named routes.
@@ -178,11 +178,11 @@ Do not add agent code inside the DSC Registry server repository. A separate desi
 
 - Machine API credential storage and secure local file ownership on Linux and Windows.
 - Conditional GET polling, cache-control, jitter, outage retries and `Retry-After`.
-- Separate managed directory under `config.d/managed/`; preserve locally owned config files. Write Registry-managed templates only to `{name}.json` and sidecars only to `{name}.parameters.json`; remove sidecars for missing/null parameter objects. The local reconciler still supports YAML for non-Registry files.
+- Separate client-owned directory, for example `config.d/dscregsync/`; preserve locally owned config files. Write Registry-managed templates only to `{name}.json` and sidecars only to `{name}.parameters.json`; remove sidecars for missing/null parameter objects. The local reconciler still supports YAML for non-Registry files. Registry does not enforce this directory or filename convention on uploaded reports.
 - Deterministic JSON serialization of received template/parameter objects and template/parameter pair publication under dscd's current watcher semantics; define a safe update plan for existing pairs (not just initial parameter-first installation).
 - Stale local managed configuration removal, including associated local results; no rollback of previously applied machine state.
 - Mapping server revision to installed document/parameter snapshot and `dscd-input-v2` hash; avoid mislabeling an old result as a new configuration revision.
-- Detect changed result envelopes, persist stable retry upload IDs, and upload latest result from corresponding `results.d/managed/` paths.
+- Detect changed result envelopes, persist stable retry upload IDs, and upload latest result from the corresponding client results directory, for example `results.d/dscregsync/`. Preserve original configuration and parameter path values; `dscregsync/` is not an API requirement.
 
 ## First PR Copilot prompt
 
