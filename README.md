@@ -1,5 +1,26 @@
 # DSC Registry
 
+**DSC Registry is a lightweight, self-hosted management service for Microsoft Desired 
+State Configuration (DSC).** It provides a central place to manage configurations across 
+a fleet of machines and monitor their configuration state.
+
+DSC Registry uses a pull-based architecture. Machines periodically retrieve their assigned 
+configurations from the Registry and report the results of local reconciliation. This 
+allows administrators to centrally manage desired state, track configuration changes, 
+and monitor compliance without directly connecting to individual machines.
+
+DSC Registry works alongside two companion components:
+
+- **dscd** — A local daemon that continuously reconciles machine configuration using 
+Microsoft DSC.
+- **dscregsyncd** — A synchronization agent that retrieves configurations from DSC Registry 
+and uploads reconciliation results.
+
+DSC Registry itself does not execute configurations. It acts as the central management 
+service, while configuration execution remains the responsibility of each machine.
+
+## Development Status
+
 `dscregd` is the DSC Registry configuration-delivery server. It does not execute
 DSC. The separate `dscsyncd` sync agent and `dscd` reconciler are not included.
 
