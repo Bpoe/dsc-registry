@@ -1,8 +1,7 @@
 # Isolated verification only. Not a PostgreSQL HA or NFS provisioning stack.
 x-api: &api
-  build:
-    context: ..
-  image: ${COMPOSE_PROJECT_NAME}-api
+  image: ${DSCREGISTRY_DEMO_IMAGE:?supply a prebuilt image to scripts/verify-deployment.py}
+  pull_policy: never
   user: ${DSCREGISTRY_DEMO_USER:-65532:65532}
   command:
     - -external-https

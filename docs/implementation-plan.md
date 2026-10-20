@@ -172,6 +172,15 @@ Packages never auto-bootstrap or start an unconfigured service. See the
 [release runbook](operations.md#release-packages) for exact coverage and limits.
 This does not close the existing real-NFS gate or add DSC/sync-agent code.
 
+Container publication reuses those Linux archive binaries without another Go
+build. After package lifecycle jobs, native amd64/arm64 image checks verify
+archive/image executable SHA-256 equality, version/commit, CA trust and health;
+the AMD64 image also runs the existing two-replica recovery harness. Only manual
+stable-release publication triggers GHCR upload, using that release's checksums,
+archives and tagged Dockerfile. Version tags share a multi-platform index;
+serialized, semantic-version-gated alias promotion prevents `latest` and minor
+aliases from moving backward. No workflow deploys the published image.
+
 ## Separate project: dscsyncd
 
 Do not add agent code inside the DSC Registry server repository. A separate design and implementation cycle should address:

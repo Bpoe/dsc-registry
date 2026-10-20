@@ -597,10 +597,19 @@ on disposable Linux amd64/arm64 and Windows amd64 runners, and uploads the
 verified packages as run artifacts. RPM tests run in Fedora without systemd;
 DEB tests use systemd and Windows MSI tests use SCM. CI does not deploy the
 server or publish a GitHub release; the tag workflow creates a draft separately.
+Container validation follows packaging and reuses those exact archive binaries
+on native Linux amd64/arm64 runners. Docker never compiles the server.
 
 CI additionally runs bounded desired/report fuzz smoke tests and the isolated
 two-replica PostgreSQL/TLS demo with dependency faults and cold paired restore.
+The demo uses the already-validated AMD64 image rather than rebuilding it.
 Its shared Docker volume is **not NFS**. The
 [real-NFS procedure and external validation gate](docs/operations.md#repeatable-two-replica-verification)
 remain explicit; green CI alone is not a fully demonstrated NFS deployment or
 an HA/capacity guarantee. The separate sync agent remains out of scope.
+
+Manually publishing a stable release triggers multi-platform
+`ghcr.io/bpoe/dsc-registry` publication from that release's checksummed Linux
+archives and tagged Dockerfile. Tag pushes, drafts, prereleases and pull requests
+do not publish images. See [container operations](docs/operations.md#containers)
+for version/digest pinning, storage permissions, and a single-instance Compose example.

@@ -1,9 +1,5 @@
 **
-!go.mod
-!go.sum
-!cmd/
-!cmd/**
-!internal/
-!internal/**
-!migrations/
-!migrations/**
+# Reincluding a parent directory would also include its other contents.
+!dist/container/amd64/dscregd
+!dist/container/arm64/dscregd
+dist/container/*/dscregd/**

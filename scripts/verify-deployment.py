@@ -37,6 +37,7 @@ def run(args, *, data=None, env=None, timeout=120):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--image", required=True, help="Existing local image; never built or pulled by this test")
     parser.add_argument("--nfs-root", type=Path)
     args = parser.parse_args()
     require(sys.platform == "linux", "verification requires a Linux Docker host")
@@ -44,7 +45,8 @@ def main():
         require(shutil.which(tool), "docker compose and openssl are required")
     root = Path(__file__).resolve().parents[1]
     project = "dscdemo" + uuid.uuid4().hex[:12]
-    env = dict(os.environ, COMPOSE_PROJECT_NAME=project)
+    run(["docker", "image", "inspect", args.image])
+    env = dict(os.environ, COMPOSE_PROJECT_NAME=project, DSCREGISTRY_DEMO_IMAGE=args.image)
     command = ["docker", "compose", "-p", project, "-f", str(root / "deploy" / "compose.demo.yml")]
     nfs_child = None
     started = False
@@ -117,9 +119,8 @@ def main():
                     time.sleep(1)
                 raise RuntimeError("readiness deadline exceeded for " + label)
 
-            print("Building isolated demo and starting PostgreSQL", flush=True)
+            print("Using prebuilt image and starting isolated PostgreSQL", flush=True)
             started = True
-            compose("build", "api1", timeout=300)
             compose("up", "-d", "--wait", "postgres")
             bootstrap = json.loads(compose(
                 "run", "--rm", "--no-deps", "api1", "bootstrap", "-database-engine=postgres",
