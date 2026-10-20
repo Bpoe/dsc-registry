@@ -102,16 +102,64 @@ jobs:
         run: go build ./...
 
   deployment:
-    name: Two-replica recovery (shared volume, not NFS)
-    runs-on: ubuntu-24.04
+    name: Container ${{ matrix.arch }} (recovery on amd64)
+    needs: packages
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    env:
+      VERSION: ${{ inputs.version || 'v0.0.0' }}
+      ARCH: ${{ matrix.arch }}
+      DOCKER_BUILD_RECORD_UPLOAD: "false"
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           ref: ${{ inputs.commit || github.sha }}
           persist-credentials: false
+      # No run-id: these are the invoking CI/release run's validated packages.
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: dscregd-linux-${{ matrix.arch }}
+          path: ${{ runner.temp }}/packages
+      - name: Stage the packaged executable
+        run: |
+          mkdir -p "dist/container/$ARCH"
+          tar -xzf "$RUNNER_TEMP/packages/dscregd-$VERSION-linux-$ARCH.tar.gz" \
+            --strip-components=2 -C "dist/container/$ARCH" "dscregd-$VERSION-linux-$ARCH/bin/dscregd"
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - name: Assemble image from the packaged executable
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: linux/${{ matrix.arch }}
+          load: true
+          push: false
+          tags: dscregd:verify-${{ matrix.arch }}
+      - name: Smoke test default startup and readiness
+        run: |
+          printf '%s\n' \
+            '{"listenAddress":"0.0.0.0:8080","externalHttps":true,"database":{"engine":"sqlite","dsn":"/data/registry.db"},"reportRoot":"/reports"}' \
+            > "$RUNNER_TEMP/container.json"
+          chmod 0644 "$RUNNER_TEMP/container.json"
+          container=$(docker run --detach --platform "linux/$ARCH" \
+            --mount "type=bind,source=$RUNNER_TEMP/container.json,target=/etc/dscregd/config.json,readonly" \
+            --tmpfs /data:rw,uid=65532,gid=65532,mode=0700 \
+            --publish 127.0.0.1::8080 "dscregd:verify-$ARCH")
+          trap 'docker rm --force "$container" >/dev/null' EXIT
+          address=$(docker port "$container" 8080/tcp)
+          curl --fail --silent --show-error --retry 20 --retry-delay 1 \
+            --retry-all-errors --max-time 3 "http://$address/health/ready"
       - name: Verify isolated TLS/PostgreSQL deployment and recovery
-        run: python3 scripts/verify-deployment.py
+        if: matrix.arch == 'amd64'
+        run: python3 scripts/verify-deployment.py --image dscregd:verify-amd64
 
   build:
     name: Build Linux ${{ matrix.arch }}
@@ -138,7 +186,7 @@ jobs:
 
   packages:
     name: Package lifecycle
-    needs: [checks, windows, deployment, build]
+    needs: [checks, windows, build]
     uses: ./.github/workflows/packages.yml
     with:
       version: ${{ inputs.version || 'v0.0.0' }}

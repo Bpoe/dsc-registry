@@ -150,9 +150,11 @@ stable tag such as `v1.2.3` on the reviewed commit. Tags on commits not in `main
 are rejected. MSI imposes major/minor <= 255 and patch <= 65535; prereleases,
 leading zeroes and build metadata are not accepted.
 
-The tag run reruns all Go/SQLite/PostgreSQL, race/fuzz and shared-volume
-deployment checks before native package builds. It tests the **same packaged
-binaries** against their archive counterparts, one-time bootstrap, health,
+The tag run reruns all Go/SQLite/PostgreSQL and race/fuzz checks before native
+package builds. Container and shared-volume deployment checks then reuse the
+validated package artifacts from that same run, without another Go build.
+Package lifecycle tests check the **same packaged binaries** against their
+archive counterparts, one-time bootstrap, health,
 authorization, configuration ETags, report upload/retry and retrieval after
 restart. All platforms check that uninstall retains a stored report alongside
 SQL and configuration. DEB tests use Ubuntu systemd (amd64/arm64), RPM tests
@@ -164,31 +166,165 @@ capacity, RPM systemd behavior, or Authenticode/package signatures.
 Only successful package jobs upload artifacts. The release job downloads from
 that invoking run, verifies the exact eight-asset set and all checksums, rechecks
 the remote tag's commit, and creates a draft with generated notes and combined
-checksums. Only that final job receives `contents: write`. Existing releases,
+checksums only after both container startup/readiness smoke tests pass. Only that
+final draft job receives `contents: write`. Existing releases,
 including drafts, are never intentionally overwritten; a failed partial draft
 requires manual inspection/removal before rerunning. Do not move a published
 tag or replace published assets: issue a new version. Review the draft's
-assets, notes and acceptance limitations, then publish it manually. Creating
-the release is not a production deployment.
+assets, notes and acceptance limitations, then publish it manually. Publishing
+a stable release triggers the separate GHCR workflow described below. A tag
+push or draft creation never publishes an image. Neither workflow deploys
+anything to a server.
 
 ## Containers
 
-`docker build -t dscregd:<reviewed-commit> .` builds a CGO-free Linux binary.
-The runtime includes CA roots and runs as UID/GID `65532:65532`, not root.
-Mount a protected configuration read-only at `/etc/dscregd/config.json`, mount
-the one report directory at `/reports`, and for SQLite mount a **local** data
-directory as well. Set `reportRoot`/DSN to the paths inside the container.
-Invoke `dscregd -config /etc/dscregd/config.json` via the image's existing
-entrypoint, on a private network behind the TLS edge. There are no implicit
-environment overrides. A read-only root filesystem with a separate private
-`/tmp` is suitable; storage/config permissions must match the runtime UID.
-Never bake production keys, DSNs/passwords, databases or reports into an image.
-The allowlist in `.dockerignore` keeps local operator data out of build context.
+### Images and publication
+
+Published stable releases provide `ghcr.io/bpoe/dsc-registry` for `linux/amd64`
+and `linux/arm64`. The multi-platform manifest lets Docker select the native
+architecture. Each release publishes only its exact `vX.Y.Z` tag, for example
+`ghcr.io/bpoe/dsc-registry:v0.1.0`. There are no unprefixed, minor-version or
+`latest` aliases. Drafts, prereleases and pull requests do not publish images.
+
+The Dockerfile **does not compile Go or download application dependencies**.
+It copies `bin/dscregd` from the existing Linux release archives. Package
+lifecycle tests remain responsible for binary validation. Container CI
+downloads those same-run artifacts, builds each image on its native runner,
+and checks `/health/ready` using the default command and a mounted
+configuration. The AMD64 image also runs the existing two-replica
+PostgreSQL/TLS recovery test.
+
+After manual release publication, `publish-container.yml` downloads only that
+release's two Linux archives and `SHA256SUMS`, verifies the archive checksums,
+and extracts the executables. One Buildx build/push uses the **Dockerfile at
+the release's tagged commit** to publish both architectures to GHCR. It does
+not rebuild Go, rerun package tests, or rebuild and retest the images.
+
+The workflow authenticates with `GITHUB_TOKEN`, with `contents: read` and
+`packages: write` only; no PAT is needed. All other build/validation jobs lack
+package write permission. **One-time owner setup:** GHCR creates new packages
+as private by default. After the first publication, change the package's
+visibility to public in GitHub package settings to allow anonymous pulls.
+If the package already exists, ensure this repository has Actions write
+access. Do not put registry credentials into the image or Compose file.
+
+The publishing job summary reports `ghcr.io/bpoe/dsc-registry@sha256:...`
+for that multi-platform index. A failed publication can
+be retried by rerunning the failed workflow; it still uses that release's
+assets, not a recent CI run. Never move a release tag or replace its assets.
+
+Use a reviewed version such as `ghcr.io/bpoe/dsc-registry:v0.1.0` to select a
+release. For an immutable deployment, use the **index digest** from the job
+summary as the Compose `image`, for example
+`ghcr.io/bpoe/dsc-registry@sha256:<index-digest>`. Version tags can be republished
+by workflow retries; digest pinning is stronger.
+
+### Single-instance homelab Compose
+
+The runtime uses a digest-pinned Alpine image with bundled CA roots,
+port 8080, and UID/GID `65532:65532`, not root. Its default command is
+`dscregd -config /etc/dscregd/config.json`. Mount a readable configuration at
+that path selecting exactly one transport mode; the image does not ship an
+active configuration or silently enable plaintext HTTP. Without a mounted
+configuration, startup fails rather than exposing an unconfigured service.
+Explicit container arguments replace the default command, so `--version`,
+`bootstrap -config ...`, and custom server flags remain available.
+
+This example assumes an existing
+TLS reverse proxy on the same host. Save this as `compose.yml` in a private
+operator directory, **not** in the source checkout:
+
+```yaml
+name: dscregistry
+services:
+  registry:
+    image: ghcr.io/bpoe/dsc-registry:v0.1.0
+    user: "65532:65532"
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=16m,mode=1777
+    volumes:
+      - ./config.json:/etc/dscregd/config.json:ro
+      - ./data:/data
+      - ./reports:/reports
+    ports:
+      - "127.0.0.1:8080:8080"
+    restart: unless-stopped
+    stop_grace_period: 25s
+```
+
+Save the following as `config.json` in that same operator directory:
+
+```json
+{
+  "listenAddress": "0.0.0.0:8080",
+  "externalHttps": true,
+  "database": {"engine": "sqlite", "dsn": "/data/registry.db"},
+  "reportRoot": "/reports"
+}
+```
+
+Prepare permissions on the Linux Docker host before starting; bind mounts do
+not inherit the image's directory ownership:
+
+```sh
+mkdir -p data reports
+sudo chown 65532:65532 data reports
+sudo chmod 0700 data reports
+sudo chown root:65532 config.json
+sudo chmod 0640 config.json
+docker compose pull
+# Run privately and capture the one-time key in a secret manager, not logs.
+docker compose run --rm --no-deps registry bootstrap -config /etc/dscregd/config.json
+docker compose up -d
+curl --fail --max-time 5 http://127.0.0.1:8080/health/ready
+```
+
+Keep **both** persistent mounts: `data` contains the SQLite database and its
+WAL/SHM siblings, and `reports` contains original sensitive report envelopes.
+SQLite storage must be local, never NFS/SMB, and supports only one active API
+instance. Take a [paired cold backup](#paired-backup-and-restore) before
+upgrading; never replace persistence with an ephemeral container filesystem.
+Adjust host permissions deliberately for rootless Docker/user-namespace
+mapping rather than running the application as root or using world-writable
+directories.
+
+Configure the existing host Nginx/Caddy or equivalent TLS edge to forward to
+`127.0.0.1:8080`, use a trusted certificate, preserve authorization/cache
+headers, and disable shared caching as described in
+[external TLS termination](#external-tls-termination-and-probes).
+`externalHttps` is an assertion about that protected edge, not encryption.
+Do not expose port 8080 publicly. If the proxy runs in Docker instead, connect
+it to a private shared network and remove the host port mapping; do not use
+the proxy container's own loopback to reach the API.
+
+There are no implicit application environment overrides. Mount configuration
+read-only and never bake keys, passwords, databases or reports into an image.
 
 For multiple replicas all containers must use PostgreSQL and see the **same**
 report directory; two identically named local directories on different hosts
 are not shared storage. Named Docker volumes on one Docker host are not NFS
 and do not establish cross-host availability.
+
+### Local image assembly from an existing executable
+
+From the source checkout, stage an existing CGO-free Linux executable for the
+chosen architecture, then assemble the image:
+
+```sh
+mkdir -p dist/container/amd64
+install -m 0755 /path/to/existing/bin/dscregd dist/container/amd64/dscregd
+docker build --platform linux/amd64 -t dscregd:local .
+```
+
+For ARM64 use `dist/container/arm64/dscregd` and `--platform linux/arm64`.
+For a release binary, first verify and extract the archive as described in
+[release packages](#release-packages), then stage its `bin/dscregd` above.
+Only the two exact staged binary paths are allowed by `.dockerignore`; even
+other files under `dist` are excluded. Generated executables stay gitignored.
+Docker does not build source. For local source testing, build once outside
+Docker using the [Linux build command](#linux-installation), then stage that
+output. CI and release publication instead always reuse package archives.
 
 ## Databases and migrations
 
@@ -599,14 +735,17 @@ when exporting derived metrics.
 ## Repeatable two-replica verification
 
 On an approved disposable **Linux Docker host** with Docker Compose v2,
-Python 3 and OpenSSL, from the repository root:
+Python 3 and OpenSSL, first assemble a local image from an existing binary
+as above (or explicitly pull the reviewed published image to test).
+From the repository root:
 
 ```sh
-python3 scripts/verify-deployment.py
+python3 scripts/verify-deployment.py --image dscregd:local
 ```
 
-This creates a randomly named, isolated Compose project, builds the current
-binary, starts PostgreSQL 16, two active APIs, one shared Docker volume, and
+This creates a randomly named, isolated Compose project using the supplied
+local image; it never builds Go, rebuilds the image, or pulls a replacement
+API image. It starts PostgreSQL 16, two active APIs, one shared Docker volume, and
 a TLS Nginx load balancer published only to loopback. It generates a one-day
 self-signed certificate and verifies that specific certificate (no insecure TLS
 bypass). All HTTP/process operations have deadlines; CI bounds the complete job.
@@ -628,7 +767,8 @@ project, allow the invoking non-root UID/GID to create private files there,
 and make the same mount visible to the Linux Docker daemon. Then run:
 
 ```sh
-python3 scripts/verify-deployment.py --nfs-root /approved/disposable/nfs-directory
+python3 scripts/verify-deployment.py --image dscregd:local \
+  --nfs-root /approved/disposable/nfs-directory
 ```
 
 The harness requires `findmnt` to report `nfs`/`nfs4`, creates one private child
@@ -642,7 +782,9 @@ or a capacity/HA guarantee. Separately validate cross-host UID mapping,
 mount startup gates and your actual DB/NFS/edge failure domains.
 
 CI runs the local-volume recovery demo and normal/race SQLite/PostgreSQL
-suites plus bounded fuzz smoke runs and Linux amd64/arm64 builds. Hosted CI
+suites plus bounded fuzz smoke runs and Linux amd64/arm64 builds. Container
+checks reuse that run's package archives for native AMD64/ARM64 build and
+readiness smoke tests. Hosted CI
 has no operator-provided NFS export. Therefore real-NFS execution remains an
 **external acceptance gate** until an operator records the exact commit,
 mount/client/server configuration and successful NFS-mode result. This
