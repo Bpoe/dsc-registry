@@ -11,6 +11,9 @@ var SQLiteMachineNames string
 //go:embed sqlite/003_report_history.sql
 var SQLiteReportHistory string
 
+//go:embed sqlite/004_registration_tokens.sql
+var SQLiteRegistrationTokens string
+
 //go:embed postgres/001_initial.sql
 var PostgresInitial string
 
@@ -22,3 +25,6 @@ var PostgresMachineNames string
 
 //go:embed postgres/004_report_history.sql
 var PostgresReportHistory string
+
+//go:embed postgres/005_registration_tokens.sql
+var PostgresRegistrationTokens string

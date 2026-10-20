@@ -17,7 +17,8 @@ func methodLabel(method string) string {
 
 func routeLabel(path string) string {
 	if path == "/health/live" || path == "/health/ready" || path == "/v1/agent/configurations" ||
-		path == "/v1/agent/reports" || path == "/v1/machines" {
+		path == "/v1/agent/reports" || path == "/v1/machines" ||
+		path == "/v1/registration-tokens" || path == "/v1/agent/register" {
 		return path
 	}
 	parts := strings.Split(strings.TrimPrefix(path, "/"), "/")

@@ -109,20 +109,28 @@ func (s *Store) Authenticate(ctx context.Context, value string) (Principal, erro
 }
 
 func (s *Store) CreateMachine(ctx context.Context, name string) (Machine, error) {
-	machine := Machine{ID: uuid.NewString(), Name: name}
 	tx, err := s.begin(ctx, "create_machine")
 	if err != nil {
 		return Machine{}, err
 	}
 	defer tx.Rollback()
+	machine, err := insertMachine(ctx, tx.Tx, name)
+	if err != nil {
+		return Machine{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return Machine{}, err
+	}
+	return machine, nil
+}
+
+func insertMachine(ctx context.Context, tx *sql.Tx, name string) (Machine, error) {
+	machine := Machine{ID: uuid.NewString(), Name: name}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO machines(id, name, configuration_revision, created_at, name_folded)
 		VALUES ($1, $2, 0, $3, $4)`, machine.ID, name, timestamp(), foldMachineName(name)); err != nil {
 		if machineNameConflict(err) {
 			return Machine{}, ErrMachineNameConflict
 		}
-		return Machine{}, err
-	}
-	if err := tx.Commit(); err != nil {
 		return Machine{}, err
 	}
 	return machine, nil

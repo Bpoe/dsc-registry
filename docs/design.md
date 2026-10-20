@@ -75,6 +75,7 @@ The relational schema, expressed conceptually (use SQL types appropriate to each
 | `reports` | server UUID `id`, `machine_id`, acceptance `sequence`, `name`, `configuration_revision`, `received_at`, `started_at`, `finished_at`, `outcome`, nullable `operation`, `input_hash`, `error_kind`, relative `report_path`, `upload_id`, `result_sha256` | PK id; FK machine only; unique(machine_id,sequence); unique(machine_id,name,upload_id); indexes for latest per name, latest per name/revision, and file references |
 | `admins` | `id UUID`, `name`, `created_at` | PK id |
 | `api_keys` | `key_id`, `owner_type` (`admin`/`machine`), `owner_id`, `secret_hash`, `created_at`, nullable `revoked_at`, nullable `description` | PK key_id; no plaintext secrets |
+| `registration_tokens` | `token_hash` (SHA-256), `expires_at` | PK token_hash; no plaintext, owner association or usage tracking |
 
 Use a DB transaction for configuration CRUD plus machine collection-revision updates. Configuration deletion increments the collection revision but retains report history, including uploads received after deletion. Machine deletion cascades to configurations/reports/keys and leaves unreferenced report files for offline cleanup.
 
@@ -96,7 +97,7 @@ Accept only UTF-8 JSON request bodies. Validate that `template` is a JSON object
 
 ## 5. HTTP, cache and consistency
 
-The public HTTP contract is in [api.md](api.md). Routes are split between administrator and machine APIs, with an explicit authorization boundary. On machine routes, identity comes **only** from the API key; never accept a machine ID in the path or request as an authority override.
+The public HTTP contract is in [api.md](api.md). Routes are split between administrator and machine APIs, with an explicit authorization boundary. On existing machine polling/report routes, identity comes **only** from the API key; never accept a machine ID in the path or request as an authority override. Self-registration has a distinct registration-token boundary and creates a new UUID identity.
 
 `GET /v1/agent/configurations` is the main high-frequency request. Its representation includes only desired-state documents and their per-configuration revisions. The ETag is based exclusively on the machine's desired-state collection revision. The server sends `Cache-Control: private, max-age=<seconds>` on both 200 and 304; the agent schedules next poll according to this value plus jitter. Initial default is ~300 seconds; the service may change the policy, but cannot push a new poll deadline to a sleeping client. 304 has no JSON body.
 
@@ -137,7 +138,29 @@ Authorization: ApiKey dscm_<keyId>.<secret>
 
 `dscm_` denotes machine keys and `dsca_` administrator keys. Generate 256-bit cryptographically random secrets. Only show secret material once, at issuance; store a keyed/strong digest with fixed-time verification, plus a non-secret key ID for indexed lookup. Never log credentials or secrets. Support multiple concurrently valid keys per owner for overlap during rotation and immediate revocation. Administrator keys can manage machines and credentials; machine keys can fetch only their own desired state and upload only their own results. Avoid giving machine keys admin read access.
 
-A local `dscregd` bootstrap/admin command provisions the initial administrator and prints its first key once to a protected output. Machine registration and key issuance are **separate** operations; don't implicitly return a permanent key from normal machine GET responses.
+A local `dscregd` bootstrap/admin command provisions the initial administrator and prints its first key once to a protected output. Administrator-created machines and key issuance remain separate operations; don't implicitly return a permanent key from normal machine GET responses.
+
+Administrators may create reusable enrollment credentials with
+`POST /v1/registration-tokens`, using their ordinary API key. The optional
+integer `ttlSeconds` defaults to 3600 and is bounded to 1-86400 seconds.
+Registration tokens use independent 256-bit random secrets (`dscr_...`), with
+only SHA-256 hashes and UTC expirations persisted in `registration_tokens`.
+SQLite migration 4 and PostgreSQL migration 5 add this table without changing
+existing rows or earlier migrations.
+
+Only `POST /v1/agent/register` accepts registration tokens, under the Bearer
+scheme. Its separate authentication path rejects all administrator/machine
+API keys, regardless of scheme or administrator privileges; all other APIs
+continue to accept only ApiKey credentials. Authenticate and check server UTC
+expiration before inspecting the requested machine name. A successful
+registration inserts a machine using existing name validation/folding and
+uniqueness, and provisions a machine-scoped key using the existing credential
+helper in the same SQL transaction. Return only UUID, original name and the
+new plaintext machine key, once. Name conflicts never modify existing records.
+Tokens are unbound and reusable without usage limits until expiration;
+concurrent registrations rely on database uniqueness, not token locking or
+consumption. An authenticated request may finish after expiration. No token
+revocation, cleanup, approval workflow or sync-agent change is included.
 
 A database-backed key lookup on each call is acceptable initially; consider caches only when measurements justify them. Revocation must not be undermined by an unbounded authentication cache. Protect local client machine secrets using OS-appropriate facilities (Linux restricted root-owned file; Windows DPAPI/ACL) in the separate sync-agent project.
 

@@ -163,7 +163,7 @@ func TestRejectFutureSchemaAndCanceledStartup(t *testing.T) {
 		t.Fatal(err)
 	}
 	exec(t, raw, "CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)")
-	exec(t, raw, "INSERT INTO schema_migrations VALUES (4, 'future')")
+	exec(t, raw, "INSERT INTO schema_migrations VALUES (5, 'future')")
 	if err := raw.Close(); err != nil {
 		t.Fatal(err)
 	}

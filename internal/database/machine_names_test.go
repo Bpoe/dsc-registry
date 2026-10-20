@@ -182,7 +182,7 @@ func TestMachineNameMigrationBothEngines(t *testing.T) {
 		}
 		for range 2 {
 			store := testStore(t, engine, dsn)
-			assertCount(t, store.DB, "schema_migrations", version+2)
+			assertCount(t, store.DB, "schema_migrations", version+3)
 			for i, machine := range machines {
 				got, err := store.GetMachineByName(context.Background(), fmt.Sprintf("HOST-%03d-\u00e9", i))
 				if err != nil || got != machine {

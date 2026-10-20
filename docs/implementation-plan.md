@@ -56,6 +56,22 @@ no rename API is added. Both-engine tests cover Unicode case folding,
 composed/decomposed equivalence, accent/compatibility distinctions, raw storage
 constraints, concurrent creation, and transactional migration rollback/reopen.
 
+### Machine self-registration follow-up
+
+Administrator-only `POST /v1/registration-tokens` issues a random reusable
+registration token with optional integer `ttlSeconds` (default 3600, maximum
+86400). SQLite migration 4 / PostgreSQL migration 5 persist only its SHA-256
+hash and UTC expiration. `POST /v1/agent/register` uses a separate Bearer-only
+authentication path, never an administrator/machine API-key principal. It
+creates a machine and machine API key atomically using shared insert helpers.
+Existing name validation and Unicode-caseless uniqueness remain unchanged.
+Coverage includes credential/scheme isolation, default/invalid TTLs, expiration,
+digest-only storage, restart/upgrade, concurrent unique/conflicting names and
+key-insert/commit rollback on both engines. README/API PowerShell examples
+document token issuance, registration and subsequent ApiKey polling.
+No sync-agent changes, token consumption, usage tracking, approval, revocation
+or cleanup are included.
+
 ## PR 3 — desired configurations and ETag sync API
 
 - PUT/GET/LIST/DELETE admin configuration CRUD using direct JSON-object template and optional JSON-object parameters; reject YAML/string-encoded documents/format wrappers; validate shape, size and duplicate keys without interpreting DSC resources.

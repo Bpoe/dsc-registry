@@ -34,13 +34,20 @@ type adminAPI struct {
 
 func (a *adminAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/"), "/")
-	if len(parts) < 2 || parts[0] != "v1" || (parts[1] != "machines" && parts[1] != "admins" && parts[1] != "agent") {
+	tokenCreation := len(parts) == 2 && parts[1] == "registration-tokens"
+	if len(parts) < 2 || parts[0] != "v1" || (!tokenCreation && parts[1] != "machines" && parts[1] != "admins" && parts[1] != "agent") {
 		writeError(w, http.StatusNotFound, "not_found", "Endpoint not found")
 		return
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), a.timeout)
 	defer cancel()
 	r = r.WithContext(ctx)
+	// Registration has a separate credential path; administrator privileges
+	// must never bypass its Bearer registration-token requirement.
+	if len(parts) == 3 && parts[1] == "agent" && parts[2] == "register" {
+		a.registerMachine(w, r)
+		return
+	}
 	headers := r.Header.Values("Authorization")
 	if len(headers) != 1 {
 		a.unauthorized(w)
@@ -91,6 +98,10 @@ func (a *adminAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if len(parts) == 2 && parts[1] == "machines" {
 		a.machines(w, r)
+		return
+	}
+	if tokenCreation {
+		a.registrationTokens(w, r)
 		return
 	}
 	if len(parts) < 3 || !validUUID(parts[2]) {
@@ -168,21 +179,13 @@ func (a *adminAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 func (a *adminAPI) machines(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodPost:
-		name, ok := a.decodeStringField(w, r, "name")
+		name, ok := a.decodeMachineName(w, r)
 		if !ok {
 			return
 		}
-		if !config.ValidDisplayName(name, 256) {
-			writeError(w, http.StatusBadRequest, "invalid_name", "Name must be 1-256 UTF-8 bytes without surrounding whitespace or control characters")
-			return
-		}
 		machine, err := a.store.CreateMachine(r.Context(), name)
-		if errors.Is(err, database.ErrMachineNameConflict) {
-			writeError(w, http.StatusConflict, "machine_name_conflict", "A machine with this name already exists")
-			return
-		}
 		if err != nil {
-			a.failure(w, err)
+			a.machineCreationError(w, err)
 			return
 		}
 		w.Header().Set("Location", "/v1/machines/"+machine.ID)
@@ -333,6 +336,26 @@ func (a *adminAPI) decodeStringField(w http.ResponseWriter, r *http.Request, fie
 		return "", false
 	}
 	return result, true
+}
+
+func (a *adminAPI) decodeMachineName(w http.ResponseWriter, r *http.Request) (string, bool) {
+	name, ok := a.decodeStringField(w, r, "name")
+	if !ok {
+		return "", false
+	}
+	if !config.ValidDisplayName(name, 256) {
+		writeError(w, http.StatusBadRequest, "invalid_name", "Name must be 1-256 UTF-8 bytes without surrounding whitespace or control characters")
+		return "", false
+	}
+	return name, true
+}
+
+func (a *adminAPI) machineCreationError(w http.ResponseWriter, err error) {
+	if errors.Is(err, database.ErrMachineNameConflict) {
+		writeError(w, http.StatusConflict, "machine_name_conflict", "A machine with this name already exists")
+		return
+	}
+	a.failure(w, err)
 }
 
 func (a *adminAPI) readJSONBody(w http.ResponseWriter, r *http.Request) ([]byte, bool) {
