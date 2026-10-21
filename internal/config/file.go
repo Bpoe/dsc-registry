@@ -42,6 +42,7 @@ func mergeFile(flags *flag.FlagSet, path string, s *Settings) error {
 		"database":          map[string]any{"engine": &s.DatabaseEngine, "dsn": &s.DatabaseDSN},
 	}
 	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.UseNumber()
 	present := make(map[string]bool)
 	if err := decodeObject(decoder, fields, "", present); err != nil {
 		return err
@@ -115,9 +116,8 @@ func decodeObject(decoder *json.Decoder, fields map[string]any, prefix string, p
 		seen[name] = true
 		target, known := fields[name]
 		if !known {
-			var ignored json.RawMessage
-			if err := decoder.Decode(&ignored); err != nil {
-				return errors.New("malformed configuration JSON")
+			if err := skipValue(decoder); err != nil {
+				return err
 			}
 			continue
 		}
@@ -155,6 +155,44 @@ func decodeObject(decoder *json.Decoder, fields map[string]any, prefix string, p
 	// An unknown-only object must not select TLS; an explicit empty object still does.
 	if prefix != "" && len(seen) > 0 && !knownProperty {
 		delete(present, strings.TrimSuffix(prefix, "."))
+	}
+	return nil
+}
+
+func skipValue(decoder *json.Decoder) error {
+	token, err := decoder.Token()
+	if err != nil {
+		return errors.New("malformed configuration JSON")
+	}
+	delim, ok := token.(json.Delim)
+	if !ok {
+		return nil
+	}
+	end := json.Delim(']')
+	if delim == '{' {
+		end = '}'
+	} else if delim != '[' {
+		return errors.New("malformed configuration JSON")
+	}
+	seen := make(map[string]bool)
+	for decoder.More() {
+		if delim == '{' {
+			token, err := decoder.Token()
+			name, ok := token.(string)
+			if err != nil || !ok {
+				return errors.New("malformed configuration JSON")
+			}
+			if seen[name] {
+				return errors.New("duplicate configuration property")
+			}
+			seen[name] = true
+		}
+		if err := skipValue(decoder); err != nil {
+			return err
+		}
+	}
+	if token, err := decoder.Token(); err != nil || token != end {
+		return errors.New("malformed configuration JSON")
 	}
 	return nil
 }

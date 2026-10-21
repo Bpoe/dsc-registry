@@ -85,9 +85,11 @@ func TestFileUnknownProperties(t *testing.T) {
 		"string": `"ignored"`, "integer": `42`, "number": `-1.25e3`,
 		"large number": `1e1000`, "true": `true`, "false": `false`, "null": `null`,
 		"empty object": `{}`, "empty array": `[]`,
-		"object":      `{"enabled":true,"options":[1,{"nested":[false,null,"text"]},3]}`,
-		"array":       `[{"nested":{"value":null}},[1,2,3],false,"text"]`,
-		"known names": `{"developmentHttp":null,"database":{"dsn":[]},"tls":{"certFile":false}}`,
+		"object":              `{"enabled":true,"options":[1,{"nested":[false,null,"text"]},3]}`,
+		"array":               `[{"nested":{"value":null}},[1,2,3],false,"text"]`,
+		"known names":         `{"developmentHttp":null,"database":{"dsn":[]},"tls":{"certFile":false}}`,
+		"scoped names":        `[{"value":1},{"value":2,"nested":{"value":3}}]`,
+		"nested large number": `{"options":[1e1000,{"value":-1e1000}]}`,
 	}
 	scopes := map[string]string{
 		"top level":        `"futureSetting":%s,"developmentHttp":true`,
@@ -133,6 +135,38 @@ func TestFileUnknownProperties(t *testing.T) {
 					}
 				})
 			}
+		}
+	}
+}
+
+func TestFileNestedUnknownDuplicates(t *testing.T) {
+	values := map[string]string{
+		"object":          `{"password-secret":1,"password-secret":2}`,
+		"nested object":   `{"options":{"password-secret":null,"password-secret":[]}}`,
+		"array":           `[{"password-secret":true,"password-secret":false}]`,
+		"nested arrays":   `[null,[[{"password-secret":{},"password-secret":"secret"}]]]`,
+		"object in array": `{"options":[1,{"password-secret":1,"password-secret":2}]}`,
+		"escaped name":    `{"password-secret":1,"password\u002dsecret":2}`,
+	}
+	for scope, properties := range map[string]string{
+		"top level": `"futureSetting":%s`,
+		"database":  `"database":{"futureSetting":%s}`,
+		"tls":       `"tls":{"futureSetting":%s}`,
+	} {
+		for name, value := range values {
+			t.Run(scope+"/"+name, func(t *testing.T) {
+				path := writeConfig(t, "{"+fmt.Sprintf(properties, value)+"}")
+				_, serverErr := Parse([]string{"-config", path, "-development-http"}, io.Discard)
+				_, _, bootstrapErr := ParseBootstrap([]string{"-config", path}, io.Discard)
+				for _, err := range []error{serverErr, bootstrapErr} {
+					if err == nil || !strings.Contains(err.Error(), "duplicate configuration property") {
+						t.Fatalf("expected duplicate-property error, got %v", err)
+					}
+					if strings.Contains(err.Error(), "secret") || strings.Contains(err.Error(), path) {
+						t.Fatal("configuration error disclosed input")
+					}
+				}
+			})
 		}
 	}
 }

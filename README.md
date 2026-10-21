@@ -147,9 +147,10 @@ false are not treated as missing. Durations use Go strings such as `"500ms"`,
 `"5s"`, or `"5m"`. Unknown properties are ignored for forward and backward
 compatibility, including inside `database` and `tls`, regardless of their JSON
 value type. An unknown-only `tls` object does not select native TLS mode.
-Property names remain case-sensitive. Duplicate properties, explicit nulls and
+Property names remain case-sensitive. Duplicate properties at any depth,
+including inside ignored objects and arrays, are rejected. Explicit nulls and
 invalid types/durations for recognized settings, malformed JSON, and extra JSON
-documents are rejected. This applies to both server startup and bootstrap, not
+documents are also rejected. This applies to both server startup and bootstrap, not
 Registry API payload validation. Final merged settings must pass normal validation.
 An unreadable file is fatal when `-config` is supplied. Without it, existing
 CLI behavior is unchanged. There is no implicit file discovery, environment
