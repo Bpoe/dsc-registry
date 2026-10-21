@@ -3,6 +3,7 @@ package reportstore
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"math"
 	"os"
@@ -18,6 +19,17 @@ type reportFile interface {
 	Sync() error
 	Close() error
 }
+
+// CleanupError identifies a failed removal without obscuring the write failure.
+type CleanupError struct {
+	Path string
+	Err  error
+}
+
+func (e *CleanupError) Error() string {
+	return fmt.Sprintf("remove partial report %s: %v", e.Path, e.Err)
+}
+func (e *CleanupError) Unwrap() error { return e.Err }
 
 func (s *Store) Write(ctx context.Context, content []byte) (string, error) {
 	return s.write(ctx, content, func(name string) (reportFile, error) {
@@ -44,9 +56,10 @@ func (s *Store) write(ctx context.Context, content []byte, create func(string) (
 	}
 	err = errors.Join(err, file.Close(), ctx.Err())
 	if err != nil {
-		// A failed or interrupted write is never returned for SQL publication.
-		// If removal fails, offline orphan cleanup can reclaim this unique file.
-		return "", errors.Join(err, s.root.Remove(name))
+		if cleanupErr := s.Remove(name); cleanupErr != nil {
+			err = errors.Join(err, &CleanupError{Path: name, Err: cleanupErr})
+		}
+		return "", err
 	}
 	return name, nil
 }
@@ -86,8 +99,8 @@ func (s *Store) Read(ctx context.Context, name string, limit int64) ([]byte, err
 	return content, errors.Join(statErr, err, file.Close(), ctx.Err())
 }
 
-// Remove is only called after SQL has confirmed that this never-reused key
-// is unreferenced. It is also safe when another replica already retired it.
+// Remove reclaims an unpublished file or a key retired by a successful commit.
+// Keys are never reused; another replica may already have removed the file.
 func (s *Store) Remove(name string) error {
 	if !validPath(name) {
 		return errors.New("invalid report storage key")

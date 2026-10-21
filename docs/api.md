@@ -26,7 +26,7 @@ All routes below require an administrator key.
 | `GET` | `/v1/machines/{machineId}` | Machine details including `configurationRevision` |
 | `DELETE` | `/v1/machines/{machineId}` | Delete machine and its desired/report DB records, revoke attached keys; `204` |
 | `GET` | `/v1/machines/{machineId}/status` | Derived machine execution status and per-configuration summaries |
-| `GET` | `/v1/machines/{machineId}/reports` | Paginated report metadata, newest accepted first |
+| `GET` | `/v1/machines/{machineId}/reports` | Paginated latest report per configuration name, newest accepted first |
 | `GET` | `/v1/machines/{machineId}/reports/{reportId}` | One report's metadata |
 | `GET` | `/v1/machines/{machineId}/reports/{reportId}/content` | Original full `dscd` envelope bytes, `application/json` |
 | `GET` | `/v1/machines/{machineId}/configurations` | Paginated configuration summaries including names/content revisions |
@@ -478,8 +478,8 @@ Server validation:
 1. Authenticate machine; obtain its immutable machine ID from the API key only. Reject supplied machine-ID fields.
 2. Require a safe `configurationName` and canonical UUID `configurationRevision`. Accept historical revisions and removed configuration names. These are reported associations, not a server-verified assertion that particular inputs executed.
 3. Validate wrapper, `uploadId`, `result.schemaVersion == 1`, a nonempty string `result.configuration`, timestamps, outcome/error enum *as specified by dscd*; allow legal null/optional fields. `result.parameters` may be omitted, null, or a string (including empty). Neither path is restricted to a directory, basename, or extension. Reject malformed JSON/oversize payloads. Never interpret nested DSC resource status.
-4. Preserve the original nested `result` JSON as the full report (no summary-only truncation). Write it directly to a new, uniquely named private file, sync and close it successfully before committing its relative path and metadata in SQL. The SQL commit atomically publishes the report to API readers; no temporary file or filesystem rename is used. Previous reports remain referenced by history.
-5. Deduplicate by authenticated machine, configuration name and `uploadId`. An exact retry returns `200` and the original metadata/Location without another file, new receive time or order change. Reusing that identity with another revision or different nested `result` bytes returns `409` (`upload_id_conflict`). Preserve the envelope bytes across retries; formatting changes inside `result` count as different bytes. Wrapper formatting is immaterial. Distinct upload IDs represent distinct records.
+4. Preserve the original nested `result` JSON as the full report (no summary-only truncation). Write it directly to a new, uniquely named private file, sync and close it before opening the publication transaction. Atomically replace that name's previous report records with the new relative path/metadata, commit, then remove the superseded files. No temporary file or filesystem rename is used. No filesystem operation runs inside a database transaction.
+5. Deduplicate the retained report by authenticated machine, configuration name and `uploadId`. An exact retry returns `200` and the original metadata/Location without a new receive time or order change. Concurrent retries can write unused candidate files, which are removed after the transaction ends. Reusing the retained identity with another revision or different nested `result` bytes returns `409` (`upload_id_conflict`). Preserve envelope bytes across retries; formatting changes inside `result` count as different bytes. Wrapper formatting is immaterial. Replaced/deleted upload identities are forgotten; replaying one creates a new report and receipt.
 6. Do not bump machine desired-state collection revision or collection ETag.
 
 `result.configuration` and `result.parameters` are informational client paths,
@@ -495,7 +495,7 @@ The local sync agent must remember an upload ID while retrying, and must not inf
 
 The existing `POST /v1/agent/configurations/{name}/report` accepts exactly
 `configurationRevision`, `uploadId`, and `result` (omit `configurationName`).
-It shares history, validation and deduplication with the new route, but retains
+It shares latest-only storage, validation and deduplication with the new route, but retains
 `204` for both creation and retry. Both routes now accept stale/deleted
 configuration reports rather than rejecting them. The Location on the new
 route identifies an **admin-only** resource; machine keys cannot GET it.
@@ -521,11 +521,11 @@ This is the existing per-configuration `/status` shape. `hasReport` is a
 computed Boolean, not a storage key. Its `/report` sibling returns the original
 dscd JSON object. Both select only reports matching the configuration's current
 desired content revision and return `404` (`report_not_found`) until that revision
-has a report. After configuration deletion they return `configuration_not_found`;
-use machine history instead. Recreating a name does not inherit an old
+has a retained report. After configuration deletion they return `configuration_not_found`;
+the deletion also removes that name's report records and files. Recreating a name does not inherit an old
 revision's result. Neither endpoint exposes internal filenames.
 
-### Report history and machine status
+### Latest reports and machine status
 
 All administration endpoints authorize the administrator role first, even for
 the caller's own machine. All report/status responses use `Cache-Control: no-store`.
@@ -555,23 +555,29 @@ IDs and IDs belonging to another machine return `404` (`report_not_found`).
 }
 ```
 
+The collection contains at most one retained report per configuration name.
 The metadata shape matches the upload receipt and individual report GET.
 `reports` is always an array; omit `nextCursor` on the final page. `limit`
 defaults to 100 and must be 1-1000; the cursor is the last returned report UUID.
 Unknown, malformed or cross-machine cursors return `400`
 (`invalid_pagination`). Ordering uses an internal, serialized server acceptance
 sequence, newest first, not UUID order or agent wall-clock timestamps. New
-uploads do not displace items on a continuation page. Pagination is not a
-snapshot across machine deletion. Only list accepts query parameters.
+uploads replace their name's previous entry. Pagination is not a snapshot:
+a replaced/deleted cursor returns `invalid_pagination`, so restart the listing.
+Only list accepts query parameters.
 
 `GET .../reports/{reportId}` returns metadata without filesystem access;
 `GET .../reports/{reportId}/content` returns exactly the original nested
-`result`, without the wrapper or reserialization. Configuration deletion does
-not delete either resource. Deleting the machine deletes its metadata;
-unreferenced files remain eligible for bounded offline cleanup.
+`result`, without the wrapper or reserialization. Superseded/deleted IDs return
+`404` (`report_not_found`). Configuration deletion removes that name's reports;
+machine deletion removes all its reports, including removed configuration names.
+Files are removed only after successful deletion commit. Missing cleanup targets
+are harmless; other cleanup failures log path/error but do not change the
+successful HTTP response. Uploads accepted after configuration deletion can
+create a new report for that removed name.
 
 `GET /v1/machines/{machineId}/status` derives a consistent view from SQL
-history and current desired configurations. Before any report:
+retained reports and current desired configurations. Before any report:
 
 ```json
 {
@@ -588,46 +594,46 @@ history and current desired configurations. Before any report:
 }
 ```
 
-`latestReport` contains the metadata of the most recently accepted execution
-that matches a current desired configuration name **and content revision**,
+`latestReport` contains the most recently accepted retained report
+matching a current desired configuration name **and content revision**,
 or null if none exists. `lastExecutionAt` is that report's agent-reported
 `finishedAt`, or null. It is **not** an online/health indicator or the maximum
 execution timestamp.
 
 `latestReceivedReport` contains the most recently accepted report of any
-revision, including historical/removed configurations, or null before any
-report. `lastReportReceivedAt` is that report's server receive time. A delayed
-historical upload updates these receipt fields but cannot replace an existing
-current-revision result or change its execution timestamp. `hasReport`
-indicates any persisted history, not necessarily a current-revision execution.
+revision, including stale/removed configurations, or null without retained
+reports. `lastReportReceivedAt` is that report's server receive time. A delayed
+historical upload replaces the prior report for its name, including a
+current-revision result. The name then becomes stale/unknown, and no longer
+contributes a current execution or execution timestamp. `hasReport`
+indicates any retained report, not necessarily a current-revision execution.
 Top-level `configurationRevision` is the
 **current desired collection revision**, not an inferred reported collection
 revision: dscd reports describe one configuration, not a whole collection.
 
 `configurations` is sorted by name and includes current desired names and
-historically reported names. Each entry has `name`, nullable `desiredRevision`,
+retained reported names. Each entry has `name`, nullable `desiredRevision`,
 `revisionState`, `outcome`, nullable `latestReport`, and nullable
 `latestReceivedReport` (both use the metadata shape above). `latestReport`
-selects only the current desired revision; `latestReceivedReport` selects the
-latest receipt for that name regardless of revision. `revisionState` is
+is the retained report only when it matches the current desired revision;
+`latestReceivedReport` is the retained receipt regardless of revision. `revisionState` is
 `unreported` if no report exists, `current` if a report matches the desired
 revision, `stale` if reports exist only for other revisions, or `removed` if
 no desired configuration exists. Per-name `outcome` is the current report's
 outcome, `never_reported` for an unreported name, or `unknown` for stale/removed
 names. Historical execution outcomes remain visible inside
-`latestReceivedReport` and history. `hasStaleReports` is true only if some
-current desired name has history but no report matching its current revision.
+`latestReceivedReport`. `hasStaleReports` is true only if some
+current desired name has a retained report for another revision.
 
 Aggregate `outcome` covers current desired revisions: `failed` takes precedence,
 then `canceled`, then `unknown` when some names lack a current-revision report, otherwise
 `succeeded`. Without any machine reports it is `never_reported`; with reports
 but no current desired names it is `unknown`. Removed names do not contribute
-to aggregate outcome. A successful current-revision execution remains successful
-and current when a delayed failed report for an older revision arrives; the
-reverse is also true, so historical success cannot hide current failure.
-Within the same current revision, later accepted executions can still change
-the outcome; there is no agent-side execution sequencing protocol. Retrying
-an existing record never changes either selection. Success never asserts
+to aggregate outcome. A delayed report can replace current execution status
+with stale/unknown, but its historical success/failure is never mislabeled as
+the current revision's outcome. Later accepted executions of the current
+revision can change the outcome; there is no agent-side sequencing protocol.
+Retrying the retained record never changes either selection. Success never asserts
 online health or DSC compliance.
 
 ### Envelope validation and persistence
@@ -677,16 +683,21 @@ wrapper. SQL stores only metadata, relative file references and a SHA-256
 digest for retry comparison, never full JSON. File writes/sync/close must finish
 before SQL commit. Dependencies
 return `503` (`database_unavailable` or `report_storage_unavailable`), without
-paths or underlying diagnostics. Failed writes and failed SQL commits do not
-replace the previous valid report. See the
+paths or underlying diagnostics. Failed writes and pre-commit SQL failures
+preserve the previous report and clean up the new file. A commit error has an
+uncertain outcome: retain both old and new files; never risk deleting a
+potentially committed reference. Cleanup errors do not mask the original error.
+See the
 [storage and orphan maintenance contract](../README.md#latest-reports-and-execution-status)
 for cross-instance reader protection, ambiguous commit acknowledgements and
 bounded offline cleanup. The existing `-report-root` and `-max-report-bytes`
-settings apply; no new settings or infrastructure are required. History has
-no automatic expiration. SQLite migration 3 / PostgreSQL migration 4 retain
+settings apply; no new settings or infrastructure are required. SQLite migration 3 / PostgreSQL migration 4 retain
 existing latest reports and remove the separate status table. The first retry
 of a migrated record reads its original file to verify/backfill its payload
-digest; later retries need no filesystem access.
+digest outside any transaction; later retries need no filesystem access.
+Latest-only storage needs no schema change. Older history already in SQL is
+hidden from reads and removed, with its files, on the next replacement/deletion
+for that name. No periodic or startup sweep is added.
 
 ## 4. Health
 
@@ -702,5 +713,5 @@ digest; later retries need no filesystem access.
 - YAML-to-JSON conversion is outside the server (e.g., in a CLI). Reordered object keys and insignificant whitespace are no-op PUTs; real content changes bump revisions. Null/missing parameters produce no sidecar, while `{}` creates an empty JSON parameter object.
 - Both upload routes accept client-defined configuration and parameter paths, including `managed/`, `dscregsync/`, other directories and YAML filenames; preserve those values byte-for-byte and never use them as machine/configuration identities or server storage paths.
 - Valid `dscd` failure and success envelopes; `test` drift is not an execution failure; raw result retrievable byte-for-byte as a JSON value.
-- Report history and idempotency, conflicting upload identities, historical/deleted configuration reports, pagination, machine status, late historical reports not replacing current execution status, file write failure, SQL commit failure, orphan behavior, retry after interruption.
+- Latest-only replacement/deletion and retained-upload idempotency, conflicting identities, stale/removed configuration reports, pagination, revision-matching machine status, file/SQL/commit failures, cleanup warnings, concurrent readers/writers, and retry after interruption.
 - PostgreSQL and SQLite migrations/data behavior parity; concurrent requests; readiness and graceful shutdown.

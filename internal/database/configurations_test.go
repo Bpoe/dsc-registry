@@ -101,11 +101,11 @@ func TestConfigurationsBothEngines(t *testing.T) {
 		if err != nil || page == nil || len(page) != 0 {
 			t.Fatal("final page is not an empty array")
 		}
-		if err := store.DeleteConfiguration(ctx, machine.ID, "one"); err != nil {
+		if _, err := store.DeleteConfiguration(ctx, machine.ID, "one"); err != nil {
 			t.Fatal(err)
 		}
-		assertCount(t, store.DB, "reports", 1)
-		if err := store.DeleteConfiguration(ctx, machine.ID, "one"); !errors.Is(err, ErrConfigurationNotFound) {
+		assertCount(t, store.DB, "reports", 0)
+		if _, err := store.DeleteConfiguration(ctx, machine.ID, "one"); !errors.Is(err, ErrConfigurationNotFound) {
 			t.Fatalf("repeat deletion: %v", err)
 		}
 		recreated, created, err := store.PutConfiguration(ctx, machine.ID, "one", content)
@@ -136,10 +136,10 @@ func TestConfigurationsBothEngines(t *testing.T) {
 		if _, _, err := store.PutConfiguration(ctx, missing, "one", content); !errors.Is(err, ErrNotFound) {
 			t.Fatal("missing machine write")
 		}
-		if err := store.DeleteConfiguration(ctx, missing, "one"); !errors.Is(err, ErrNotFound) {
+		if _, err := store.DeleteConfiguration(ctx, missing, "one"); !errors.Is(err, ErrNotFound) {
 			t.Fatal("missing machine delete")
 		}
-		if err := store.DeleteMachine(ctx, machine.ID); err != nil {
+		if _, err := store.DeleteMachine(ctx, machine.ID); err != nil {
 			t.Fatal(err)
 		}
 		assertCount(t, store.DB, "configurations", 0)
@@ -189,7 +189,7 @@ func TestConfigurationRevisionBothEngines(t *testing.T) {
 			}
 			assertRevision([]int64{1, 1, 2}[i])
 		}
-		if err := store.DeleteConfiguration(ctx, machine.ID, "one"); err != nil {
+		if _, err := store.DeleteConfiguration(ctx, machine.ID, "one"); err != nil {
 			t.Fatal(err)
 		}
 		assertRevision(3)
@@ -209,7 +209,7 @@ func TestConfigurationRevisionBothEngines(t *testing.T) {
 			t.Fatalf("driver error not propagated: %v", err)
 		}
 		queryError = nil
-		if err := store.DeleteMachine(ctx, machine.ID); err != nil {
+		if _, err := store.DeleteMachine(ctx, machine.ID); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := reader.ConfigurationRevision(ctx, machine.ID); !errors.Is(err, ErrNotFound) {
@@ -252,7 +252,7 @@ func TestConfigurationMutationRollbackBothEngines(t *testing.T) {
 		if _, _, err := store.PutConfiguration(ctx, machine.ID, "new", content); err == nil {
 			t.Fatal("failed creation reported success")
 		}
-		if err := store.DeleteConfiguration(ctx, machine.ID, "one"); err == nil {
+		if _, err := store.DeleteConfiguration(ctx, machine.ID, "one"); err == nil {
 			t.Fatal("failed deletion reported success")
 		}
 		snapshot, err := store.ConfigurationSnapshot(ctx, machine.ID)

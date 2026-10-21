@@ -160,28 +160,39 @@ func (s *Store) ListConfigurations(ctx context.Context, id, after string, limit 
 	return items, nil
 }
 
-func (s *Store) DeleteConfiguration(ctx context.Context, id, name string) error {
+// DeleteConfiguration returns files to remove only after a successful commit.
+func (s *Store) DeleteConfiguration(ctx context.Context, id, name string) ([]string, error) {
 	tx, err := s.begin(ctx, "delete_configuration")
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer tx.Rollback()
 	if err := s.lockOwner(ctx, tx.Tx, apikey.Machine, id); err != nil {
-		return err
+		return nil, err
+	}
+	paths, err := reportPaths(ctx, tx.Tx, id, name)
+	if err != nil {
+		return nil, err
 	}
 	result, err := tx.ExecContext(ctx, "DELETE FROM configurations WHERE machine_id = $1 AND name = $2", id, name)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if count, err := result.RowsAffected(); err != nil {
-		return err
+		return nil, err
 	} else if count == 0 {
-		return ErrConfigurationNotFound
+		return nil, ErrConfigurationNotFound
+	}
+	if _, err := tx.ExecContext(ctx, "DELETE FROM reports WHERE machine_id = $1 AND name = $2", id, name); err != nil {
+		return nil, err
 	}
 	if _, err := tx.ExecContext(ctx, "UPDATE machines SET configuration_revision = configuration_revision + 1 WHERE id = $1", id); err != nil {
-		return err
+		return nil, err
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return paths, nil
 }
 
 func (s *Store) ConfigurationRevision(ctx context.Context, id string) (int64, error) {

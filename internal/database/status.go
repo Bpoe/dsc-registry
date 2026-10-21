@@ -43,9 +43,7 @@ func (s *Store) GetMachineStatus(ctx context.Context, id string) (MachineStatus,
 			      UNION SELECT name FROM reports WHERE machine_id = $1) names
 			LEFT JOIN configurations c ON c.machine_id = $1 AND c.name = names.name
 			LEFT JOIN reports r ON r.machine_id = $1 AND r.name = names.name
-				AND (r.sequence = (SELECT MAX(sequence) FROM reports WHERE machine_id = $1 AND name = names.name)
-					OR r.sequence = (SELECT MAX(sequence) FROM reports WHERE machine_id = $1 AND name = names.name
-						AND configuration_revision = c.revision))
+				AND r.sequence = (SELECT MAX(sequence) FROM reports WHERE machine_id = $1 AND name = names.name)
 			ORDER BY names.name,r.sequence`, id)
 		if err != nil {
 			return err
@@ -61,8 +59,6 @@ func (s *Store) GetMachineStatus(ctx context.Context, id string) (MachineStatus,
 				&received, &started, &finished, &outcome, &operation, &hash, &errorKind, &sequence); err != nil {
 				return err
 			}
-			// Each name contributes at most its latest received report and its
-			// latest current-revision report. They may be different executions.
 			if len(status.Configurations) == 0 || status.Configurations[len(status.Configurations)-1].Name != configurationName {
 				status.Configurations = append(status.Configurations, MachineConfigurationStatus{
 					Name: configurationName, DesiredRevision: desiredRevision,

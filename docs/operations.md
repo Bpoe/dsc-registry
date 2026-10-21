@@ -432,9 +432,14 @@ and SQL acknowledgements must be honored by the storage/server; the application
 does not provide a distributed DB/filesystem transaction or certify power-loss
 durability of a particular NFS server.
 
-File-before-SQL publication and cross-replica reader locks are retained;
-idempotency now covers all stored report history. Do not run an age-based
-online report cleaner. Use only the
+File-before-SQL publication is retained; no report file I/O holds SQL transactions.
+Storage retains only the latest accepted report per name, with idempotency for
+that retained upload. Replacement/configuration/machine deletion removes files
+after successful commit. Cleanup failures log relative path/error without
+failing committed operations. Pre-commit failures clean unused files; uncertain
+commit outcomes retain both files conservatively. Existing history is hidden
+and retired on that name's next replacement/deletion, not swept on startup.
+Do not run an age-based online report cleaner. For remaining orphans use the
 [bounded offline cleanup procedure](../README.md#bounded-offline-orphan-cleanup)
 with **all replicas stopped**, checking every candidate against SQL.
 

@@ -67,7 +67,6 @@ func TestReportPathsHTTPBothEngines(t *testing.T) {
 			{"collection", "/v1/agent/reports", 201, 200},
 			{"legacy", "/v1/agent/configurations/docker/report", 204, 204},
 		}
-		created := 0
 		for _, route := range routes {
 			for _, pathCase := range paths {
 				t.Run(route.name+"/"+pathCase.name, func(t *testing.T) {
@@ -88,7 +87,6 @@ func TestReportPathsHTTPBothEngines(t *testing.T) {
 						body = `{"configurationName":"docker",` + body[1:]
 					}
 					apiRequest(t, handler, key.Key, "POST", route.path, body, route.created)
-					created++
 					apiRequest(t, handler, key.Key, "POST", route.path, body, route.retry)
 					for _, changed := range []string{
 						strings.Replace(body, `"configuration":`+string(configuration), `"configuration":"changed"`, 1),
@@ -122,7 +120,7 @@ func TestReportPathsHTTPBothEngines(t *testing.T) {
 			}
 		}
 		entries, err := os.ReadDir(root)
-		if err != nil || len(entries) != created {
+		if err != nil || len(entries) != 1 {
 			t.Fatal("retries or conflicting paths created extra report files", entries, err)
 		}
 	})
@@ -360,7 +358,8 @@ func TestReportRestartRecoveryBothEngines(t *testing.T) {
 		tag := assertAgentCache(t, agentRequest(handler, key.Key), 200)
 		body := reportBody(config.Revision, uuid.NewString(), rawSuccessReport)
 		apiRequest(t, handler, key.Key, "POST", agentPath, body, 204)
-		apiRequest(t, handler, key.Key, "POST", agentPath, reportBody(config.Revision, uuid.NewString(), rawSuccessReport), 204)
+		body = reportBody(config.Revision, uuid.NewString(), rawSuccessReport)
+		apiRequest(t, handler, key.Key, "POST", agentPath, body, 204)
 		before := apiRequest(t, handler, admin.Key, "GET", path+"/status", "", 200).Body.String()
 		machinePath := "/v1/machines/" + machine.ID
 		history := apiRequest(t, handler, admin.Key, "GET", machinePath+"/reports", "", 200).Body.String()
@@ -409,7 +408,7 @@ func TestReportRestartRecoveryBothEngines(t *testing.T) {
 			}
 		}
 		entries, err := os.ReadDir(root)
-		if err != nil || len(entries) != 3 {
+		if err != nil || len(entries) != 2 {
 			t.Fatal("restart/retry rewrote files or scavenged online", err)
 		}
 		if _, err := os.Stat(filepath.Join(root, orphan)); err != nil {
