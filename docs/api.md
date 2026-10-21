@@ -695,6 +695,9 @@ settings apply; no new settings or infrastructure are required. SQLite migration
 existing latest reports and remove the separate status table. The first retry
 of a migrated record reads its original file to verify/backfill its payload
 digest outside any transaction; later retries need no filesystem access.
+If replacement removes that file during backfill, the retry rechecks SQL and
+restarts publication. A missing file still referenced by the retained report
+remains a storage error.
 Latest-only storage needs no schema change. Older history already in SQL is
 hidden from reads and removed, with its files, on the next replacement/deletion
 for that name. No periodic or startup sweep is added.

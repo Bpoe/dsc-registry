@@ -70,6 +70,17 @@ func (s *Store) PublishReport(ctx context.Context, id, name string, upload repor
 			}
 			if storedDigest == nil {
 				content, err := read(existingPath)
+				if errors.Is(err, os.ErrNotExist) {
+					var currentID string
+					lookupErr := s.DB.QueryRowContext(ctx, `SELECT id FROM reports
+						WHERE machine_id = $1 AND name = $2 ORDER BY sequence DESC LIMIT 1`, id, name).Scan(&currentID)
+					if lookupErr != nil && !errors.Is(lookupErr, sql.ErrNoRows) {
+						return Publication{}, lookupErr
+					}
+					if currentID != existingID {
+						continue
+					}
+				}
 				if err != nil {
 					return Publication{}, err
 				}

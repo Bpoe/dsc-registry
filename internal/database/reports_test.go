@@ -74,6 +74,116 @@ func reportReader(ctx context.Context, files *reportstore.Store) func(string) ([
 	return func(path string) ([]byte, error) { return files.Read(ctx, path, 1<<20) }
 }
 
+func TestLegacyReportRetryDuringReplacementBothEngines(t *testing.T) {
+	testdb.Engines(t, func(t *testing.T, engine, dsn string) {
+		store, files, root, machine, config := reportSetup(t, engine, dsn)
+		second := testStore(t, engine, dsn)
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		upload := reportUpload(config.Revision)
+		original := publish(t, store, files, machine.ID, upload)
+		exec(t, store.DB, `UPDATE reports SET result_sha256 = NULL WHERE machine_id = $1`, machine.ID)
+		located := make(chan struct{})
+		type replacementResult struct {
+			Publication
+			err error
+		}
+		replaced := make(chan replacementResult, 1)
+		go func() {
+			select {
+			case <-located:
+			case <-ctx.Done():
+				replaced <- replacementResult{err: ctx.Err()}
+				return
+			}
+			next := upload
+			next.ID, next.Result = uuid.NewString(), []byte(`{"replacement":true}`)
+			result, err := publishStoredReport(ctx, second, files, machine.ID, "one", next,
+				func() (string, error) { return files.Write(ctx, next.Result) })
+			replaced <- replacementResult{Publication: result, err: err}
+		}()
+		var replacementID string
+		result, err := store.PublishReport(ctx, machine.ID, "one", upload,
+			func() (string, error) { return files.Write(ctx, upload.Result) },
+			func(path string) ([]byte, error) {
+				if path != original {
+					t.Error("retry did not locate the legacy report", path)
+				}
+				close(located)
+				select {
+				case next := <-replaced:
+					if next.err != nil {
+						return nil, next.err
+					}
+					replacementID = next.Report.ID
+				case <-ctx.Done():
+					return nil, ctx.Err()
+				}
+				content, err := files.Read(ctx, path, 1<<20)
+				if !errors.Is(err, os.ErrNotExist) {
+					t.Error("replacement did not remove the legacy file", err)
+				}
+				return content, err
+			})
+		if err != nil || !result.Created || result.Report.ID == replacementID || len(result.CleanupPaths) != 1 {
+			t.Fatal("legacy retry did not restart publication after replacement", result, err)
+		}
+		for _, path := range result.CleanupPaths {
+			if err := files.Remove(path); err != nil {
+				t.Fatal(err)
+			}
+		}
+		status, err := store.GetConfigurationStatus(ctx, machine.ID, "one")
+		if err != nil || status.ReportID != result.Report.ID {
+			t.Fatal("retry did not retain its newly committed reference", status, err)
+		}
+		if err := store.ReadReport(ctx, machine.ID, "one", func(path string) error {
+			content, err := files.Read(ctx, path, 1<<20)
+			if err == nil && !bytes.Equal(content, upload.Result) {
+				return errors.New("retried report contents changed")
+			}
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+		entries, err := os.ReadDir(root)
+		if err != nil || len(entries) != 1 {
+			t.Fatal("legacy retry leaked or deleted report files", entries, err)
+		}
+	})
+}
+
+func TestLegacyReportRetryPreservesStorageErrorsBothEngines(t *testing.T) {
+	testdb.Engines(t, func(t *testing.T, engine, dsn string) {
+		for _, readErr := range []error{os.ErrNotExist, os.ErrPermission} {
+			t.Run(readErr.Error(), func(t *testing.T) {
+				store, files, _, machine, config := reportSetup(t, engine, dsn)
+				ctx := context.Background()
+				upload := reportUpload(config.Revision)
+				path := publish(t, store, files, machine.ID, upload)
+				exec(t, store.DB, `UPDATE reports SET result_sha256 = NULL WHERE machine_id = $1`, machine.ID)
+				before, err := store.GetConfigurationStatus(ctx, machine.ID, "one")
+				if err != nil {
+					t.Fatal(err)
+				}
+				result, err := store.PublishReport(ctx, machine.ID, "one", upload, func() (string, error) {
+					t.Error("storage failure unexpectedly restarted publication")
+					return "", errors.New("unexpected write")
+				}, func(string) ([]byte, error) {
+					return nil, &os.PathError{Op: "open", Path: path, Err: readErr}
+				})
+				if !errors.Is(err, readErr) || len(result.CleanupPaths) != 0 {
+					t.Fatal("legacy retry masked a genuine storage error", result, err)
+				}
+				after, err := store.GetConfigurationStatus(ctx, machine.ID, "one")
+				if err != nil || !reflect.DeepEqual(before, after) {
+					t.Fatal("failed retry changed the retained report", after, err)
+				}
+			})
+		}
+	})
+}
+
 func publishStoredReport(ctx context.Context, store *Store, files *reportstore.Store, id, name string,
 	upload report.Upload, write func() (string, error)) (Publication, error) {
 	result, err := store.PublishReport(ctx, id, name, upload, write, reportReader(ctx, files))
