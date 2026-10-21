@@ -42,6 +42,7 @@ func mergeFile(flags *flag.FlagSet, path string, s *Settings) error {
 		"database":          map[string]any{"engine": &s.DatabaseEngine, "dsn": &s.DatabaseDSN},
 	}
 	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.UseNumber()
 	present := make(map[string]bool)
 	if err := decodeObject(decoder, fields, "", present); err != nil {
 		return err
@@ -95,6 +96,7 @@ func decodeObject(decoder *json.Decoder, fields map[string]any, prefix string, p
 		return errors.New("configuration file requires JSON objects")
 	}
 	seen := make(map[string]bool)
+	knownProperty := false
 	for decoder.More() {
 		token, err := decoder.Token()
 		if err != nil {
@@ -104,15 +106,22 @@ func decodeObject(decoder *json.Decoder, fields map[string]any, prefix string, p
 		if !ok {
 			return errors.New("malformed configuration JSON")
 		}
-		target, known := fields[name]
-		if !known {
-			return errors.New("unknown configuration property")
-		}
 		setting := prefix + name
 		if seen[name] {
+			if _, known := fields[name]; !known {
+				return errors.New("duplicate configuration property")
+			}
 			return fmt.Errorf("duplicate configuration property %s", setting)
 		}
-		seen[name], present[setting] = true, true
+		seen[name] = true
+		target, known := fields[name]
+		if !known {
+			if err := skipValue(decoder); err != nil {
+				return err
+			}
+			continue
+		}
+		knownProperty, present[setting] = true, true
 		if nested, ok := target.(map[string]any); ok {
 			if err := decodeObject(decoder, nested, setting+".", present); err != nil {
 				return err
@@ -141,6 +150,48 @@ func decodeObject(decoder *json.Decoder, fields map[string]any, prefix string, p
 		}
 	}
 	if token, err := decoder.Token(); err != nil || token != json.Delim('}') {
+		return errors.New("malformed configuration JSON")
+	}
+	// An unknown-only object must not select TLS; an explicit empty object still does.
+	if prefix != "" && len(seen) > 0 && !knownProperty {
+		delete(present, strings.TrimSuffix(prefix, "."))
+	}
+	return nil
+}
+
+func skipValue(decoder *json.Decoder) error {
+	token, err := decoder.Token()
+	if err != nil {
+		return errors.New("malformed configuration JSON")
+	}
+	delim, ok := token.(json.Delim)
+	if !ok {
+		return nil
+	}
+	end := json.Delim(']')
+	if delim == '{' {
+		end = '}'
+	} else if delim != '[' {
+		return errors.New("malformed configuration JSON")
+	}
+	seen := make(map[string]bool)
+	for decoder.More() {
+		if delim == '{' {
+			token, err := decoder.Token()
+			name, ok := token.(string)
+			if err != nil || !ok {
+				return errors.New("malformed configuration JSON")
+			}
+			if seen[name] {
+				return errors.New("duplicate configuration property")
+			}
+			seen[name] = true
+		}
+		if err := skipValue(decoder); err != nil {
+			return err
+		}
+	}
+	if token, err := decoder.Token(); err != nil || token != end {
 		return errors.New("malformed configuration JSON")
 	}
 	return nil

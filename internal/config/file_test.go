@@ -2,9 +2,11 @@ package config
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -24,7 +26,9 @@ func TestCompleteFile(t *testing.T) {
 		"listenAddress": "[::]:8443",
 		"externalHttps": true,
 		"developmentHttp": false,
-		"database": {"engine": "postgres", "dsn": "postgres://registry@localhost/registry?sslmode=verify-full"},
+		"database": {"engine": "postgres", "futureSetting": true, "dsn": "postgres://registry@localhost/registry?sslmode=verify-full"},
+		"futureFeature": {"enabled": true, "options": [1, 2, 3]},
+		"deprecatedSetting": null,
 		"reportRoot": "private-reports",
 		"pollMaxAge": "1m",
 		"maxRequestBytes": 2048,
@@ -58,7 +62,11 @@ func TestCompleteFile(t *testing.T) {
 }
 
 func TestPartialFileDefaults(t *testing.T) {
-	for _, body := range []string{`{}`, `{"database":{}}`, `{"developmentHttp":true}`} {
+	for _, body := range []string{
+		`{}`, `{"database":{}}`, `{"developmentHttp":true}`,
+		`{"futureSetting":null}`, `{"database":{"futureSetting":true}}`,
+		`{"DevelopmentHttp":false}`, `{"tls":{"CertFile":"ignored"}}`,
+	} {
 		path := writeConfig(t, body)
 		got, err := Parse([]string{"-config", path, "-development-http"}, io.Discard)
 		if err != nil {
@@ -72,11 +80,103 @@ func TestPartialFileDefaults(t *testing.T) {
 	}
 }
 
+func TestFileUnknownProperties(t *testing.T) {
+	values := map[string]string{
+		"string": `"ignored"`, "integer": `42`, "number": `-1.25e3`,
+		"large number": `1e1000`, "true": `true`, "false": `false`, "null": `null`,
+		"empty object": `{}`, "empty array": `[]`,
+		"object":              `{"enabled":true,"options":[1,{"nested":[false,null,"text"]},3]}`,
+		"array":               `[{"nested":{"value":null}},[1,2,3],false,"text"]`,
+		"known names":         `{"developmentHttp":null,"database":{"dsn":[]},"tls":{"certFile":false}}`,
+		"scoped names":        `[{"value":1},{"value":2,"nested":{"value":3}}]`,
+		"nested large number": `{"options":[1e1000,{"value":-1e1000}]}`,
+	}
+	scopes := map[string]string{
+		"top level":        `"futureSetting":%s,"developmentHttp":true`,
+		"database":         `"database":{"futureSetting":%s,"engine":"sqlite","dsn":"data/registry.db"},"developmentHttp":true`,
+		"tls":              `"tls":{"futureSetting":%s,"certFile":"certs/server.crt","keyFile":"certs/server.key"}`,
+		"tls only unknown": `"tls":{"futureSetting":%s},"developmentHttp":true`,
+	}
+	parsers := map[string]func(string) (Settings, error){
+		"server": func(path string) (Settings, error) {
+			return Parse([]string{"-config", path}, io.Discard)
+		},
+		"bootstrap": func(path string) (Settings, error) {
+			settings, _, err := ParseBootstrap([]string{"-config", path}, io.Discard)
+			return settings, err
+		},
+	}
+	for scope, properties := range scopes {
+		for name, value := range values {
+			for parserName, parse := range parsers {
+				t.Run(scope+"/"+name+"/"+parserName, func(t *testing.T) {
+					body := "{" + fmt.Sprintf(properties, value) +
+						`,"pollMaxAge":"90s","reportRoot":"data/reports"}`
+					path := writeConfig(t, body)
+					got, err := parse(path)
+					if err != nil {
+						t.Fatal(err)
+					}
+					want := Defaults()
+					want.DevelopmentHTTP = scope != "tls"
+					want.PollMaxAge = 90 * time.Second
+					want.ReportRoot = filepath.Join(filepath.Dir(path), "data", "reports")
+					if scope == "database" {
+						want.DatabaseDSN = filepath.Join(filepath.Dir(path), "data", "registry.db")
+					}
+					if scope == "tls" {
+						want.TLS = &TLSSettings{
+							CertFile: filepath.Join(filepath.Dir(path), "certs", "server.crt"),
+							KeyFile:  filepath.Join(filepath.Dir(path), "certs", "server.key"),
+						}
+					}
+					if !reflect.DeepEqual(got, want) {
+						t.Fatalf("settings = %+v; want %+v", got, want)
+					}
+				})
+			}
+		}
+	}
+}
+
+func TestFileNestedUnknownDuplicates(t *testing.T) {
+	values := map[string]string{
+		"object":          `{"password-secret":1,"password-secret":2}`,
+		"nested object":   `{"options":{"password-secret":null,"password-secret":[]}}`,
+		"array":           `[{"password-secret":true,"password-secret":false}]`,
+		"nested arrays":   `[null,[[{"password-secret":{},"password-secret":"secret"}]]]`,
+		"object in array": `{"options":[1,{"password-secret":1,"password-secret":2}]}`,
+		"escaped name":    `{"password-secret":1,"password\u002dsecret":2}`,
+	}
+	for scope, properties := range map[string]string{
+		"top level": `"futureSetting":%s`,
+		"database":  `"database":{"futureSetting":%s}`,
+		"tls":       `"tls":{"futureSetting":%s}`,
+	} {
+		for name, value := range values {
+			t.Run(scope+"/"+name, func(t *testing.T) {
+				path := writeConfig(t, "{"+fmt.Sprintf(properties, value)+"}")
+				_, serverErr := Parse([]string{"-config", path, "-development-http"}, io.Discard)
+				_, _, bootstrapErr := ParseBootstrap([]string{"-config", path}, io.Discard)
+				for _, err := range []error{serverErr, bootstrapErr} {
+					if err == nil || !strings.Contains(err.Error(), "duplicate configuration property") {
+						t.Fatalf("expected duplicate-property error, got %v", err)
+					}
+					if strings.Contains(err.Error(), "secret") || strings.Contains(err.Error(), path) {
+						t.Fatal("configuration error disclosed input")
+					}
+				}
+			})
+		}
+	}
+}
+
 func TestFileCLIOverrides(t *testing.T) {
 	path := writeConfig(t, `{
 		"listenAddress":"127.0.0.1:9090", "externalHttps":true,
 		"developmentHttp":false, "pollMaxAge":"1m",
-		"database":{"engine":"postgres","dsn":"secret-dsn"},
+		"database":{"engine":"postgres","futureSetting":[1,null,{}],"dsn":"secret-dsn"},
+		"futureFeature":{"enabled":true}, "tls":{"futureSetting":true},
 		"reportRoot":"from-file", "maxRequestBytes":4096
 	}`)
 	got, err := Parse([]string{
@@ -103,43 +203,55 @@ func TestFileCLIOverrides(t *testing.T) {
 
 func TestFileErrors(t *testing.T) {
 	tests := map[string]string{
-		"malformed":              `{"developmentHttp":true`,
-		"trailing comma":         `{"developmentHttp":true,}`,
-		"trailing garbage":       `{"developmentHttp":true}secret`,
-		"multiple documents":     `{"developmentHttp":true}{}`,
-		"duplicate":              `{"developmentHttp":true,"developmentHttp":false}`,
-		"escaped duplicate":      `{"developmentHttp":true,"development\u0048ttp":false}`,
-		"nested duplicate":       `{"database":{"engine":"sqlite","engine":"postgres"}}`,
-		"unknown":                `{"password-secret":"secret"}`,
-		"nested unknown":         `{"database":{"password-secret":"secret"}}`,
-		"case mismatch":          `{"DevelopmentHttp":true}`,
-		"string boolean":         `{"developmentHttp":"secret"}`,
-		"number string":          `{"listenAddress":123}`,
-		"fractional bytes":       `{"maxRequestBytes":1.5}`,
-		"overflow bytes":         `{"maxRequestBytes":9223372036854775808}`,
-		"string bytes":           `{"maxReportBytes":"secret"}`,
-		"null":                   `null`,
-		"array":                  `[]`,
-		"null boolean":           `{"developmentHttp":null}`,
-		"null database":          `{"database":null}`,
-		"array database":         `{"database":[]}`,
-		"null dsn":               `{"database":{"dsn":null}}`,
-		"number engine":          `{"database":{"engine":3}}`,
-		"null duration":          `{"pollMaxAge":null}`,
-		"number duration":        `{"pollMaxAge":300000000000}`,
-		"invalid duration":       `{"pollMaxAge":"secret"}`,
-		"overflow duration":      `{"pollMaxAge":"999999999999h"}`,
-		"invalid utf8":           "{\"listenAddress\":\"\xffsecret\"}",
-		"nested invalid content": `{"database":{"dsn":{"secret":"secret"}}}`,
-		"unknown TLS":            `{"tls":{"secret":"secret"}}`,
-		"case mismatch TLS":      `{"tls":{"CertFile":"secret"}}`,
-		"duplicate TLS":          `{"tls":{},"tls":{}}`,
-		"duplicate certificate":  `{"tls":{"certFile":"secret","certFile":"secret"}}`,
-		"escaped duplicate TLS":  `{"tls":{"keyFile":"secret","key\u0046ile":"secret"}}`,
-		"null TLS":               `{"tls":null}`,
-		"array TLS":              `{"tls":[]}`,
-		"null certificate":       `{"tls":{"certFile":null}}`,
-		"number key":             `{"tls":{"keyFile":123}}`,
+		"malformed":                   `{"developmentHttp":true`,
+		"trailing comma":              `{"developmentHttp":true,}`,
+		"trailing garbage":            `{"developmentHttp":true}secret`,
+		"multiple documents":          `{"developmentHttp":true}{}`,
+		"duplicate":                   `{"developmentHttp":true,"developmentHttp":false}`,
+		"escaped duplicate":           `{"developmentHttp":true,"development\u0048ttp":false}`,
+		"nested duplicate":            `{"database":{"engine":"sqlite","engine":"postgres"}}`,
+		"unknown duplicate":           `{"password-secret":1,"password-secret":2}`,
+		"escaped unknown duplicate":   `{"futureSetting":1,"future\u0053etting":2}`,
+		"nested unknown duplicate":    `{"database":{"password-secret":null,"password-secret":[]}}`,
+		"TLS unknown duplicate":       `{"tls":{"password-secret":true,"password-secret":false}}`,
+		"duplicate after unknown":     `{"developmentHttp":true,"futureSetting":{},"developmentHttp":false}`,
+		"unknown missing value":       `{"futureSetting":}`,
+		"unknown malformed object":    `{"futureSetting":{"enabled":true,}}`,
+		"unknown malformed array":     `{"futureSetting":[1,2,]}`,
+		"unknown incomplete object":   `{"futureSetting":{"enabled":true}`,
+		"unknown incomplete array":    `{"futureSetting":[1,2}`,
+		"unknown invalid literal":     `{"futureSetting":undefined}`,
+		"unknown invalid number":      `{"futureSetting":01}`,
+		"unknown trailing garbage":    `{"futureSetting":null}secret`,
+		"nested malformed unknown":    `{"database":{"futureSetting":[{} true]}}`,
+		"TLS malformed unknown":       `{"tls":{"futureSetting":{"enabled":}}}`,
+		"string boolean":              `{"developmentHttp":"secret"}`,
+		"number string":               `{"listenAddress":123}`,
+		"fractional bytes":            `{"maxRequestBytes":1.5}`,
+		"overflow bytes":              `{"maxRequestBytes":9223372036854775808}`,
+		"string bytes":                `{"maxReportBytes":"secret"}`,
+		"null":                        `null`,
+		"array":                       `[]`,
+		"null boolean":                `{"developmentHttp":null}`,
+		"null database":               `{"database":null}`,
+		"array database":              `{"database":[]}`,
+		"null dsn":                    `{"database":{"dsn":null}}`,
+		"number engine":               `{"database":{"engine":3}}`,
+		"null duration":               `{"pollMaxAge":null}`,
+		"number duration":             `{"pollMaxAge":300000000000}`,
+		"invalid duration":            `{"pollMaxAge":"secret"}`,
+		"overflow duration":           `{"pollMaxAge":"999999999999h"}`,
+		"invalid utf8":                "{\"listenAddress\":\"\xffsecret\"}",
+		"nested invalid content":      `{"database":{"dsn":{"secret":"secret"}}}`,
+		"duplicate TLS":               `{"tls":{},"tls":{}}`,
+		"duplicate certificate":       `{"tls":{"certFile":"secret","certFile":"secret"}}`,
+		"escaped duplicate TLS":       `{"tls":{"keyFile":"secret","key\u0046ile":"secret"}}`,
+		"null TLS":                    `{"tls":null}`,
+		"array TLS":                   `{"tls":[]}`,
+		"null certificate":            `{"tls":{"certFile":null}}`,
+		"number key":                  `{"tls":{"keyFile":123}}`,
+		"invalid known after unknown": `{"futureSetting":[null,{}],"database":{"futureSetting":true,"dsn":null}}`,
+		"invalid TLS after unknown":   `{"tls":{"futureSetting":null,"certFile":false}}`,
 	}
 	for name, body := range tests {
 		t.Run(name, func(t *testing.T) {
@@ -277,16 +389,20 @@ func TestFilePaths(t *testing.T) {
 func TestBootstrapFile(t *testing.T) {
 	path := writeConfig(t, `{
 		"listenAddress":"invalid", "externalHttps":true, "developmentHttp":true,
-		"tls":{"certFile":"missing.pem"},
+		"tls":{"futureSetting":true,"certFile":"missing.pem"},
+		"futureFeature":{"enabled":true,"options":[null,1,{}]},
 		"reportRoot":"", "pollMaxAge":"0s", "maxRequestBytes":0,
 		"maxReportBytes":0, "readHeaderTimeout":"0s", "readTimeout":"0s",
 		"writeTimeout":"0s", "idleTimeout":"0s", "shutdownTimeout":"0s", "probeTimeout":"0s",
-		"database":{"dsn":"registry.db"}, "startupTimeout":"3s", "sqliteBusyTimeout":"500ms"
+		"database":{"futureSetting":null,"dsn":"registry.db"}, "startupTimeout":"3s", "sqliteBusyTimeout":"500ms"
 	}`)
 	got, name, err := ParseBootstrap([]string{"-config", path, "-name", "operator"}, io.Discard)
 	if err != nil || name != "operator" || got.DatabaseDSN != filepath.Join(filepath.Dir(path), "registry.db") ||
 		got.StartupTimeout != 3*time.Second || got.SQLiteBusyTimeout != 500*time.Millisecond {
 		t.Fatalf("bootstrap file: %v", err)
+	}
+	if _, err := Parse([]string{"-config", path}, io.Discard); err == nil {
+		t.Fatal("server accepted settings that only bootstrap may accept")
 	}
 
 	got, _, err = ParseBootstrap([]string{"-config", path, "-database-engine", "postgres",
@@ -348,8 +464,11 @@ func TestTLSFilePaths(t *testing.T) {
 func TestTLSTransportValidation(t *testing.T) {
 	for _, body := range []string{
 		`{"tls":{}}`,
+		`{"tls":{},"developmentHttp":true}`,
+		`{"tls":{},"externalHttps":true}`,
 		`{"tls":{"certFile":"server.crt"}}`,
 		`{"tls":{"keyFile":"server.key"}}`,
+		`{"tls":{"futureSetting":true,"certFile":"server.crt"}}`,
 		`{"tls":{"certFile":"","keyFile":"server.key"}}`,
 		`{"tls":{"certFile":"server.crt","keyFile":" "}}`,
 		`{"tls":{"certFile":"server.crt","keyFile":"server.key"},"externalHttps":true}`,

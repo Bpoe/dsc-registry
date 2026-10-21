@@ -483,8 +483,10 @@ access deliberately.
 
 `tls.certFile` contains the server certificate first, then any intermediate
 certificates needed to build the chain. `tls.keyFile` contains its matching,
-unencrypted PEM private key. Both must be nonempty. Unknown/duplicate nested
-TLS properties, nulls and wrong types are rejected by the configuration loader.
+unencrypted PEM private key. Both must be nonempty. Unknown nested TLS properties
+are ignored for forward and backward compatibility; an unknown-only `tls`
+object does not select native TLS mode. Duplicate properties and nulls or wrong
+types for recognized TLS settings are rejected by the configuration loader.
 Unreadable/missing files, malformed PEM and mismatched keys fail startup
 **before opening the listener**, with redacted diagnostics and no HTTP fallback.
 
