@@ -4,7 +4,7 @@
 
 ## 1. Common conventions
 
-- All deployed endpoints require HTTPS. Use `Authorization: ApiKey <key>` for existing administrator and machine APIs.
+- HTTPS is recommended to encrypt API keys and registration tokens in transit; HTTP is fully supported on any listening interface without special settings. Native HTTPS is selected by configuring `tls.certFile` and `tls.keyFile`; a reverse proxy or load balancer may instead terminate HTTPS while `dscregd` serves ordinary HTTP. Use `Authorization: ApiKey <key>` for existing administrator and machine APIs.
 - API-key type determines principal: administrator (`dsca_...`) versus machine (`dscm_...`). Registration tokens (`dscr_...`) are a separate credential type, accepted only by `POST /v1/agent/register` using `Authorization: Bearer <token>`. No cookies or OAuth endpoints.
 - UUIDs are strings in standard RFC 4122 format. `name` is a safe lowercase configuration stem described in design.md.
 - Dates in JSON are UTC RFC3339 timestamps. Unknown request fields may be rejected to catch typos; response consumers must ignore additive fields.
@@ -52,7 +52,7 @@ status/report routes. All implemented
 administration routes authorize the administrator role before validating resource
 IDs or querying machine data. Machine keys receive `403` even for their own UUID;
 missing, malformed, forged-role, and revoked credentials receive `401` with
-`WWW-Authenticate: ApiKey`. Authentication is never bypassed in development mode.
+`WWW-Authenticate: ApiKey`. Authentication is never bypassed over either transport.
 All administration responses use `Cache-Control: no-store`.
 
 Machine display names are 1-256 UTF-8 bytes and globally unique under NFC

@@ -38,7 +38,7 @@ administrator ── admin API ──┐
 | Application organization | One executable/module, shallow `cmd/` and `internal/` packages by concrete concern; no Clean/Onion, generic repositories, DI container, service locator or plugin framework |
 | Persistence | SQLite is the easy single-server default; PostgreSQL is the supported HA / multi-replica production option; explicit SQL migrations for both |
 | Report storage | One configured filesystem root, local or shared; report paths are relative to that root; committed SQL metadata publishes immutable report references |
-| Authentication | Direct long-lived **API keys over TLS**; separate machine and administrator principals; no OAuth, JWT, OpenIddict or token-exchange server in v1 |
+| Authentication | Direct long-lived **API keys**; HTTPS recommended to encrypt credentials in transit, HTTP fully supported; separate machine and administrator principals; no OAuth, JWT, OpenIddict or token-exchange server in v1 |
 | Machine identity | Server-created immutable UUID; unique human `Name` is a display/lookup label, not identity |
 | Desired state | Each **Configuration** is named and belongs to one machine; it contains an embedded **Template** DSC document and optional **Parameters** sidecar document |
 | Document representation | HTTP API accepts **JSON objects only**: `template` and optional `parameters` are embedded structured JSON, not `{format,content}` text envelopes. YAML-to-JSON conversion is a CLI responsibility. Server stores/delivers deterministic JSON and does not interpret DSC resources or `metadata.dscd.operation` |
@@ -130,7 +130,17 @@ Filesystem paths must not be constructed from untrusted machine names or raw use
 
 ## 7. Auth and administration
 
-Require TLS for deployed endpoints, except explicitly configured loopback development. Authorization header:
+HTTPS is recommended because it encrypts API keys and registration tokens in
+transit. Administrators choose the transport: HTTP is fully supported on any
+listening interface without opt-in settings or confirmation. The default listen
+address remains `127.0.0.1:8080`. Configuring both `tls.certFile` and `tls.keyFile`
+selects native HTTPS using `http.Server` and TLS 1.2+ with Go's secure defaults;
+invalid credentials fail startup without HTTP fallback. Otherwise the server
+serves HTTP and logs one structured unencrypted-transport warning at startup,
+never per request. A reverse proxy or load balancer may terminate HTTPS while
+`dscregd` serves ordinary HTTP; no proxy assertion is needed. There is no
+automatic TLS enablement or HTTP-to-HTTPS redirect. Authentication and
+authorization requirements are identical over both transports. Authorization header:
 
 ```http
 Authorization: ApiKey dscm_<keyId>.<secret>

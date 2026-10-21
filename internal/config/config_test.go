@@ -5,22 +5,25 @@ import (
 	"errors"
 	"flag"
 	"io"
+	"strings"
 	"testing"
 	"time"
 )
 
 func TestParse(t *testing.T) {
-	s, err := Parse([]string{"-development-http"}, io.Discard)
+	s, err := Parse(nil, io.Discard)
 	if err != nil {
 		t.Fatal(err)
 	}
 	want := Defaults()
-	want.DevelopmentHTTP = true
 	if s != want {
 		t.Fatalf("settings = %+v; want %+v", s, want)
 	}
+	if s.ListenAddress != "127.0.0.1:8080" || s.TLS != nil {
+		t.Fatal("defaults must select loopback HTTP")
+	}
 	s, err = Parse([]string{
-		"-external-https", "-listen", "[::]:8443", "-database-dsn", "other.db",
+		"-listen", "[::]:8443", "-database-dsn", "other.db",
 		"-report-root", "private-reports", "-poll-max-age", "60s",
 		"-max-request-bytes", "2048", "-max-report-bytes", "4096",
 		"-read-header-timeout", "1s", "-read-timeout", "2s", "-write-timeout", "3s",
@@ -41,13 +44,30 @@ func TestParse(t *testing.T) {
 	}
 }
 
+func TestHTTPListenAddresses(t *testing.T) {
+	for _, address := range []string{
+		"127.0.0.1:8080", "0.0.0.0:8080", "192.168.1.10:8080",
+		"localhost:8080", "registry.example.com:8080", ":8080",
+		"[::]:8080", "[::1]:0", "[fe80::1%eth0]:8080",
+	} {
+		t.Run(address, func(t *testing.T) {
+			settings, err := Parse([]string{"-listen", address}, io.Discard)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if settings.ListenAddress != address || settings.TLS != nil {
+				t.Fatalf("HTTP listen address not preserved: %+v", settings)
+			}
+		})
+	}
+}
+
 func TestInvalidSettings(t *testing.T) {
 	tests := map[string]func(*Settings){
-		"implicit transport":      func(s *Settings) { s.DevelopmentHTTP = false },
-		"both transports":         func(s *Settings) { s.ExternalHTTPS = true },
-		"public development":      func(s *Settings) { s.ListenAddress = "0.0.0.0:8080" },
-		"hostname":                func(s *Settings) { s.ListenAddress = "localhost:8080" },
-		"empty host":              func(s *Settings) { s.ListenAddress = ":8080" },
+		"empty listen address":    func(s *Settings) { s.ListenAddress = "" },
+		"missing port":            func(s *Settings) { s.ListenAddress = "127.0.0.1" },
+		"unbracketed IPv6":        func(s *Settings) { s.ListenAddress = "::1:8080" },
+		"empty port":              func(s *Settings) { s.ListenAddress = "127.0.0.1:" },
 		"invalid port":            func(s *Settings) { s.ListenAddress = "127.0.0.1:65536" },
 		"negative port":           func(s *Settings) { s.ListenAddress = "127.0.0.1:-1" },
 		"service port":            func(s *Settings) { s.ListenAddress = "127.0.0.1:http" },
@@ -78,7 +98,6 @@ func TestInvalidSettings(t *testing.T) {
 	for name, mutate := range tests {
 		t.Run(name, func(t *testing.T) {
 			s := Defaults()
-			s.DevelopmentHTTP = true
 			mutate(&s)
 			if err := s.Validate(); err == nil {
 				t.Fatal("invalid settings accepted")
@@ -89,8 +108,9 @@ func TestInvalidSettings(t *testing.T) {
 
 func TestFlagErrorsAndHelp(t *testing.T) {
 	for _, args := range [][]string{
-		nil, {"-unknown"}, {"-development-http", "extra"},
-		{"-development-http", "-probe-timeout", "invalid"}, {"-max-request-bytes", "oops"},
+		{"-unknown"}, {"extra"}, {"-development-http"}, {"-external-https"},
+		{"-development-http=false"}, {"-external-https=false"},
+		{"-probe-timeout", "invalid"}, {"-max-request-bytes", "oops"},
 	} {
 		if _, err := Parse(args, io.Discard); err == nil {
 			t.Fatalf("accepted invalid args %q", args)
@@ -101,13 +121,15 @@ func TestFlagErrorsAndHelp(t *testing.T) {
 	if _, err := Parse([]string{"-h"}, &help); !errors.Is(err, flag.ErrHelp) || help.Len() == 0 {
 		t.Fatalf("help: error=%v, output=%q", err, help.String())
 	}
-	if _, err := Parse([]string{"-development-http", "-listen", "[::1]:0"}, io.Discard); err != nil {
-		t.Fatalf("IPv6 loopback: %v", err)
+	for _, removed := range []string{"development-http", "external-https"} {
+		if strings.Contains(help.String(), removed) {
+			t.Fatalf("help documents removed flag %q", removed)
+		}
 	}
 }
 
 func TestPostgresSettingsAndBootstrap(t *testing.T) {
-	settings, err := Parse([]string{"-external-https", "-database-engine", "postgres",
+	settings, err := Parse([]string{"-database-engine", "postgres",
 		"-database-dsn", "postgres://operator@localhost/registry?sslmode=verify-full"}, io.Discard)
 	if err != nil || settings.DatabaseEngine != "postgres" {
 		t.Fatal("PostgreSQL settings rejected")

@@ -29,11 +29,11 @@ Prefer fewer packages if the implementation remains small. Do **not** create emp
 ## PR 1 — executable, configuration, persistence baseline
 
 - Create Go module, plain HTTP server, signal-aware graceful shutdown, structured logs, timeouts, `/health/live` and `/health/ready`.
-- Typed options: listen address, external HTTPS expectation, database engine and DSN, filesystem report root, polling max age, size/time limits. Fail clearly on invalid config.
+- Typed options: listen address, optional native TLS certificate/key, database engine and DSN, filesystem report root, polling max age, size/time limits. Fail clearly on invalid config.
 - Implemented configuration follow-up: optional startup-only JSON files via `-config` for server and bootstrap, with explicit CLI overrides and file-relative paths. Bootstrap validates only database-relevant settings. See [settings](../README.md#settings).
 - SQLite migration runner and first schema; SQLite WAL/foreign keys/busy timeout; tests in temporary DB.
 - Define the same schema/migrations for PostgreSQL (can be delivered in PR 2 if that keeps PR 1 focused). Database driver selection is a runtime config choice, not separate service editions.
-- No auth bypass except explicitly selected loopback-only development mode; avoid open public listener defaults.
+- No auth bypass over either transport. Default to loopback HTTP; allow HTTP on any listening interface without opt-in settings. HTTPS is recommended to encrypt credentials in transit; select native HTTPS with a certificate/key or terminate HTTPS at a reverse proxy.
 
 **Done when:** server starts cleanly with empty SQLite file, persists schema across restarts, responds to health probes, and shuts down without corruption.
 

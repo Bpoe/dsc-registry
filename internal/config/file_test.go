@@ -24,8 +24,6 @@ func writeConfig(t *testing.T, body string) string {
 func TestCompleteFile(t *testing.T) {
 	path := writeConfig(t, `{
 		"listenAddress": "[::]:8443",
-		"externalHttps": true,
-		"developmentHttp": false,
 		"database": {"engine": "postgres", "futureSetting": true, "dsn": "postgres://registry@localhost/registry?sslmode=verify-full"},
 		"futureFeature": {"enabled": true, "options": [1, 2, 3]},
 		"deprecatedSetting": null,
@@ -47,7 +45,7 @@ func TestCompleteFile(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := Settings{
-		ListenAddress: "[::]:8443", ExternalHTTPS: true, DatabaseEngine: "postgres",
+		ListenAddress: "[::]:8443", DatabaseEngine: "postgres",
 		DatabaseDSN: "postgres://registry@localhost/registry?sslmode=verify-full",
 		ReportRoot:  filepath.Join(filepath.Dir(path), "private-reports"),
 		PollMaxAge:  time.Minute, MaxRequestBytes: 2048, MaxReportBytes: 4096,
@@ -63,19 +61,49 @@ func TestCompleteFile(t *testing.T) {
 
 func TestPartialFileDefaults(t *testing.T) {
 	for _, body := range []string{
-		`{}`, `{"database":{}}`, `{"developmentHttp":true}`,
+		`{}`, `{"database":{}}`,
 		`{"futureSetting":null}`, `{"database":{"futureSetting":true}}`,
 		`{"DevelopmentHttp":false}`, `{"tls":{"CertFile":"ignored"}}`,
 	} {
 		path := writeConfig(t, body)
-		got, err := Parse([]string{"-config", path, "-development-http"}, io.Discard)
+		got, err := Parse([]string{"-config", path}, io.Discard)
 		if err != nil {
 			t.Fatal(err)
 		}
 		want := Defaults()
-		want.DevelopmentHTTP = true
 		if got != want {
 			t.Fatalf("partial file changed omitted defaults: %+v", got)
+		}
+	}
+}
+
+func TestObsoleteTransportPropertiesIgnored(t *testing.T) {
+	values := []string{`true`, `false`, `null`, `"ignored"`, `42`, `[]`, `{}`}
+	for _, external := range values {
+		for _, development := range values {
+			for _, nativeTLS := range []bool{false, true} {
+				t.Run(fmt.Sprintf("%s/%s/tls=%t", external, development, nativeTLS), func(t *testing.T) {
+					properties := fmt.Sprintf(`"externalHttps":%s,"developmentHttp":%s`, external, development)
+					if nativeTLS {
+						properties += `,"tls":{"certFile":"server.crt","keyFile":"server.key"}`
+					}
+					path := writeConfig(t, "{"+properties+"}")
+					got, err := Parse([]string{"-config", path}, io.Discard)
+					if err != nil {
+						t.Fatal(err)
+					}
+					want := Defaults()
+					if nativeTLS {
+						want.TLS = &TLSSettings{
+							CertFile: filepath.Join(filepath.Dir(path), "server.crt"),
+							KeyFile:  filepath.Join(filepath.Dir(path), "server.key"),
+						}
+					}
+					if !reflect.DeepEqual(got, want) {
+						t.Fatalf("obsolete properties changed settings: %+v", got)
+					}
+				})
+			}
 		}
 	}
 }
@@ -87,15 +115,15 @@ func TestFileUnknownProperties(t *testing.T) {
 		"empty object": `{}`, "empty array": `[]`,
 		"object":              `{"enabled":true,"options":[1,{"nested":[false,null,"text"]},3]}`,
 		"array":               `[{"nested":{"value":null}},[1,2,3],false,"text"]`,
-		"known names":         `{"developmentHttp":null,"database":{"dsn":[]},"tls":{"certFile":false}}`,
+		"known names":         `{"listenAddress":null,"database":{"dsn":[]},"tls":{"certFile":false}}`,
 		"scoped names":        `[{"value":1},{"value":2,"nested":{"value":3}}]`,
 		"nested large number": `{"options":[1e1000,{"value":-1e1000}]}`,
 	}
 	scopes := map[string]string{
-		"top level":        `"futureSetting":%s,"developmentHttp":true`,
-		"database":         `"database":{"futureSetting":%s,"engine":"sqlite","dsn":"data/registry.db"},"developmentHttp":true`,
+		"top level":        `"futureSetting":%s`,
+		"database":         `"database":{"futureSetting":%s,"engine":"sqlite","dsn":"data/registry.db"}`,
 		"tls":              `"tls":{"futureSetting":%s,"certFile":"certs/server.crt","keyFile":"certs/server.key"}`,
-		"tls only unknown": `"tls":{"futureSetting":%s},"developmentHttp":true`,
+		"tls only unknown": `"tls":{"futureSetting":%s}`,
 	}
 	parsers := map[string]func(string) (Settings, error){
 		"server": func(path string) (Settings, error) {
@@ -118,7 +146,6 @@ func TestFileUnknownProperties(t *testing.T) {
 						t.Fatal(err)
 					}
 					want := Defaults()
-					want.DevelopmentHTTP = scope != "tls"
 					want.PollMaxAge = 90 * time.Second
 					want.ReportRoot = filepath.Join(filepath.Dir(path), "data", "reports")
 					if scope == "database" {
@@ -156,7 +183,7 @@ func TestFileNestedUnknownDuplicates(t *testing.T) {
 		for name, value := range values {
 			t.Run(scope+"/"+name, func(t *testing.T) {
 				path := writeConfig(t, "{"+fmt.Sprintf(properties, value)+"}")
-				_, serverErr := Parse([]string{"-config", path, "-development-http"}, io.Discard)
+				_, serverErr := Parse([]string{"-config", path}, io.Discard)
 				_, _, bootstrapErr := ParseBootstrap([]string{"-config", path}, io.Discard)
 				for _, err := range []error{serverErr, bootstrapErr} {
 					if err == nil || !strings.Contains(err.Error(), "duplicate configuration property") {
@@ -173,15 +200,13 @@ func TestFileNestedUnknownDuplicates(t *testing.T) {
 
 func TestFileCLIOverrides(t *testing.T) {
 	path := writeConfig(t, `{
-		"listenAddress":"127.0.0.1:9090", "externalHttps":true,
-		"developmentHttp":false, "pollMaxAge":"1m",
+		"listenAddress":"127.0.0.1:9090", "pollMaxAge":"1m",
 		"database":{"engine":"postgres","futureSetting":[1,null,{}],"dsn":"secret-dsn"},
 		"futureFeature":{"enabled":true}, "tls":{"futureSetting":true},
 		"reportRoot":"from-file", "maxRequestBytes":4096
 	}`)
 	got, err := Parse([]string{
 		"-listen", Defaults().ListenAddress, "-config", path,
-		"-external-https=false", "-development-http=true",
 		"-database-engine", "sqlite", "-database-dsn", "registry.db",
 		"-report-root", "reports", "-max-request-bytes", "1048576",
 	}, io.Discard)
@@ -189,32 +214,26 @@ func TestFileCLIOverrides(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := Defaults()
-	want.DevelopmentHTTP = true
 	want.PollMaxAge = time.Minute
 	if got != want {
 		t.Fatalf("explicit default-valued overrides not preserved: %+v", got)
-	}
-	path = writeConfig(t, `{"developmentHttp":true}`)
-	got, err = Parse([]string{"-config", path, "-development-http=false", "-external-https"}, io.Discard)
-	if err != nil || got.DevelopmentHTTP || !got.ExternalHTTPS {
-		t.Fatal("explicit boolean false did not override file")
 	}
 }
 
 func TestFileErrors(t *testing.T) {
 	tests := map[string]string{
-		"malformed":                   `{"developmentHttp":true`,
-		"trailing comma":              `{"developmentHttp":true,}`,
-		"trailing garbage":            `{"developmentHttp":true}secret`,
-		"multiple documents":          `{"developmentHttp":true}{}`,
-		"duplicate":                   `{"developmentHttp":true,"developmentHttp":false}`,
-		"escaped duplicate":           `{"developmentHttp":true,"development\u0048ttp":false}`,
+		"malformed":                   `{"listenAddress":"127.0.0.1:8080"`,
+		"trailing comma":              `{"listenAddress":"127.0.0.1:8080",}`,
+		"trailing garbage":            `{"listenAddress":"127.0.0.1:8080"}secret`,
+		"multiple documents":          `{"listenAddress":"127.0.0.1:8080"}{}`,
+		"duplicate":                   `{"listenAddress":"127.0.0.1:8080","listenAddress":"0.0.0.0:8080"}`,
+		"escaped duplicate":           `{"listenAddress":"127.0.0.1:8080","listen\u0041ddress":"0.0.0.0:8080"}`,
 		"nested duplicate":            `{"database":{"engine":"sqlite","engine":"postgres"}}`,
 		"unknown duplicate":           `{"password-secret":1,"password-secret":2}`,
 		"escaped unknown duplicate":   `{"futureSetting":1,"future\u0053etting":2}`,
 		"nested unknown duplicate":    `{"database":{"password-secret":null,"password-secret":[]}}`,
 		"TLS unknown duplicate":       `{"tls":{"password-secret":true,"password-secret":false}}`,
-		"duplicate after unknown":     `{"developmentHttp":true,"futureSetting":{},"developmentHttp":false}`,
+		"duplicate after unknown":     `{"maxRequestBytes":100,"futureSetting":{},"maxRequestBytes":200}`,
 		"unknown missing value":       `{"futureSetting":}`,
 		"unknown malformed object":    `{"futureSetting":{"enabled":true,}}`,
 		"unknown malformed array":     `{"futureSetting":[1,2,]}`,
@@ -225,14 +244,14 @@ func TestFileErrors(t *testing.T) {
 		"unknown trailing garbage":    `{"futureSetting":null}secret`,
 		"nested malformed unknown":    `{"database":{"futureSetting":[{} true]}}`,
 		"TLS malformed unknown":       `{"tls":{"futureSetting":{"enabled":}}}`,
-		"string boolean":              `{"developmentHttp":"secret"}`,
+		"boolean string":              `{"listenAddress":true}`,
 		"number string":               `{"listenAddress":123}`,
 		"fractional bytes":            `{"maxRequestBytes":1.5}`,
 		"overflow bytes":              `{"maxRequestBytes":9223372036854775808}`,
 		"string bytes":                `{"maxReportBytes":"secret"}`,
 		"null":                        `null`,
 		"array":                       `[]`,
-		"null boolean":                `{"developmentHttp":null}`,
+		"null listen address":         `{"listenAddress":null}`,
 		"null database":               `{"database":null}`,
 		"array database":              `{"database":[]}`,
 		"null dsn":                    `{"database":{"dsn":null}}`,
@@ -256,7 +275,7 @@ func TestFileErrors(t *testing.T) {
 	for name, body := range tests {
 		t.Run(name, func(t *testing.T) {
 			path := writeConfig(t, body)
-			_, err := Parse([]string{"-config", path, "-development-http"}, io.Discard)
+			_, err := Parse([]string{"-config", path}, io.Discard)
 			if err == nil {
 				t.Fatal("invalid file accepted")
 			}
@@ -311,19 +330,15 @@ func TestFileValidation(t *testing.T) {
 	} {
 		t.Run(body, func(t *testing.T) {
 			path := writeConfig(t, body)
-			if _, err := Parse([]string{"-config", path, "-external-https"}, io.Discard); err == nil {
+			if _, err := Parse([]string{"-config", path}, io.Discard); err == nil {
 				t.Fatal("invalid merged configuration accepted")
 			}
 		})
 	}
-	path := writeConfig(t, `{"externalHttps":false,"developmentHttp":false}`)
-	if _, err := Parse([]string{"-config", path}, io.Discard); err == nil {
-		t.Fatal("explicit false transport fell back")
-	}
-	path = writeConfig(t, `{"externalHttps":true,"maxRequestBytes":10}`)
+	path := writeConfig(t, `{"maxRequestBytes":10}`)
 	for _, args := range [][]string{
 		{"-max-request-bytes", "0"}, {"-report-root", ""}, {"-database-dsn", ""},
-		{"-poll-max-age", "0s"}, {"-external-https=false"},
+		{"-poll-max-age", "0s"},
 	} {
 		if _, err := Parse(append([]string{"-config", path}, args...), io.Discard); err == nil {
 			t.Fatal("invalid explicit CLI override fell back to file")
@@ -332,7 +347,7 @@ func TestFileValidation(t *testing.T) {
 }
 
 func TestFilePaths(t *testing.T) {
-	path := writeConfig(t, `{"developmentHttp":true,"database":{"dsn":"data/registry.db"},"reportRoot":"data/reports"}`)
+	path := writeConfig(t, `{"database":{"dsn":"data/registry.db"},"reportRoot":"data/reports"}`)
 	got, err := Parse([]string{"-config", path}, io.Discard)
 	if err != nil {
 		t.Fatal(err)
@@ -342,7 +357,7 @@ func TestFilePaths(t *testing.T) {
 		t.Fatal("file paths were not resolved against config directory")
 	}
 	data, err := json.Marshal(map[string]any{
-		"developmentHttp": true, "database": map[string]string{"dsn": got.DatabaseDSN},
+		"database":   map[string]string{"dsn": got.DatabaseDSN},
 		"reportRoot": got.ReportRoot,
 	})
 	if err != nil {
@@ -364,23 +379,23 @@ func TestFilePaths(t *testing.T) {
 		}
 	}
 	for _, dsn := range []string{"postgres://registry:password@localhost/registry", "host=localhost dbname=registry password=secret"} {
-		path := writeConfig(t, `{"externalHttps":true,"database":{"engine":"postgres","dsn":"`+dsn+`"}}`)
+		path := writeConfig(t, `{"database":{"engine":"postgres","dsn":"`+dsn+`"}}`)
 		got, err := Parse([]string{"-config", path}, io.Discard)
 		if err != nil || got.DatabaseDSN != dsn {
 			t.Fatal("PostgreSQL DSN was reinterpreted as path")
 		}
 	}
-	path = writeConfig(t, `{"developmentHttp":true,"database":{"dsn":"registry.db"}}`)
+	path = writeConfig(t, `{"database":{"dsn":"registry.db"}}`)
 	got, err = Parse([]string{"-config", path, "-database-engine", "postgres"}, io.Discard)
 	if err != nil || got.DatabaseDSN != "registry.db" {
 		t.Fatal("final engine override was not used for path resolution")
 	}
-	path = writeConfig(t, `{"developmentHttp":true,"database":{"engine":"postgres","dsn":"registry.db"}}`)
+	path = writeConfig(t, `{"database":{"engine":"postgres","dsn":"registry.db"}}`)
 	got, err = Parse([]string{"-config", path, "-database-engine", "sqlite"}, io.Discard)
 	if err != nil || got.DatabaseDSN != filepath.Join(filepath.Dir(path), "registry.db") {
 		t.Fatal("SQLite engine override did not resolve file-supplied path")
 	}
-	path = writeConfig(t, `{"developmentHttp":true,"database":{"dsn":"same"},"reportRoot":"same"}`)
+	path = writeConfig(t, `{"database":{"dsn":"same"},"reportRoot":"same"}`)
 	if _, err := Parse([]string{"-config", path}, io.Discard); err == nil {
 		t.Fatal("database/report path collision accepted")
 	}
@@ -388,7 +403,7 @@ func TestFilePaths(t *testing.T) {
 
 func TestBootstrapFile(t *testing.T) {
 	path := writeConfig(t, `{
-		"listenAddress":"invalid", "externalHttps":true, "developmentHttp":true,
+		"listenAddress":"invalid",
 		"tls":{"futureSetting":true,"certFile":"missing.pem"},
 		"futureFeature":{"enabled":true,"options":[null,1,{}]},
 		"reportRoot":"", "pollMaxAge":"0s", "maxRequestBytes":0,
@@ -435,7 +450,7 @@ func TestTLSFilePaths(t *testing.T) {
 		CertFile: filepath.Join(filepath.Dir(path), "certs", "server.crt"),
 		KeyFile:  filepath.Join(filepath.Dir(path), "certs", "server.key"),
 	}
-	if got.TLS == nil || *got.TLS != want || got.ExternalHTTPS || got.DevelopmentHTTP {
+	if got.TLS == nil || *got.TLS != want {
 		t.Fatal("TLS paths or native mode not loaded")
 	}
 	data, err := json.Marshal(map[string]any{
@@ -471,10 +486,6 @@ func TestTLSTransportValidation(t *testing.T) {
 		`{"tls":{"futureSetting":true,"certFile":"server.crt"}}`,
 		`{"tls":{"certFile":"","keyFile":"server.key"}}`,
 		`{"tls":{"certFile":"server.crt","keyFile":" "}}`,
-		`{"tls":{"certFile":"server.crt","keyFile":"server.key"},"externalHttps":true}`,
-		`{"tls":{"certFile":"server.crt","keyFile":"server.key"},"developmentHttp":true}`,
-		`{"tls":{"certFile":"server.crt","keyFile":"server.key"},"externalHttps":true,"developmentHttp":true}`,
-		`{"tls":{"certFile":"server.crt","keyFile":"server.key"},"listenAddress":"localhost:8443"}`,
 		`{"tls":{"certFile":"server.crt","keyFile":"server.key"},"listenAddress":"127.0.0.1:65536"}`,
 	} {
 		t.Run(body, func(t *testing.T) {
@@ -482,18 +493,5 @@ func TestTLSTransportValidation(t *testing.T) {
 				t.Fatal("invalid TLS settings accepted")
 			}
 		})
-	}
-	path := writeConfig(t, `{"tls":{"certFile":"server.crt","keyFile":"server.key"}}`)
-	for _, mode := range []string{"-external-https", "-development-http"} {
-		if _, err := Parse([]string{"-config", path, mode}, io.Discard); err == nil {
-			t.Fatal("CLI override accepted incompatible TLS mode")
-		}
-	}
-	path = writeConfig(t, `{
-		"tls":{"certFile":"server.crt","keyFile":"server.key"},
-		"externalHttps":true,"developmentHttp":true
-	}`)
-	if _, err := Parse([]string{"-config", path, "-external-https=false", "-development-http=false"}, io.Discard); err != nil {
-		t.Fatalf("explicit false overrides did not select native TLS: %v", err)
 	}
 }

@@ -62,7 +62,7 @@ For example, in PowerShell:
 ```powershell
 New-Item -ItemType Directory -Force .\data\reports
 go run .\cmd\dscregd bootstrap -database-dsn .\data\registry.db -name operator
-go run .\cmd\dscregd -development-http -database-dsn .\data\registry.db -report-root .\data\reports
+go run .\cmd\dscregd -database-dsn .\data\registry.db -report-root .\data\reports
 ```
 
 Protect `data` with permissions/ACLs granting access only to the service account
@@ -108,8 +108,6 @@ complete production configuration using PostgreSQL is:
 ```json
 {
   "listenAddress": "127.0.0.1:8080",
-  "externalHttps": true,
-  "developmentHttp": false,
   "database": {
     "engine": "postgres",
     "dsn": "postgres://registry@localhost/registry?sslmode=verify-full"
@@ -137,23 +135,24 @@ dscregd -config /etc/dscregd/config.json -listen 127.0.0.1:9090
 
 The same `-config` flag works on Windows, for example
 `dscregd -config C:\ProgramData\dscregd\config.json`. For SQLite, use
-`"database": {"engine": "sqlite", "dsn": "data/registry.db"}`. For loopback
-development, set `"developmentHttp": true` and `"externalHttps": false`.
+`"database": {"engine": "sqlite", "dsn": "data/registry.db"}`.
 
 Precedence is **built-in defaults, then file properties, then explicitly supplied
-CLI flags**, including flags explicitly set to their default or `false` value.
-Omitted properties keep existing defaults; explicit empty strings, zero, and
-false are not treated as missing. Durations use Go strings such as `"500ms"`,
-`"5s"`, or `"5m"`. Unknown properties are ignored for forward and backward
+CLI flags**, including flags explicitly set to their default value.
+Omitted properties keep existing defaults; explicit empty strings and zero
+are not treated as missing. Durations use Go strings such as `"500ms"`, `"5s"`,
+or `"5m"`. Unknown properties are ignored for forward and backward
 compatibility, including inside `database` and `tls`, regardless of their JSON
 value type. An unknown-only `tls` object does not select native TLS mode.
+Obsolete `externalHttps` and `developmentHttp` properties are likewise ignored;
+existing JSON files containing them still load.
 Property names remain case-sensitive. Duplicate properties at any depth,
 including inside ignored objects and arrays, are rejected. Explicit nulls and
 invalid types/durations for recognized settings, malformed JSON, and extra JSON
 documents are also rejected. This applies to both server startup and bootstrap, not
 Registry API payload validation. Final merged settings must pass normal validation.
-An unreadable file is fatal when `-config` is supplied. Without it, existing
-CLI behavior is unchanged. There is no implicit file discovery, environment
+An unreadable file is fatal when `-config` is supplied. Without it, only defaults
+and explicit CLI flags apply. There is no implicit file discovery, environment
 override, or hot reload; restart to apply file changes.
 
 Relative `reportRoot`, SQLite `database.dsn`, `tls.certFile`, and `tls.keyFile` values **supplied in the file**
@@ -174,9 +173,7 @@ settings without printing their values or file contents.
 | Flag | Default | Meaning |
 | --- | --- | --- |
 | `-config` | none | Optional JSON configuration file |
-| `-listen` | `127.0.0.1:8080` | Literal IP and numeric port |
-| `-development-http` | `false` | Explicit loopback-only HTTP development |
-| `-external-https` | `false` | Operator assertion that a trusted proxy enforces HTTPS |
+| `-listen` | `127.0.0.1:8080` | Listen host and numeric port; an empty host binds all interfaces |
 | `-database-engine` | `sqlite` | `sqlite` or `postgres` |
 | `-database-dsn` | `registry.db` | Local SQLite file path (not URI), or PostgreSQL DSN |
 | `-report-root` | `reports` | Existing private directory, local or shared |
@@ -192,20 +189,29 @@ settings without printing their values or file contents.
 | `-probe-timeout` | `2s` | Readiness deadline, less than the write timeout |
 | `-sqlite-busy-timeout` | `5s` | Per-connection lock wait, whole milliseconds up to `1m` |
 
-### Transport modes
+### HTTP and HTTPS
 
-Select exactly one transport mode; omitting all three is a startup error.
-Existing development and reverse-proxy configurations remain valid unchanged.
+Without native TLS settings, `dscregd` serves ordinary HTTP. HTTP is fully
+supported on any listening interface, with no opt-in flag, proxy assertion or
+confirmation. The default remains `127.0.0.1:8080`; hostnames, wildcard hosts
+and other local interfaces are also supported. For example (with the database
+parent and report directory already created):
 
-| Mode | JSON configuration | Intended use |
-| --- | --- | --- |
-| Native HTTPS | `"tls": {"certFile": "...", "keyFile": "..."}` | Direct HTTPS with operator-provided PEM files; no reverse proxy required |
-| External HTTPS | `"externalHttps": true` | HTTP on a protected backend behind trusted TLS termination |
-| Development HTTP | `"developmentHttp": true` | Plain HTTP on a literal loopback IP only |
+```sh
+dscregd -listen 127.0.0.1:8080
+dscregd -listen 0.0.0.0:8080
+dscregd -listen 192.168.1.10:8080
+```
 
-Native TLS cannot be combined with either HTTP mode, and the two HTTP modes
-cannot be combined with each other. TLS settings are **configuration-file
-only**; there are no TLS command-line flags. A complete native HTTPS example:
+**HTTPS is recommended** because it encrypts API keys and registration tokens
+in transit. Administrators choose the transport appropriate for their deployment.
+Every HTTP startup emits one structured warning about unencrypted credentials;
+it does not refuse startup or repeat the warning per request. The server does
+not automatically enable TLS or redirect HTTP requests to HTTPS.
+
+Configuring both `tls.certFile` and `tls.keyFile` selects native HTTPS, without
+a reverse proxy. TLS settings are **configuration-file only**; there are no
+TLS command-line flags. A complete native HTTPS example:
 
 ```json
 {
@@ -252,11 +258,11 @@ provide those private-key export methods.
 
 Reverse-proxy TLS remains available for production deployments needing
 centralized certificate renewal, load balancing, traffic limits or edge policy.
-`-external-https` does **not** enable TLS in
-the executable or trust forwarded identity headers. Configure the reverse proxy
-to terminate TLS and restrict the backend listener with network controls.
-Never expose the plain HTTP backend directly. Development mode rejects wildcard
-and non-loopback addresses, including hostnames that could resolve elsewhere.
+A reverse proxy or load balancer can terminate HTTPS while `dscregd` listens
+on ordinary HTTP, with no special server setting. The HTTP startup warning still
+applies to that backend connection. Use network controls appropriate to the
+deployment to protect unencrypted traffic. Forwarded headers do not grant
+identity or bypass authentication.
 
 SQLite uses WAL, foreign keys, full synchronous writes, and a single pooled
 connection. Connection-specific pragmas are reapplied on reconnect. The
@@ -299,7 +305,7 @@ also across independent API instances. No in-process mutex is required.
 Logs are structured JSON on stderr. Request logs contain only the bounded method,
 route template, status, and duration, not raw URLs, queries, headers, or
 bodies. Health endpoints are unauthenticated. Administration endpoints require
-an administrator API key even in development mode; there is no auth bypass.
+an administrator API key over either transport; there is no auth bypass.
 Full reports are sensitive and are available only to administrator credentials.
 Report writes and SQL transactions also emit bounded outcomes/timings and pool
 wait signals. See [observability](docs/operations.md#structured-observability)

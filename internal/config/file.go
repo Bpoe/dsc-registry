@@ -30,10 +30,10 @@ func mergeFile(flags *flag.FlagSet, path string, s *Settings) error {
 	// Flag values are saved before loading so even explicit default values win.
 	var tls TLSSettings
 	fields := map[string]any{
-		"listenAddress": &s.ListenAddress, "externalHttps": &s.ExternalHTTPS,
-		"tls":             map[string]any{"certFile": &tls.CertFile, "keyFile": &tls.KeyFile},
-		"developmentHttp": &s.DevelopmentHTTP, "reportRoot": &s.ReportRoot,
-		"pollMaxAge": &s.PollMaxAge, "maxRequestBytes": &s.MaxRequestBytes,
+		"listenAddress": &s.ListenAddress,
+		"tls":           map[string]any{"certFile": &tls.CertFile, "keyFile": &tls.KeyFile},
+		"reportRoot":    &s.ReportRoot,
+		"pollMaxAge":    &s.PollMaxAge, "maxRequestBytes": &s.MaxRequestBytes,
 		"maxReportBytes": &s.MaxReportBytes, "readHeaderTimeout": &s.ReadHeaderTimeout,
 		"readTimeout": &s.ReadTimeout, "writeTimeout": &s.WriteTimeout,
 		"idleTimeout": &s.IdleTimeout, "startupTimeout": &s.StartupTimeout,

@@ -12,7 +12,7 @@
         <Component Id="Daemon" Guid="{5D1F6D3E-8D11-4C26-AEAE-027455923A73}" Bitness="always64">
           <File Id="DaemonFile" Source="$(var.BinaryPath)" Name="dscregd.exe" KeyPath="yes"
                 DefaultVersion="$(var.ProductVersion).0" DefaultLanguage="0" />
-          <!-- Manual start: operators must configure TLS and bootstrap privately first. -->
+          <!-- Manual start: operators must review configuration and bootstrap privately first. -->
           <ServiceInstall Id="RegistryService" Name="dscregd" DisplayName="DSC Registry"
                           Description="Delivers machine-scoped DSC configuration and stores execution reports."
                           Type="ownProcess" Start="demand" ErrorControl="normal"

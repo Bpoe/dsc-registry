@@ -37,13 +37,14 @@ Create `/etc/dscregd/config.json`, owned by root, group `dscregd`, mode `0640`
 ```json
 {
   "listenAddress": "127.0.0.1:8080",
-  "externalHttps": true,
   "database": {"engine": "sqlite", "dsn": "/var/lib/dscregd/registry.db"},
   "reportRoot": "/var/lib/dscregd/reports"
 }
 ```
 
-Install trusted TLS termination before exposing the service. Run bootstrap as
+HTTPS is recommended to encrypt credentials in transit; configure native TLS
+or a trusted TLS edge when appropriate for the deployment. HTTP is fully supported
+without special settings. Run bootstrap as
 the service user in a private, non-recorded terminal, storing its one-time key
 in a secret manager; do not send it to journald:
 
@@ -54,7 +55,7 @@ sudo systemctl enable --now dscregd
 curl --fail --max-time 5 http://127.0.0.1:8080/health/ready
 ```
 
-Check HTTPS and authentication through the edge as well. An unauthenticated
+If using a TLS edge, check HTTPS and authentication through it as well. An unauthenticated
 `GET /v1/machines` must return `401`; readiness must return `200`. A service
 restart does not bootstrap again, rotate keys, alter desired revisions or
 scavenge reports. `systemctl stop` sends SIGTERM and drains requests; the unit's
@@ -95,8 +96,8 @@ are not changed.
 The service is **not enabled or started on first installation**. Copy
 `/usr/share/doc/dscregd/config.example.json` to `/etc/dscregd/config.json`,
 restrict it to the service account (mode `0600`), and review it. The example
-expects a separately configured trusted TLS reverse proxy and binds loopback.
-Alternatively configure native TLS as described below. Bootstrap privately as
+binds ordinary HTTP on loopback. HTTP also supports other listening interfaces;
+configure native TLS or a reverse proxy if HTTPS is desired. Bootstrap privately as
 `dscregd` using `/usr/bin/dscregd bootstrap -config /etc/dscregd/config.json`,
 then `sudo systemctl enable --now dscregd`. Do not reinstall the manual unit
 over the packaged unit.
@@ -224,8 +225,8 @@ by workflow retries; digest pinning is stronger.
 The runtime uses a digest-pinned Alpine image with bundled CA roots,
 port 8080, and UID/GID `65532:65532`, not root. Its default command is
 `dscregd -config /etc/dscregd/config.json`. Mount a readable configuration at
-that path selecting exactly one transport mode; the image does not ship an
-active configuration or silently enable plaintext HTTP. Without a mounted
+that path; omitting native TLS settings selects HTTP and logs one startup
+warning. The image does not ship an active configuration. Without a mounted
 configuration, startup fails rather than exposing an unconfigured service.
 Explicit container arguments replace the default command, so `--version`,
 `bootstrap -config ...`, and custom server flags remain available.
@@ -258,7 +259,6 @@ Save the following as `config.json` in that same operator directory:
 ```json
 {
   "listenAddress": "0.0.0.0:8080",
-  "externalHttps": true,
   "database": {"engine": "sqlite", "dsn": "/data/registry.db"},
   "reportRoot": "/reports"
 }
@@ -293,8 +293,8 @@ Configure the existing host Nginx/Caddy or equivalent TLS edge to forward to
 `127.0.0.1:8080`, use a trusted certificate, preserve authorization/cache
 headers, and disable shared caching as described in
 [external TLS termination](#external-tls-termination-and-probes).
-`externalHttps` is an assertion about that protected edge, not encryption.
-Do not expose port 8080 publicly. If the proxy runs in Docker instead, connect
+No server-side proxy assertion is needed. For this TLS-edge example, keep port
+8080 restricted to the proxy. If the proxy runs in Docker instead, connect
 it to a private shared network and remove the host port mapping; do not use
 the proxy container's own loopback to reach the API.
 
@@ -340,7 +340,6 @@ and normal read/write rights for runtime. Example protected configuration:
 ```json
 {
   "listenAddress": "10.0.0.10:8080",
-  "externalHttps": true,
   "database": {
     "engine": "postgres",
     "dsn": "host=db.example port=5432 dbname=registry user=registry sslmode=verify-full sslrootcert=/etc/dscregd/db-ca.pem passfile=/etc/dscregd/pgpass"
@@ -349,7 +348,7 @@ and normal read/write rights for runtime. Example protected configuration:
 }
 ```
 
-Use the actual backend's private literal listen IP, not this illustrative
+Use the actual backend's intended listen address, not this illustrative
 address. URI DSNs (`postgres://registry@db.example/registry?sslmode=verify-full`)
 are also supported. Password files use libpq's
 `host:port:database:user:password` format and mode `0600`, owned/readable by the
@@ -439,21 +438,29 @@ online report cleaner. Use only the
 [bounded offline cleanup procedure](../README.md#bounded-offline-orphan-cleanup)
 with **all replicas stopped**, checking every candidate against SQL.
 
-## Transport modes and health
+## HTTP, HTTPS and health
 
-Choose exactly one transport in the startup JSON file:
+`dscregd` serves HTTP unless both `tls.certFile` and `tls.keyFile` are configured,
+which selects native HTTPS. HTTP is fully supported on loopback, non-loopback,
+wildcard and hostname listen addresses, without opt-in flags, special settings,
+proxy assertions or operator confirmation. The default is `127.0.0.1:8080`;
+listen addresses must have a valid numeric port.
 
-| Mode | Setting | Use |
-| --- | --- | --- |
-| Native HTTPS | `tls.certFile` and `tls.keyFile` | Serve HTTPS directly from `dscregd` using operator-provided PEM files |
-| External HTTPS | `externalHttps: true` | Serve HTTP only on a protected backend behind trusted TLS termination |
-| Development HTTP | `developmentHttp: true` | Loopback-only plaintext development, never an exposed deployment |
+**HTTPS is recommended** because it encrypts API keys and registration tokens in
+transit. Administrators decide what is appropriate for their deployment.
+When serving HTTP, the existing structured logger emits this warning once per
+startup, not per request:
 
-Selecting none or combining modes fails startup. The existing literal-IP/port
-validation applies to all modes; only development HTTP is limited to loopback.
-Existing files/CLI invocations for the two HTTP modes need no changes. TLS has
-no CLI flags and no environment overrides. API keys and authorization rules
-are identical in all three modes.
+```text
+HTTP transport is unencrypted; API keys and registration tokens may be exposed in transit
+```
+
+The warning is informational and does not block startup, including behind a
+TLS-terminating proxy. Native HTTPS does not emit it. The server never
+automatically enables TLS or redirects HTTP to HTTPS. API keys, registration
+tokens and authorization rules are unchanged over either transport. TLS has no
+CLI flags and no environment overrides. Obsolete `externalHttps` and
+`developmentHttp` JSON properties are ignored like any other unknown settings.
 
 ### Native HTTPS
 
@@ -478,7 +485,7 @@ Create the database parent and report root, install the PEM files, then run
 `dscregd -config config.json` (Windows: `.\dscregd.exe -config .\config.json`).
 All relative paths shown here are relative to the configuration file directory;
 absolute TLS paths remain unchanged. For remote clients, replace the loopback
-listen IP with the intended local interface's literal IP and configure firewall
+listen address with the intended local interface or hostname and configure firewall
 access deliberately.
 
 `tls.certFile` contains the server certificate first, then any intermediate
@@ -598,8 +605,9 @@ issuance/renewal, load balancing, request limits and edge policy. Native HTTPS
 does not replace those operational capabilities; the existing Nginx/Docker demo
 continues using external termination unchanged.
 
-`externalHttps` is an operator assertion, not TLS configuration or forwarded
-header authentication. Terminate TLS 1.2+ with a trusted certificate, preserve
+A reverse proxy or load balancer may terminate HTTPS while `dscregd` listens on
+ordinary HTTP; no special server configuration is needed. For that deployment,
+terminate TLS 1.2+ with a trusted certificate, preserve
 Authorization/ETag/If-None-Match/Cache-Control/Vary, disable shared caching,
 and firewall the unencrypted API listener to the edge/probes only. Do not
 trust machine IDs supplied in forwarded headers. Bound body sizes/timeouts

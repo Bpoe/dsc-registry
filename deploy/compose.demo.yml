@@ -4,7 +4,6 @@ x-api: &api
   pull_policy: never
   user: ${DSCREGISTRY_DEMO_USER:-65532:65532}
   command:
-    - -external-https
     - -listen=0.0.0.0:8080
     - -database-engine=postgres
     - -database-dsn=postgres://registry:demo-only-password@postgres/registry?sslmode=disable
