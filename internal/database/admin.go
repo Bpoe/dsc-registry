@@ -164,22 +164,33 @@ func (s *Store) ListMachines(ctx context.Context, after string, limit int) ([]Ma
 	return machines, rows.Err()
 }
 
-func (s *Store) DeleteMachine(ctx context.Context, id string) error {
+// DeleteMachine returns files to remove only after a successful commit.
+func (s *Store) DeleteMachine(ctx context.Context, id string) ([]string, error) {
 	tx, err := s.begin(ctx, "delete_machine")
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer tx.Rollback()
+	if err := s.lockOwner(ctx, tx.Tx, apikey.Machine, id); err != nil {
+		return nil, err
+	}
+	paths, err := reportPaths(ctx, tx.Tx, id, "")
+	if err != nil {
+		return nil, err
+	}
 	result, err := tx.ExecContext(ctx, "DELETE FROM machines WHERE id = $1", id)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if count, err := result.RowsAffected(); err != nil {
-		return err
+		return nil, err
 	} else if count == 0 {
-		return ErrNotFound
+		return nil, ErrNotFound
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return paths, nil
 }
 
 func (s *Store) lockOwner(ctx context.Context, tx *sql.Tx, role, id string) error {

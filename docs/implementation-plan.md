@@ -109,33 +109,42 @@ response serialization are included. PostgreSQL benchmarks use the existing
 `DSCREGISTRY_TEST_POSTGRES_DSN` disposable-database hook and skip when unset.
 Results are measurements, not fixed performance-ratio assertions.
 
-## PR 4 — full-report ingestion and latest status, extended with history
+## PR 4 — full-report ingestion and latest status
 
 - Accept a wrapped real dscd envelope; validate required fields and reported configuration revision UUID; preserve nested JSON. Require a nonempty string `result.configuration` and allow omitted/null/string `result.parameters`, without directory, basename or extension restrictions. These client paths are informational only; use the wrapper/route configuration name and authenticated machine for identity, never embedded paths for authorization, database selection or server storage.
-- Write each report directly to a unique file under the single configured report root; sync/close it successfully, then commit its relative path and metadata in SQL. No temporary file or filesystem rename. Preserve previous report files for historical reads.
-- Persist idempotency across history by machine/name/upload ID. Accept old revisions and removed configurations; reject conflicting reuse of an upload identity.
-- Implement admin machine status, paginated history, metadata and original-content GET; failed writes must not corrupt prior report/status. Preserve existing named routes.
+- Write each report directly to a unique file under the single configured report root; sync/close it before the SQL transaction, commit its relative path/metadata, then remove superseded files. No temporary file or filesystem rename.
+- Persist idempotency for the retained machine/name/upload ID. Accept old revisions and removed configurations; reject conflicting reuse of the retained identity.
+- Implement admin machine status, paginated latest reports, metadata and original-content GET; failed writes must not corrupt prior report/status. Preserve existing named routes.
 - Fault-injection tests for interrupted file writes, DB commit failure, concurrent requests, and orphan handling.
 
 **Done when:** full `dscd` schemaVersion=1 report reaches admin GET unchanged; SQLite and PostgreSQL versions pass the same tests.
 
 Implemented with source-verified dscd envelope validation, bounded/unambiguous
 UTF-8 JSON, original nested report bytes, exclusive private direct writes,
-successful sync/close before SQL publication, persisted history-wide idempotency,
-and machine-row/immediate transactions serializing publication, desired-state
-mutation and file reads across instances. SQL references are relative filenames.
+successful sync/close before SQL publication, retained-report idempotency,
+and machine-row/immediate transactions serializing publication and desired-state
+mutation across instances. All report file I/O is outside transactions. SQL references are relative filenames.
 SQLite migration 3 and PostgreSQL migration 4 migrate initial latest-status
 records to historical metadata without rewriting files, and remove the old
 independent status table. Machine status is derived from reports and current
 desired state, selecting current-revision executions separately from latest
-received history. Delayed historical uploads cannot replace current execution
-results. Current/stale/removed/unreported revision states are distinct from
+received reports. Latest-only storage replaces prior rows/files after successful
+commit. A delayed historical receipt replaces the prior report but is stale,
+never a current-revision execution. Current/stale/removed/unreported states are distinct from
 execution outcomes and online health. New upload receipts use server UUIDs;
 the existing named upload retains its 204 response.
 Tests cover file and SQL-commit faults, interrupted-write orphans, concurrency,
 role/machine isolation, historical/deleted configurations, pagination,
 migration/rollback, restart, conflicting retries, delayed historical failures
 and successes, and desired ETag invariance.
+The latest-only lifecycle follow-up cleans unused files after pre-commit SQL
+failure or concurrent retries, keeps both files on uncertain commit outcomes,
+and removes configuration/machine report files only after deletion commits.
+Cleanup warnings never fail committed operations. Reads reselect after concurrent
+retirement instead of holding SQL locks during filesystem I/O. Replaced/deleted
+report IDs return not found, and obsolete upload identities are forgotten.
+No schema change is needed: existing history is hidden from reads and retired
+when that name is next replaced/deleted, without a startup or periodic sweep.
 Bounded **offline** orphan maintenance requires all replicas stopped; see the
 [procedure](../README.md#bounded-offline-orphan-cleanup). No online scavenger,
 retention policy, DSC execution or sync-agent implementation is included.

@@ -7,6 +7,7 @@ import (
 
 	"github.com/Bpoe/dsc-registry/internal/database"
 	"github.com/Bpoe/dsc-registry/internal/report"
+	"github.com/Bpoe/dsc-registry/internal/reportstore"
 )
 
 func (a *adminAPI) uploadReport(w http.ResponseWriter, r *http.Request, id, name string) {
@@ -31,6 +32,10 @@ func (a *adminAPI) uploadReport(w http.ResponseWriter, r *http.Request, id, name
 	publication, err := a.store.PublishReport(r.Context(), id, upload.Name, upload, func() (string, error) {
 		start := time.Now()
 		path, err := a.reports.Write(r.Context(), upload.Result)
+		var cleanupErr *reportstore.CleanupError
+		if errors.As(err, &cleanupErr) {
+			a.logger.Warn("report file cleanup failed", "path", cleanupErr.Path, "error", cleanupErr.Err)
+		}
 		storageFailure = err != nil
 		outcome := "written"
 		if err != nil {
@@ -43,8 +48,9 @@ func (a *adminAPI) uploadReport(w http.ResponseWriter, r *http.Request, id, name
 		storageFailure = err != nil
 		return content, err
 	})
+	a.removeReportFiles(publication.CleanupPaths)
 	if err != nil {
-		if storageFailure {
+		if storageFailure && !reportResourceMissing(err) {
 			a.reportStorageError(w)
 		} else {
 			a.reportError(w, err)
@@ -61,6 +67,14 @@ func (a *adminAPI) uploadReport(w http.ResponseWriter, r *http.Request, id, name
 		status = http.StatusCreated
 	}
 	writeJSON(w, status, publication.Report)
+}
+
+func (a *adminAPI) removeReportFiles(paths []string) {
+	for _, path := range paths {
+		if err := a.reports.Remove(path); err != nil {
+			a.logger.Warn("report file cleanup failed", "path", path, "error", err)
+		}
+	}
 }
 
 func (a *adminAPI) machineReports(w http.ResponseWriter, r *http.Request, id string) {
@@ -105,7 +119,7 @@ func (a *adminAPI) machineReport(w http.ResponseWriter, r *http.Request, id, rep
 	}
 	item, err := a.store.GetReport(r.Context(), id, reportID, read)
 	if err != nil {
-		if storageFailure {
+		if storageFailure && !reportResourceMissing(err) {
 			a.reportStorageError(w)
 		} else {
 			a.reportError(w, err)
@@ -154,7 +168,7 @@ func (a *adminAPI) configurationReport(w http.ResponseWriter, r *http.Request, i
 		return err
 	})
 	if err != nil {
-		if storageFailure {
+		if storageFailure && !reportResourceMissing(err) {
 			a.reportStorageError(w)
 		} else {
 			a.reportError(w, err)
@@ -163,6 +177,11 @@ func (a *adminAPI) configurationReport(w http.ResponseWriter, r *http.Request, i
 	}
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(content)
+}
+
+func reportResourceMissing(err error) bool {
+	return errors.Is(err, database.ErrNotFound) || errors.Is(err, database.ErrConfigurationNotFound) ||
+		errors.Is(err, database.ErrReportNotFound)
 }
 
 func reportReadRequest(w http.ResponseWriter, r *http.Request) bool {

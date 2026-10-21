@@ -18,10 +18,20 @@ func ObserveQueries(t *testing.T, db *sql.DB, dsn string, before func(context.Co
 	return observed
 }
 
+// ObserveCommits can simulate a lost acknowledgement after a real commit.
+func ObserveCommits(t *testing.T, db *sql.DB, dsn string, after func(error) error) *sql.DB {
+	t.Helper()
+	observed := sql.OpenDB(&queryConnector{base: db.Driver(), dsn: dsn, afterCommit: after})
+	observed.SetMaxOpenConns(1)
+	t.Cleanup(func() { observed.Close() })
+	return observed
+}
+
 type queryConnector struct {
-	base   driver.Driver
-	dsn    string
-	before func(context.Context, string, []driver.NamedValue) error
+	base        driver.Driver
+	dsn         string
+	before      func(context.Context, string, []driver.NamedValue) error
+	afterCommit func(error) error
 }
 
 func (c *queryConnector) Driver() driver.Driver { return c.base }
@@ -49,18 +59,36 @@ func (c *queryConnector) Connect(ctx context.Context) (driver.Conn, error) {
 		_ = conn.Close()
 		return nil, fmt.Errorf("query observation requires QueryerContext, got %T", conn)
 	}
-	return &queryConn{Conn: conn, queryer: queryer, before: c.before}, nil
+	return &queryConn{Conn: conn, queryer: queryer, before: c.before, afterCommit: c.afterCommit}, nil
 }
 
 type queryConn struct {
 	driver.Conn
-	queryer driver.QueryerContext
-	before  func(context.Context, string, []driver.NamedValue) error
+	queryer     driver.QueryerContext
+	before      func(context.Context, string, []driver.NamedValue) error
+	afterCommit func(error) error
 }
 
 func (c *queryConn) QueryContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Rows, error) {
-	if err := c.before(ctx, query, args); err != nil {
-		return nil, err
+	if c.before != nil {
+		if err := c.before(ctx, query, args); err != nil {
+			return nil, err
+		}
 	}
 	return c.queryer.QueryContext(ctx, query, args)
 }
+
+func (c *queryConn) Begin() (driver.Tx, error) {
+	tx, err := c.Conn.Begin()
+	if err != nil || c.afterCommit == nil {
+		return tx, err
+	}
+	return &observedCommit{Tx: tx, after: c.afterCommit}, nil
+}
+
+type observedCommit struct {
+	driver.Tx
+	after func(error) error
+}
+
+func (tx *observedCommit) Commit() error { return tx.after(tx.Tx.Commit()) }

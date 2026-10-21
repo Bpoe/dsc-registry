@@ -246,10 +246,12 @@ func (a *adminAPI) machine(w http.ResponseWriter, r *http.Request, id string) {
 		}
 		writeJSON(w, http.StatusOK, machine)
 	case http.MethodDelete:
-		if err := a.store.DeleteMachine(r.Context(), id); err != nil {
+		paths, err := a.store.DeleteMachine(r.Context(), id)
+		if err != nil {
 			a.resourceError(w, err, apikey.Machine)
 			return
 		}
+		a.removeReportFiles(paths)
 		w.WriteHeader(http.StatusNoContent)
 	default:
 		methodNotAllowed(w, "GET, DELETE")

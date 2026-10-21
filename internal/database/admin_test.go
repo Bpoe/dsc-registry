@@ -138,7 +138,7 @@ func TestAdministrationBothEngines(t *testing.T) {
 		if got, err := store.GetMachine(ctx, first.ID); err != nil || got.ConfigurationRevision != 0 {
 			t.Fatal("credential changes modified configuration revision")
 		}
-		if err := store.DeleteMachine(ctx, first.ID); err != nil {
+		if _, err := store.DeleteMachine(ctx, first.ID); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := store.Authenticate(ctx, activeKey.Key); !errors.Is(err, apikey.ErrInvalid) {
@@ -230,7 +230,7 @@ func TestConcurrentBootstrapAndMachineDeletion(t *testing.T) {
 			go func() {
 				defer group.Done()
 				<-start
-				if err := second.DeleteMachine(ctx, machine.ID); err != nil {
+				if _, err := second.DeleteMachine(ctx, machine.ID); err != nil {
 					t.Error(err)
 				}
 			}()

@@ -121,7 +121,7 @@ func TestMachineNamesBothEngines(t *testing.T) {
 		if _, err := store.DB.Exec("INSERT INTO machines(id, name, created_at) VALUES ($1, 'missing key', 'then')", uuid.NewString()); err == nil {
 			t.Fatal("omitted name key accepted")
 		}
-		if err := store.DeleteMachine(ctx, machine.ID); err != nil {
+		if _, err := store.DeleteMachine(ctx, machine.ID); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := store.GetMachineByName(ctx, "INDEPENDENT"); !errors.Is(err, ErrNotFound) {

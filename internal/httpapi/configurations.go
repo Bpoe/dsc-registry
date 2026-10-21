@@ -67,10 +67,12 @@ func (a *adminAPI) configuration(w http.ResponseWriter, r *http.Request, id, nam
 		}
 		writeJSON(w, http.StatusOK, result)
 	case http.MethodDelete:
-		if err := a.store.DeleteConfiguration(r.Context(), id, name); err != nil {
+		paths, err := a.store.DeleteConfiguration(r.Context(), id, name)
+		if err != nil {
 			a.configurationError(w, err)
 			return
 		}
+		a.removeReportFiles(paths)
 		w.WriteHeader(http.StatusNoContent)
 	default:
 		methodNotAllowed(w, "GET, PUT, DELETE")
