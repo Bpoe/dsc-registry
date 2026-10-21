@@ -26,7 +26,7 @@ DSC. The separate `dscsyncd` sync agent and `dscd` reconciler are not included.
 
 **Current milestone: report history and machine status (real-NFS validation pending).**
 The executable provides local administrator bootstrap,
-API-key authentication, machine and credential administration, SQLite/PostgreSQL
+API-key authentication, token-based machine self-registration, machine and credential administration, SQLite/PostgreSQL
 migrations, desired-configuration CRUD and conditional machine polling,
 full dscd report ingestion, persistent report history, derived machine status,
 admin-only report retrieval, report-storage checks, graceful shutdown, and health endpoints.
@@ -347,7 +347,8 @@ Send `Authorization: ApiKey <key>` over HTTPS. An administrator can:
 Create a replacement key, verify it works, then revoke the old key for overlap
 during rotation. Revoking the final administrator key is allowed because the
 local bootstrap path provides recovery. All admin responses use `no-store`;
-issuance is the only HTTP response that contains a secret. Machine credentials
+credential/token issuance and successful self-registration return secrets only
+once. Machine credentials
 are rejected from every admin route before any machine data is read, including
 routes targeting their own UUID. Display names do not confer identity or access.
 Machine/key operations never change `configurationRevision`.
@@ -376,6 +377,76 @@ arrays and an optional `nextCursor`; pass that value unchanged to fetch the next
 page. Key metadata includes revoked keys, with nullable `revokedAt`, but no
 digest or secret. Revoking an already revoked key returns `204`; missing owners
 or keys outside the named owner return `404`.
+
+## Machine self-registration
+
+An administrator creates a reusable, time-limited registration token with
+`POST /v1/registration-tokens`, authenticated with their ordinary API key.
+The optional `ttlSeconds` must be a JSON integer from **1 to 86400** (24 hours);
+omit it using `{}` for the default **3600** seconds. Zero, negative, fractional,
+null, string and excessive values are rejected with `400`. Creation returns
+`201` with `token` and a server-generated UTC `expiresAt`.
+
+In a private PowerShell terminal, load `$adminApiKey` from a secret store and
+create a token over trusted HTTPS:
+
+```powershell
+$baseUri = 'https://registry.example.com'
+$registration = Invoke-RestMethod -Method Post `
+    -Uri "$baseUri/v1/registration-tokens" `
+    -Headers @{ Authorization = "ApiKey $adminApiKey" } `
+    -ContentType 'application/json' `
+    -Body (@{ ttlSeconds = 3600 } | ConvertTo-Json)
+```
+
+Securely deliver `$registration.token` to the new machine as
+`$registrationToken`. On that machine:
+
+```powershell
+$baseUri = 'https://registry.example.com'
+$machine = Invoke-RestMethod -Method Post `
+    -Uri "$baseUri/v1/agent/register" `
+    -Headers @{ Authorization = "Bearer $registrationToken" } `
+    -ContentType 'application/json' `
+    -Body (@{ name = 'foobar' } | ConvertTo-Json)
+
+# Protect the returned apiKey in the machine's secret store before proceeding.
+$desired = Invoke-RestMethod -Method Get `
+    -Uri "$baseUri/v1/agent/configurations" `
+    -Headers @{ Authorization = "ApiKey $($machine.apiKey)" }
+```
+
+Registration returns `201` with `id` (a new UUID), the original `name`, and
+`apiKey`. Machine creation and credential provisioning commit atomically.
+The name has the same validation and Unicode-caseless uniqueness as
+administrator-created machines. An existing name returns `409`, including
+differently cased/equivalent names and concurrent registration attempts.
+Registration never modifies an existing machine or rotates its credentials.
+Store the returned key securely: retrying registration after a lost successful
+response returns a name conflict; an administrator must issue a replacement
+key through the existing machine-key API.
+
+Registration credentials (`dscr_...`) are **not API keys**. Only
+`POST /v1/agent/register` accepts them, and only with `Authorization: Bearer`.
+Administrator/machine API keys are rejected there under either scheme.
+Registration tokens cannot access administration, polling or report routes
+under either scheme; existing credentials keep using `Authorization: ApiKey`.
+Invalid/expired registration tokens return `401` before machine-name validation
+or lookup, without revealing whether a name exists.
+
+Tokens contain 256 random bits; SQL stores only their SHA-256 hashes and
+expiration timestamps. Plaintext is returned only at creation, never on
+machine/key reads or in routine logs. Both new endpoints return `no-store`.
+Protect tokens as enrollment secrets: anyone holding one can register any
+number of new machines until expiration, including concurrently. Tokens are
+not machine-bound, single-use or consumed; there are no usage limits,
+revocation endpoints or automatic expired-record cleanup. Expiration is
+checked against the server's UTC clock on each registration request. An
+already authenticated request may finish after expiration; issued machine API
+keys remain valid independently of the token.
+
+SQLite migration **4** and PostgreSQL migration **5** add only the registration
+token table, preserving existing machines, keys, desired state and reports.
 
 ## Desired configurations and machine polling
 

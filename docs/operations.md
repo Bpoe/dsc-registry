@@ -360,7 +360,8 @@ shell history, source control, telemetry or health response bodies.
 Migrations are embedded explicit SQL, applied in a transaction at **every
 startup** when needed; there is no separate migrate command. PostgreSQL
 replicas serialize initialization with an advisory transaction lock. Current
-versions are SQLite **2** and PostgreSQL **3**. A failed migration rolls back;
+versions are SQLite **4** and PostgreSQL **5**. The latest migration adds only
+hashed registration tokens and expirations. A failed migration rolls back;
 an unsupported/future/non-contiguous ledger fails startup rather than
 resetting data. Never edit the migration ledger to bypass this. Before an
 upgrade take a paired backup; migrate one stopped/drained deployment first.
@@ -620,7 +621,10 @@ in a production proxy configuration.
 
 ## API-key rotation and lost-key recovery
 
-All requests require `Authorization: ApiKey <key>` over TLS; use a client that
+Existing machine/admin APIs require `Authorization: ApiKey <key>` over TLS;
+self-registration alone requires a Bearer registration token. See
+[machine self-registration](../README.md#machine-self-registration).
+Use a client that
 loads credentials from a protected file/secret store, not literal shell args.
 Issuance returns secret material only once. Never record HTTP bodies of key
 issuance or bootstrap output in ordinary logs.

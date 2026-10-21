@@ -4,8 +4,8 @@
 
 ## 1. Common conventions
 
-- All deployed endpoints require HTTPS. Use `Authorization: ApiKey <key>`.
-- API-key type determines principal: administrator (`dsca_...`) versus machine (`dscm_...`). No bearer tokens, cookies or OAuth endpoints.
+- All deployed endpoints require HTTPS. Use `Authorization: ApiKey <key>` for existing administrator and machine APIs.
+- API-key type determines principal: administrator (`dsca_...`) versus machine (`dscm_...`). Registration tokens (`dscr_...`) are a separate credential type, accepted only by `POST /v1/agent/register` using `Authorization: Bearer <token>`. No cookies or OAuth endpoints.
 - UUIDs are strings in standard RFC 4122 format. `name` is a safe lowercase configuration stem described in design.md.
 - Dates in JSON are UTC RFC3339 timestamps. Unknown request fields may be rejected to catch typos; response consumers must ignore additive fields.
 - JSON errors use `{"error":{"code":"machine_not_found","message":"..."}}`. Keep error codes stable; messages are for humans and must not expose secret values, storage paths or existence of another machine's resources.
@@ -20,6 +20,7 @@ All routes below require an administrator key.
 
 | Method | Route | Semantics |
 | --- | --- | --- |
+| `POST` | `/v1/registration-tokens` | Create a reusable, expiring registration token; plaintext shown once |
 | `POST` | `/v1/machines` | Register new machine, server generates `id`; input `{ "name": "host-1" }`, returns `201` |
 | `GET` | `/v1/machines` | Paginated machine list; optional `name` returns one exact Unicode-caseless match |
 | `GET` | `/v1/machines/{machineId}` | Machine details including `configurationRevision` |
@@ -84,7 +85,7 @@ only when no unrevoked administrator key remains. It otherwise refuses to issue
 or redisplay credentials. See [bootstrap and recovery](../README.md#bootstrap-and-credential-rotation)
 for protected output and exceptional local recovery instructions.
 
-### Machine registration
+### Administrator-created machine
 
 ```http
 POST /v1/machines
@@ -100,6 +101,115 @@ Content-Type: application/json
 Location: /v1/machines/550e8400-e29b-41d4-a716-446655440000
 
 {"id":"550e8400-e29b-41d4-a716-446655440000","name":"host-1","configurationRevision":0}
+```
+
+### Registration token creation and machine self-registration
+
+An administrator can delegate enrollment without sharing an administrator key:
+
+```http
+POST /v1/registration-tokens
+Authorization: ApiKey dsca_<id>.<secret>
+Content-Type: application/json
+
+{"ttlSeconds":3600}
+```
+
+```http
+HTTP/1.1 201 Created
+Content-Type: application/json
+Cache-Control: no-store
+
+{"token":"dscr_<random-secret>","expiresAt":"2026-10-21T00:00:00Z"}
+```
+
+The request must be a single UTF-8 JSON object. `ttlSeconds` is optional
+(default **3600**) and must be an integer from **1 to 86400** inclusive
+(maximum 24 hours). `{}` uses the default. Nulls, strings, fractions,
+exponent-form numbers, zero, negatives and excessive values return `400`
+(`invalid_ttl`). Unknown/duplicate fields, non-object or malformed JSON return
+`400` (`invalid_json`); existing media-type and request-size bounds apply.
+Only administrator API keys may create tokens: machine keys receive `403`;
+missing/invalid authentication or a registration token receives `401` with
+`WWW-Authenticate: ApiKey`.
+
+The new machine supplies a registration token, not an API key:
+
+```http
+POST /v1/agent/register
+Authorization: Bearer dscr_<random-secret>
+Content-Type: application/json
+
+{"name":"foobar"}
+```
+
+```http
+HTTP/1.1 201 Created
+Content-Type: application/json
+Cache-Control: no-store
+Location: /v1/machines/550e8400-e29b-41d4-a716-446655440000
+
+{"id":"550e8400-e29b-41d4-a716-446655440000","name":"foobar","apiKey":"dscm_<id>.<secret>"}
+```
+
+The same machine-name validation, original display bytes and database-enforced
+Unicode-caseless uniqueness apply as for `POST /v1/machines`. Machine creation
+and existing machine-key generation/storage commit in one SQL transaction.
+Conflicting names, including concurrent or differently cased equivalents,
+return `409` (`machine_name_conflict`) without disclosing the existing UUID.
+No existing machine or credential is modified. The returned API key is
+machine-scoped and is shown only once; normal machine GETs never expose it.
+Use it with `Authorization: ApiKey` for polling/report uploads. Recover a lost
+successful registration response by having an administrator issue a new
+machine API key, not by registering the same name again.
+
+Missing, malformed, invalid or expired registration credentials return `401`
+with `WWW-Authenticate: Bearer` and the common `unauthorized` error shape.
+Authentication precedes body validation and machine creation, so invalid
+credentials cannot reveal name conflicts. Missing/invalid names return `400`
+with the existing `invalid_name`/`invalid_json` codes after authentication.
+Wrong methods return `405`; dependency failures return the existing `503`
+(`database_unavailable`).
+
+**Credential isolation:** this route has its own Bearer authentication path.
+Administrator and machine API keys receive `401` there, even when sent as
+Bearer tokens. Registration tokens sent with ApiKey also receive `401`.
+Registration credentials cannot authenticate any other administrative or
+agent route under either scheme. Administrative privileges never bypass
+the registration-token requirement; existing API-key behavior is unchanged.
+
+Tokens contain 256 cryptographically random bits and persist only as a SHA-256
+hash plus UTC expiration. Plaintext appears only at creation, never in machine
+reads or routine logs. They are not associated with any machine/name and can
+register unlimited distinct machines, including concurrently, until expiration.
+They are not consumed or usage-tracked. Server UTC time is checked on every
+registration authentication; an admitted request may finish after expiration.
+Expiration does not revoke issued machine keys. Expired rows may remain;
+cleanup, token revocation and approval workflows are not provided.
+
+PowerShell example (in private sessions; load credentials from protected secret
+stores, and securely deliver the token to the enrolling machine):
+
+```powershell
+$baseUri = 'https://registry.example.com'
+# Administrator session:
+$created = Invoke-RestMethod -Method Post `
+    -Uri "$baseUri/v1/registration-tokens" `
+    -Headers @{ Authorization = "ApiKey $adminApiKey" } `
+    -ContentType 'application/json' `
+    -Body (@{ ttlSeconds = 3600 } | ConvertTo-Json)
+
+# New machine session, after securely receiving $registrationToken:
+$machine = Invoke-RestMethod -Method Post `
+    -Uri "$baseUri/v1/agent/register" `
+    -Headers @{ Authorization = "Bearer $registrationToken" } `
+    -ContentType 'application/json' `
+    -Body (@{ name = 'foobar' } | ConvertTo-Json)
+
+# Persist apiKey securely; use it for existing machine APIs, not the token.
+$desired = Invoke-RestMethod -Method Get `
+    -Uri "$baseUri/v1/agent/configurations" `
+    -Headers @{ Authorization = "ApiKey $($machine.apiKey)" }
 ```
 
 ### Machine lookup by name
@@ -238,10 +348,14 @@ Actual key IDs/secrets are generated randomly; illustrative values are not a lit
 
 ## 3. Agent API
 
-All agent endpoints require a **machine key**. There is no `{machineId}` path segment; ownership derives solely from the authenticated principal.
+Existing agent endpoints require a **machine key**. The sole exception is
+`POST /v1/agent/register`, which requires a **Bearer registration token** as
+documented above. There is no `{machineId}` path segment; ownership for
+polling/reporting derives solely from the authenticated machine API key.
 
 | Method | Route | Semantics |
 | --- | --- | --- |
+| `POST` | `/v1/agent/register` | Register a new machine using only a Bearer registration token; return its UUID/name/API key |
 | `GET` | `/v1/agent/configurations` | All current desired configurations for authenticated machine; supports ETag |
 | `POST` | `/v1/agent/reports` | Accept an execution record; return report metadata |
 | `POST` | `/v1/agent/configurations/{name}/report` | Compatible named upload route; same persistence/retry behavior, `204` response |

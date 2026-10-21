@@ -27,7 +27,7 @@ func testReportHistoryUpgrade(t *testing.T, engine, dsn string, machineNames boo
 	t.Helper()
 	ctx := context.Background()
 	raw, version := machineNamesOldDatabase(t, engine, dsn)
-	finalVersion := version + 2
+	finalVersion := version + 3
 	files, err := reportstore.Open(ctx, t.TempDir())
 	if err != nil {
 		t.Fatal(err)
