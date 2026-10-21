@@ -144,9 +144,13 @@ Precedence is **built-in defaults, then file properties, then explicitly supplie
 CLI flags**, including flags explicitly set to their default or `false` value.
 Omitted properties keep existing defaults; explicit empty strings, zero, and
 false are not treated as missing. Durations use Go strings such as `"500ms"`,
-`"5s"`, or `"5m"`. Unknown properties (including nested database and TLS properties),
-duplicate keys, nulls, invalid types/durations, malformed JSON, and extra JSON
-documents are rejected. Final merged settings must pass normal validation.
+`"5s"`, or `"5m"`. Unknown properties are ignored for forward and backward
+compatibility, including inside `database` and `tls`, regardless of their JSON
+value type. An unknown-only `tls` object does not select native TLS mode.
+Property names remain case-sensitive. Duplicate properties, explicit nulls and
+invalid types/durations for recognized settings, malformed JSON, and extra JSON
+documents are rejected. This applies to both server startup and bootstrap, not
+Registry API payload validation. Final merged settings must pass normal validation.
 An unreadable file is fatal when `-config` is supplied. Without it, existing
 CLI behavior is unchanged. There is no implicit file discovery, environment
 override, or hot reload; restart to apply file changes.

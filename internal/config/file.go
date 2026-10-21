@@ -95,6 +95,7 @@ func decodeObject(decoder *json.Decoder, fields map[string]any, prefix string, p
 		return errors.New("configuration file requires JSON objects")
 	}
 	seen := make(map[string]bool)
+	knownProperty := false
 	for decoder.More() {
 		token, err := decoder.Token()
 		if err != nil {
@@ -104,15 +105,23 @@ func decodeObject(decoder *json.Decoder, fields map[string]any, prefix string, p
 		if !ok {
 			return errors.New("malformed configuration JSON")
 		}
-		target, known := fields[name]
-		if !known {
-			return errors.New("unknown configuration property")
-		}
 		setting := prefix + name
 		if seen[name] {
+			if _, known := fields[name]; !known {
+				return errors.New("duplicate configuration property")
+			}
 			return fmt.Errorf("duplicate configuration property %s", setting)
 		}
-		seen[name], present[setting] = true, true
+		seen[name] = true
+		target, known := fields[name]
+		if !known {
+			var ignored json.RawMessage
+			if err := decoder.Decode(&ignored); err != nil {
+				return errors.New("malformed configuration JSON")
+			}
+			continue
+		}
+		knownProperty, present[setting] = true, true
 		if nested, ok := target.(map[string]any); ok {
 			if err := decodeObject(decoder, nested, setting+".", present); err != nil {
 				return err
@@ -142,6 +151,10 @@ func decodeObject(decoder *json.Decoder, fields map[string]any, prefix string, p
 	}
 	if token, err := decoder.Token(); err != nil || token != json.Delim('}') {
 		return errors.New("malformed configuration JSON")
+	}
+	// An unknown-only object must not select TLS; an explicit empty object still does.
+	if prefix != "" && len(seen) > 0 && !knownProperty {
+		delete(present, strings.TrimSuffix(prefix, "."))
 	}
 	return nil
 }
