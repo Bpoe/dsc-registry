@@ -17,8 +17,6 @@ import (
 type Settings struct {
 	ListenAddress     string
 	TLS               *TLSSettings
-	ExternalHTTPS     bool
-	DevelopmentHTTP   bool
 	DatabaseEngine    string
 	DatabaseDSN       string
 	ReportRoot        string
@@ -57,9 +55,7 @@ func Parse(args []string, help io.Writer) (Settings, error) {
 	f := flag.NewFlagSet("dscregd", flag.ContinueOnError)
 	f.SetOutput(io.Discard)
 	configPath := f.String("config", "", "JSON configuration file (read once at startup)")
-	f.StringVar(&s.ListenAddress, "listen", s.ListenAddress, "HTTP(S) listen IP and port")
-	f.BoolVar(&s.ExternalHTTPS, "external-https", false, "HTTPS is enforced by a trusted reverse proxy")
-	f.BoolVar(&s.DevelopmentHTTP, "development-http", false, "allow HTTP on a literal loopback IP only")
+	f.StringVar(&s.ListenAddress, "listen", s.ListenAddress, "HTTP(S) listen host and numeric port")
 	databaseFlags(f, &s)
 	f.StringVar(&s.ReportRoot, "report-root", s.ReportRoot, "existing private report directory")
 	f.DurationVar(&s.PollMaxAge, "poll-max-age", s.PollMaxAge, "agent cache max age (whole seconds)")
@@ -133,32 +129,18 @@ func ValidDisplayName(value string, maxBytes int) bool {
 }
 
 func (s Settings) Validate() error {
-	host, port, err := net.SplitHostPort(s.ListenAddress)
-	if err != nil || net.ParseIP(host) == nil {
-		return errors.New("listen must contain a literal IP address and port")
+	_, port, err := net.SplitHostPort(s.ListenAddress)
+	if err != nil {
+		return errors.New("listen must contain a host and port")
 	}
 	portNumber, err := strconv.Atoi(port)
 	if err != nil || portNumber < 0 || portNumber > 65535 {
 		return errors.New("listen port must be valid")
 	}
-	modes := 0
 	if s.TLS != nil {
 		if strings.TrimSpace(s.TLS.CertFile) == "" || strings.TrimSpace(s.TLS.KeyFile) == "" {
 			return errors.New("tls.certFile and tls.keyFile must both be specified and nonempty")
 		}
-		modes++
-	}
-	if s.ExternalHTTPS {
-		modes++
-	}
-	if s.DevelopmentHTTP {
-		modes++
-	}
-	if modes != 1 {
-		return errors.New("select exactly one of native TLS, external-https or development-http")
-	}
-	if s.DevelopmentHTTP && !net.ParseIP(host).IsLoopback() {
-		return errors.New("development-http requires a loopback listen IP")
 	}
 	if err := s.validateDatabase(); err != nil {
 		return err

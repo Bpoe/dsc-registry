@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -151,19 +152,19 @@ func (h listeningLog) Handle(ctx context.Context, record slog.Record) error {
 }
 
 func TestRunStartupHealthShutdownAndRestart(t *testing.T) {
-	for _, mode := range []string{"developmentHttp", "externalHttps"} {
-		t.Run(mode, func(t *testing.T) {
+	for _, address := range []string{"127.0.0.1:0", "0.0.0.0:0", "localhost:0"} {
+		t.Run(address, func(t *testing.T) {
 			testdb.Engines(t, func(t *testing.T, engine, dsn string) {
-				testRunStartupHealthShutdownAndRestart(t, engine, dsn, mode)
+				testRunStartupHealthShutdownAndRestart(t, engine, dsn, address)
 			})
 		})
 	}
 }
 
-func testRunStartupHealthShutdownAndRestart(t *testing.T, engine, dsn, mode string) {
+func testRunStartupHealthShutdownAndRestart(t *testing.T, engine, dsn, listenAddress string) {
 	root := t.TempDir()
 	settings := config.Defaults()
-	settings.ListenAddress = "127.0.0.1:0"
+	settings.ListenAddress = listenAddress
 	settings.DatabaseEngine = engine
 	settings.DatabaseDSN = dsn
 	settings.ReportRoot = filepath.Join(root, "reports")
@@ -171,9 +172,9 @@ func testRunStartupHealthShutdownAndRestart(t *testing.T, engine, dsn, mode stri
 		t.Fatal(err)
 	}
 	data, err := json.Marshal(map[string]any{
-		"listenAddress": settings.ListenAddress, mode: true,
-		"database":   map[string]string{"engine": engine, "dsn": dsn},
-		"reportRoot": settings.ReportRoot,
+		"listenAddress": settings.ListenAddress,
+		"database":      map[string]string{"engine": engine, "dsn": dsn},
+		"reportRoot":    settings.ReportRoot,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -189,12 +190,22 @@ func testRunStartupHealthShutdownAndRestart(t *testing.T, engine, dsn, mode stri
 	for range 2 {
 		ctx, cancel := context.WithCancel(context.Background())
 		address := make(chan string, 1)
-		logger := slog.New(listeningLog{Handler: testLogger().Handler(), address: address})
+		var output bytes.Buffer
+		logger := slog.New(listeningLog{Handler: slog.NewJSONHandler(&output, nil), address: address})
 		done := make(chan error, 1)
 		go func() { done <- run(ctx, settings, logger) }()
 		t.Cleanup(cancel)
 		host := receive(t, address)
-		client := &http.Client{Timeout: 3 * time.Second}
+		if listenAddress == "0.0.0.0:0" {
+			_, port, err := net.SplitHostPort(host)
+			if err != nil {
+				t.Fatal(err)
+			}
+			host = net.JoinHostPort("127.0.0.1", port)
+		}
+		transport := &http.Transport{}
+		t.Cleanup(transport.CloseIdleConnections)
+		client := &http.Client{Transport: transport, Timeout: 3 * time.Second}
 		for _, path := range []string{"/health/live", "/health/ready"} {
 			response, err := client.Get("http://" + host + path)
 			if err != nil {
@@ -212,6 +223,8 @@ func testRunStartupHealthShutdownAndRestart(t *testing.T, engine, dsn, mode stri
 		if err := receive(t, done); err != nil {
 			t.Fatal(err)
 		}
+		assertHTTPTransportWarnings(t, output.Bytes(), 1)
+		assertListenerClosed(t, host)
 		store, err := database.Connect(context.Background(), engine, dsn, time.Second)
 		if err != nil {
 			t.Fatal(err)
@@ -234,12 +247,130 @@ func testRunStartupHealthShutdownAndRestart(t *testing.T, engine, dsn, mode stri
 
 func TestRunRejectsInvalidStartup(t *testing.T) {
 	settings := config.Defaults()
-	if err := run(context.Background(), settings, testLogger()); err == nil {
-		t.Fatal("implicit HTTP mode accepted")
-	}
-	settings.DevelopmentHTTP = true
 	settings.ReportRoot = filepath.Join(t.TempDir(), "missing")
 	if err := run(context.Background(), settings, testLogger()); err == nil {
 		t.Fatal("missing report root accepted")
 	}
+}
+
+func assertHTTPTransportWarnings(t *testing.T, output []byte, want int) {
+	t.Helper()
+	const message = "HTTP transport is unencrypted; API keys and registration tokens may be exposed in transit"
+	decoder := json.NewDecoder(bytes.NewReader(output))
+	count := 0
+	for {
+		var record struct {
+			Level   string `json:"level"`
+			Message string `json:"msg"`
+		}
+		if err := decoder.Decode(&record); errors.Is(err, io.EOF) {
+			break
+		} else if err != nil {
+			t.Fatal(err)
+		}
+		if record.Message == message {
+			if record.Level != "WARN" {
+				t.Fatalf("HTTP transport warning level = %s", record.Level)
+			}
+			count++
+		}
+	}
+	if count != want {
+		t.Fatalf("HTTP startup warnings = %d; want %d", count, want)
+	}
+}
+
+func TestRunHTTPAuthenticatedAPIs(t *testing.T) {
+	testdb.Engines(t, func(t *testing.T, engine, dsn string) {
+		settings, err := config.Parse([]string{
+			"-listen", "127.0.0.1:0", "-database-engine", engine,
+			"-database-dsn", dsn, "-report-root", t.TempDir(),
+		}, io.Discard)
+		if err != nil {
+			t.Fatal(err)
+		}
+		db, err := database.Connect(context.Background(), engine, dsn, time.Second)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { db.DB.Close() })
+		admin, err := db.Bootstrap(context.Background(), "operator")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := db.DB.Close(); err != nil {
+			t.Fatal(err)
+		}
+		ctx, cancel := context.WithCancel(context.Background())
+		t.Cleanup(cancel)
+		address := make(chan string, 1)
+		var output bytes.Buffer
+		logger := slog.New(listeningLog{Handler: slog.NewJSONHandler(&output, nil), address: address})
+		done := make(chan error, 1)
+		go func() { done <- run(ctx, settings, logger) }()
+		base := "http://" + receive(t, address)
+		transport := &http.Transport{}
+		t.Cleanup(transport.CloseIdleConnections)
+		client := &http.Client{Transport: transport, Timeout: 3 * time.Second}
+		request := func(method, path, authorization, body string, status int) []byte {
+			t.Helper()
+			req, err := http.NewRequest(method, base+path, strings.NewReader(body))
+			if err != nil {
+				t.Fatal(err)
+			}
+			req.Header.Set("Authorization", authorization)
+			req.Header.Set("Content-Type", "application/json")
+			response, err := client.Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer response.Body.Close()
+			data, err := io.ReadAll(response.Body)
+			if err != nil || response.StatusCode != status {
+				t.Fatalf("%s %s: status=%d, error=%v", method, path, response.StatusCode, err)
+			}
+			if response.TLS != nil || response.Request.URL.Scheme != "http" {
+				t.Fatal("HTTP request switched to HTTPS")
+			}
+			return data
+		}
+		adminAuth := "ApiKey " + admin.Key
+		request(http.MethodGet, "/v1/machines", "", "", http.StatusUnauthorized)
+		request(http.MethodGet, "/v1/machines", "ApiKey invalid", "", http.StatusUnauthorized)
+		request(http.MethodGet, "/v1/machines", adminAuth, "", http.StatusOK)
+		request(http.MethodPost, "/v1/agent/register", "", `{"name":"http-machine"}`, http.StatusUnauthorized)
+		request(http.MethodPost, "/v1/agent/register", adminAuth, `{"name":"http-machine"}`, http.StatusUnauthorized)
+		request(http.MethodPost, "/v1/agent/register", "Bearer "+admin.Key, `{"name":"http-machine"}`, http.StatusUnauthorized)
+		var token struct {
+			Token string `json:"token"`
+		}
+		if err := json.Unmarshal(request(http.MethodPost, "/v1/registration-tokens", adminAuth, `{}`, http.StatusCreated), &token); err != nil || token.Token == "" {
+			t.Fatal("HTTP token issuance failed")
+		}
+		var machine struct {
+			APIKey string `json:"apiKey"`
+		}
+		if err := json.Unmarshal(request(http.MethodPost, "/v1/agent/register", "Bearer "+token.Token, `{"name":"http-machine"}`, http.StatusCreated), &machine); err != nil || machine.APIKey == "" {
+			t.Fatal("HTTP machine registration failed")
+		}
+		machineAuth := "ApiKey " + machine.APIKey
+		request(http.MethodGet, "/v1/agent/configurations", machineAuth, "", http.StatusOK)
+		request(http.MethodGet, "/v1/agent/configurations", "", "", http.StatusUnauthorized)
+		request(http.MethodGet, "/v1/agent/configurations", adminAuth, "", http.StatusForbidden)
+		request(http.MethodGet, "/v1/agent/configurations", "Bearer "+token.Token, "", http.StatusUnauthorized)
+		request(http.MethodGet, "/v1/agent/configurations", "ApiKey "+token.Token, "", http.StatusUnauthorized)
+		request(http.MethodGet, "/v1/machines", machineAuth, "", http.StatusForbidden)
+		request(http.MethodPost, "/v1/registration-tokens", machineAuth, `{}`, http.StatusForbidden)
+		request(http.MethodPost, "/v1/agent/register", "Bearer "+machine.APIKey, `{"name":"another-machine"}`, http.StatusUnauthorized)
+		cancel()
+		if err := receive(t, done); err != nil {
+			t.Fatal(err)
+		}
+		assertHTTPTransportWarnings(t, output.Bytes(), 1)
+		for _, secret := range []string{admin.Key, machine.APIKey, token.Token} {
+			if strings.Contains(output.String(), secret) {
+				t.Fatal("HTTP startup or request logs disclosed credentials")
+			}
+		}
+	})
 }

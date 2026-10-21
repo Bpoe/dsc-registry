@@ -1,6 +1,5 @@
 {
   "listenAddress": "127.0.0.1:8080",
-  "externalHttps": true,
   "database": {"engine": "sqlite", "dsn": "/var/lib/dscregd/registry.db"},
   "reportRoot": "/var/lib/dscregd/reports"
 }

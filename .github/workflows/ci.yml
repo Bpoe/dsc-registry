@@ -83,7 +83,7 @@ jobs:
           go test ./internal/report -run='^$' -fuzz=FuzzReportEnvelope -fuzztime=10s -parallel=2
 
   windows:
-    name: Windows HTTPS and configuration
+    name: Windows HTTP, HTTPS and configuration
     runs-on: windows-latest
     timeout-minutes: 10
     env:
@@ -146,7 +146,7 @@ jobs:
       - name: Smoke test default startup and readiness
         run: |
           printf '%s\n' \
-            '{"listenAddress":"0.0.0.0:8080","externalHttps":true,"database":{"engine":"sqlite","dsn":"/data/registry.db"},"reportRoot":"/reports"}' \
+            '{"listenAddress":"0.0.0.0:8080","database":{"engine":"sqlite","dsn":"/data/registry.db"},"reportRoot":"/reports"}' \
             > "$RUNNER_TEMP/container.json"
           chmod 0644 "$RUNNER_TEMP/container.json"
           container=$(docker run --detach --platform "linux/$ARCH" \

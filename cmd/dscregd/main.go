@@ -108,6 +108,9 @@ func runWithReady(ctx context.Context, settings config.Settings, logger *slog.Lo
 		ErrorLog:          log.New(&serverErrorLog{logger: logger}, "", 0),
 		TLSConfig:         tlsConfig,
 	}
+	if settings.TLS == nil {
+		logger.Warn("HTTP transport is unencrypted; API keys and registration tokens may be exposed in transit")
+	}
 	logger.Info("server listening", "address", listener.Addr().String())
 	if ready != nil {
 		ready()

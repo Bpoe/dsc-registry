@@ -79,7 +79,6 @@ func testServerTransport(t *testing.T, server *http.Server, nativeTLS bool) (con
 	t.Cleanup(transport.CloseIdleConnections)
 	client := &http.Client{Timeout: 3 * time.Second, Transport: transport}
 	if !nativeTLS {
-		settings.DevelopmentHTTP = true
 		return settings, client, "http"
 	}
 	paths, roots := testTLSCertificate(t)
@@ -105,14 +104,14 @@ func TestRunNativeHTTPS(t *testing.T) {
 		// Exercise the actual startup-only JSON configuration path.
 		data, err := json.Marshal(map[string]any{
 			"listenAddress": settings.ListenAddress,
-			"tls":           map[string]string{"certFile": paths.CertFile, "keyFile": paths.KeyFile},
+			"tls":           map[string]string{"certFile": filepath.Base(paths.CertFile), "keyFile": filepath.Base(paths.KeyFile)},
 			"database":      map[string]string{"engine": engine, "dsn": dsn},
 			"reportRoot":    root,
 		})
 		if err != nil {
 			t.Fatal(err)
 		}
-		path := filepath.Join(t.TempDir(), "config.json")
+		path := filepath.Join(filepath.Dir(paths.CertFile), "config.json")
 		if err := os.WriteFile(path, data, 0o600); err != nil {
 			t.Fatal(err)
 		}
@@ -144,7 +143,8 @@ func TestRunNativeHTTPS(t *testing.T) {
 			ctx, cancel := context.WithCancel(context.Background())
 			t.Cleanup(cancel)
 			address := make(chan string, 1)
-			logger := slog.New(listeningLog{Handler: testLogger().Handler(), address: address})
+			var output bytes.Buffer
+			logger := slog.New(listeningLog{Handler: slog.NewJSONHandler(&output, nil), address: address})
 			done := make(chan error, 1)
 			go func() { done <- run(ctx, settings, logger) }()
 			host := receive(t, address)
@@ -216,6 +216,7 @@ func TestRunNativeHTTPS(t *testing.T) {
 			if err := receive(t, done); err != nil {
 				t.Fatal(err)
 			}
+			assertHTTPTransportWarnings(t, output.Bytes(), 0)
 			assertListenerClosed(t, host)
 		}
 	})
@@ -290,6 +291,7 @@ func TestRunTLSInitializationFailure(t *testing.T) {
 			if strings.Contains(output.String(), "server listening") {
 				t.Fatal("failed TLS startup announced a listener")
 			}
+			assertHTTPTransportWarnings(t, output.Bytes(), 0)
 			if _, err := os.Stat(settings.DatabaseDSN); !os.IsNotExist(err) {
 				t.Fatal("TLS initialization failure opened the database")
 			}

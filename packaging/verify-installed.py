@@ -47,9 +47,9 @@ def main():
             archived = archive.extractfile(entries[0]).read()
     if hashlib.sha256(archived).digest() != hashlib.sha256(args.binary.read_bytes()).digest():
         raise RuntimeError("Installed and archived binaries differ.")
-    # Test-only loopback HTTP; packages never install an active configuration.
+    # Packages never install an active configuration.
     config.write_text(json.dumps({
-        "listenAddress": "127.0.0.1:18080", "developmentHttp": True,
+        "listenAddress": "127.0.0.1:18080",
         "database": {"engine": "sqlite", "dsn": str(args.root / "registry.db")},
         "reportRoot": str(args.root / "reports"),
     }), encoding="utf-8")

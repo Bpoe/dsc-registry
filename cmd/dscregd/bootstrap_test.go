@@ -28,7 +28,7 @@ func TestBootstrapCLIBothEngines(t *testing.T) {
 					}
 					data, err := json.Marshal(map[string]any{
 						"database":      map[string]string{"engine": fileEngine, "dsn": fileDSN},
-						"listenAddress": "invalid", "reportRoot": "", "externalHttps": true, "developmentHttp": true,
+						"listenAddress": "invalid", "reportRoot": "",
 					})
 					if err != nil {
 						t.Fatal(err)
@@ -102,7 +102,7 @@ func TestBootstrapRelativeFileDatabase(t *testing.T) {
 	path := filepath.Join(root, "config.json")
 	if err := os.WriteFile(path, []byte(`{
 		"database":{"dsn":"registry.db"}, "reportRoot":"missing",
-		"listenAddress":"invalid", "externalHttps":false, "developmentHttp":false
+		"listenAddress":"invalid"
 	}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
