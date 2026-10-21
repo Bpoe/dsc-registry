@@ -11,16 +11,12 @@ import (
 	"github.com/Bpoe/dsc-registry/internal/desired"
 )
 
-func (a *adminAPI) configurations(w http.ResponseWriter, r *http.Request, id string) {
-	if r.Method != http.MethodGet {
-		methodNotAllowed(w, "GET")
-		return
-	}
+func (a *adminAPI) configurations(w http.ResponseWriter, r *http.Request) {
 	limit, cursor, ok := pagination(w, r, desired.ValidName)
 	if !ok {
 		return
 	}
-	items, err := a.store.ListConfigurations(r.Context(), id, cursor, limit+1)
+	items, err := a.store.ListConfigurations(r.Context(), r.PathValue("id"), cursor, limit+1)
 	if err != nil {
 		a.configurationError(w, err)
 		return
@@ -36,47 +32,47 @@ func (a *adminAPI) configurations(w http.ResponseWriter, r *http.Request, id str
 	}{items, next})
 }
 
-func (a *adminAPI) configuration(w http.ResponseWriter, r *http.Request, id, name string) {
-	switch r.Method {
-	case http.MethodPut:
-		body, ok := a.readJSONBody(w, r)
-		if !ok {
-			return
-		}
-		content, err := desired.Parse(body)
-		if err != nil {
-			writeError(w, http.StatusBadRequest, "invalid_configuration", "Expected a JSON-object template and optional JSON-object parameters without duplicate keys or document wrappers")
-			return
-		}
-		result, created, err := a.store.PutConfiguration(r.Context(), id, name, content)
-		if err != nil {
-			a.configurationError(w, err)
-			return
-		}
-		status := http.StatusOK
-		if created {
-			status = http.StatusCreated
-			w.Header().Set("Location", "/v1/machines/"+id+"/configurations/"+name)
-		}
-		writeJSON(w, status, result)
-	case http.MethodGet:
-		result, err := a.store.GetConfiguration(r.Context(), id, name)
-		if err != nil {
-			a.configurationError(w, err)
-			return
-		}
-		writeJSON(w, http.StatusOK, result)
-	case http.MethodDelete:
-		paths, err := a.store.DeleteConfiguration(r.Context(), id, name)
-		if err != nil {
-			a.configurationError(w, err)
-			return
-		}
-		a.removeReportFiles(paths)
-		w.WriteHeader(http.StatusNoContent)
-	default:
-		methodNotAllowed(w, "GET, PUT, DELETE")
+func (a *adminAPI) putConfiguration(w http.ResponseWriter, r *http.Request) {
+	body, ok := a.readJSONBody(w, r)
+	if !ok {
+		return
 	}
+	content, err := desired.Parse(body)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_configuration", "Expected a JSON-object template and optional JSON-object parameters without duplicate keys or document wrappers")
+		return
+	}
+	id, name := r.PathValue("id"), r.PathValue("name")
+	result, created, err := a.store.PutConfiguration(r.Context(), id, name, content)
+	if err != nil {
+		a.configurationError(w, err)
+		return
+	}
+	status := http.StatusOK
+	if created {
+		status = http.StatusCreated
+		w.Header().Set("Location", "/v1/machines/"+id+"/configurations/"+name)
+	}
+	writeJSON(w, status, result)
+}
+
+func (a *adminAPI) getConfiguration(w http.ResponseWriter, r *http.Request) {
+	result, err := a.store.GetConfiguration(r.Context(), r.PathValue("id"), r.PathValue("name"))
+	if err != nil {
+		a.configurationError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+func (a *adminAPI) deleteConfiguration(w http.ResponseWriter, r *http.Request) {
+	paths, err := a.store.DeleteConfiguration(r.Context(), r.PathValue("id"), r.PathValue("name"))
+	if err != nil {
+		a.configurationError(w, err)
+		return
+	}
+	a.removeReportFiles(paths)
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (a *adminAPI) configurationError(w http.ResponseWriter, err error) {
@@ -90,11 +86,8 @@ func (a *adminAPI) configurationError(w http.ResponseWriter, err error) {
 	}
 }
 
-func (a *adminAPI) agentConfigurations(w http.ResponseWriter, r *http.Request, id string) {
-	if r.Method != http.MethodGet {
-		methodNotAllowed(w, "GET")
-		return
-	}
+func (a *adminAPI) agentConfigurations(w http.ResponseWriter, r *http.Request) {
+	id := r.Context().Value(machineIDContextKey{}).(string)
 	if r.URL.RawQuery != "" {
 		writeError(w, http.StatusBadRequest, "invalid_query", "Agent configuration retrieval accepts no query parameters")
 		return

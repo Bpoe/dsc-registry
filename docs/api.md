@@ -14,6 +14,30 @@
 - Accept only JSON on the HTTP API. `template` and optional `parameters` are **JSON objects**, not strings or `{format,content}` envelopes. Reject YAML, string-encoded documents, arrays and scalars at those fields. A CLI may accept YAML and convert it before making the request; the service does not translate YAML.
 - Explicitly bound template/parameter size and raw result body size. Start with conservative configurable limits and tests; don't silently truncate.
 
+### Routing and HTTP methods
+
+Routes use standard Go `http.ServeMux` method and path patterns. Unsupported
+methods return the existing JSON `405` (`method_not_allowed`) with `Allow`;
+`OPTIONS` is not an implicit capability endpoint. API authentication and role
+authorization still precede parameter validation and method errors.
+`HEAD` remains supported only on health endpoints, not on API `GET` routes.
+HTTP `HEAD` responses never carry a body.
+
+Paths are exact: adding a trailing slash does not select the same endpoint or
+redirect. Unknown endpoints use JSON `404` (`not_found`); an empty required
+resource segment retains its existing `400` validation error. Unknown paths
+inside the administrator or agent namespaces retain their credential boundary.
+Literal repeated slashes and `.`/`..` path segments now return JSON `404`
+before authentication, rather than being redirected by ServeMux or partially
+validated as resource identifiers.
+
+ServeMux unescapes each path segment separately. Escaped ordinary characters
+still identify the same resource, but `%2F` remains data within one segment,
+never a route separator. A slash inside a configuration-name wildcard therefore
+returns `400` (`invalid_name`), rather than the old split-path `404`. Escaped
+slashes in fixed route segments do not select a different endpoint. Query
+parameter parsing and validation are unchanged.
+
 ## 2. Admin API
 
 All routes below require an administrator key.

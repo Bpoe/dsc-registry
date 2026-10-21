@@ -228,7 +228,7 @@ func TestConfigurationsHTTPBothEngines(t *testing.T) {
 		for _, name := range []string{"UPPER", ".hidden", "x.", "x.parameters", strings.Repeat("x", 65), "x%5Cy"} {
 			apiRequest(t, handler, admin.Key, "PUT", path+"/"+name, `{"template":{}}`, 400)
 		}
-		apiRequest(t, handler, admin.Key, "PUT", path+"/x%2Fy", `{"template":{}}`, 404)
+		apiRequest(t, handler, admin.Key, "PUT", path+"/x%2Fy", `{"template":{}}`, 400)
 		for _, invalid := range []string{
 			`{}`, `[]`, `"{}"`, `{"template":"{}"}`, `{"template":[]}`, `{"template":null}`,
 			`{"template":{},"parameters":false}`, `{"template":{},"parameters":[]}`,
@@ -302,7 +302,8 @@ func TestConcurrentHTTPConfigurationPollingBothEngines(t *testing.T) {
 		}
 		defer otherStore.DB.Close()
 		// Poll another API replica/connection pool while this one mutates.
-		pollHandler := &adminAPI{store: otherStore, timeout: 5 * time.Second, pollMaxAge: 37 * time.Second, logger: slog.New(slog.NewJSONHandler(io.Discard, nil))}
+		pollHandler := New(otherStore, nil, time.Second, 5*time.Second, 37*time.Second, 2048, 16<<20,
+			slog.New(slog.NewJSONHandler(io.Discard, nil)))
 		path := "/v1/machines/" + machine.ID + "/configurations/current"
 		start := make(chan struct{})
 		done := make(chan struct{})

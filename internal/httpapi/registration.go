@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -12,10 +13,6 @@ import (
 )
 
 func (a *adminAPI) registrationTokens(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		methodNotAllowed(w, "POST")
-		return
-	}
 	body, ok := a.readJSONBody(w, r)
 	if !ok {
 		return
@@ -48,29 +45,33 @@ func (a *adminAPI) registrationTokens(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, token)
 }
 
-func (a *adminAPI) registerMachine(w http.ResponseWriter, r *http.Request) {
-	headers := r.Header.Values("Authorization")
-	if len(headers) != 1 {
-		registrationUnauthorized(w)
-		return
-	}
-	scheme, token, ok := strings.Cut(headers[0], " ")
-	if !ok || !strings.EqualFold(scheme, "Bearer") {
-		registrationUnauthorized(w)
-		return
-	}
-	if err := a.store.AuthenticateRegistrationToken(r.Context(), token); err != nil {
-		if errors.Is(err, database.ErrInvalidRegistrationToken) {
+func (a *adminAPI) authorizeRegistration(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		ctx, cancel := context.WithTimeout(r.Context(), a.timeout)
+		defer cancel()
+		headers := r.Header.Values("Authorization")
+		if len(headers) != 1 {
 			registrationUnauthorized(w)
-		} else {
-			a.failure(w, err)
+			return
 		}
-		return
+		scheme, token, ok := strings.Cut(headers[0], " ")
+		if !ok || !strings.EqualFold(scheme, "Bearer") {
+			registrationUnauthorized(w)
+			return
+		}
+		if err := a.store.AuthenticateRegistrationToken(ctx, token); err != nil {
+			if errors.Is(err, database.ErrInvalidRegistrationToken) {
+				registrationUnauthorized(w)
+			} else {
+				a.failure(w, err)
+			}
+			return
+		}
+		next(w, r.WithContext(ctx))
 	}
-	if r.Method != http.MethodPost {
-		methodNotAllowed(w, "POST")
-		return
-	}
+}
+
+func (a *adminAPI) registerMachine(w http.ResponseWriter, r *http.Request) {
 	name, ok := a.decodeMachineName(w, r)
 	if !ok {
 		return
