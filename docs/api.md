@@ -385,7 +385,6 @@ polling/reporting derives solely from the authenticated machine API key.
 | `POST` | `/v1/agent/register` | Register a new machine using only a Bearer registration token; return its UUID/name/API key |
 | `GET` | `/v1/agent/configurations` | All current desired configurations for authenticated machine; supports ETag |
 | `POST` | `/v1/agent/reports` | Accept an execution record; return report metadata |
-| `POST` | `/v1/agent/configurations/{name}/report` | Compatible named upload route; same persistence/retry behavior, `204` response |
 
 ### Conditional configuration retrieval
 
@@ -515,17 +514,12 @@ preserved unchanged in the original envelope. For example,
 valid configuration values; `dscregsync/` is an example, not an API requirement.
 Neither embedded path is used for authorization, database record selection,
 or server filesystem paths. Configuration identity comes from
-`configurationName` (or `{name}` on the named route), scoped to the authenticated
+`configurationName`, scoped to the authenticated
 machine.
 
 The local sync agent must remember an upload ID while retrying, and must not infer a service revision by comparing it with `dscd.inputHash`. The client can maintain a dot-prefixed managed metadata file, ignored by `dscd`, mapping a published local configuration/sidecar snapshot to its server-provided revision.
 
-The existing `POST /v1/agent/configurations/{name}/report` accepts exactly
-`configurationRevision`, `uploadId`, and `result` (omit `configurationName`).
-It shares latest-only storage, validation and deduplication with the new route, but retains
-`204` for both creation and retry. Both routes now accept stale/deleted
-configuration reports rather than rejecting them. The Location on the new
-route identifies an **admin-only** resource; machine keys cannot GET it.
+The Location identifies an **admin-only** resource; machine keys cannot GET it.
 
 ### Admin status view
 
@@ -671,7 +665,7 @@ media type/charset returns `415`; malformed envelopes return `400`
 (`invalid_report`). JSON has the same duplicate-key (including escaped aliases),
 UTF-8, surrogate and 128-level nesting rules as desired-state input. Wrapper
 fields are exactly `configurationName`, `configurationRevision`, `uploadId`,
-`result` on the new route; the existing named route omits `configurationName`.
+`result`.
 Revision/upload IDs are canonical lowercase hyphenated UUIDs.
 Unknown additive envelope/payload fields are
 preserved; case aliases of known envelope/error fields are rejected so Go
@@ -741,7 +735,7 @@ for that name. No periodic or startup sweep is added.
 - `304` on matching validator including cache headers; `200` after change. Distinguish HTTP cache headers on 200/304.
 - Direct JSON-object `template` and optional JSON-object `parameters`; reject YAML HTTP bodies, embedded document strings, `{format,content}` wrappers, arrays and scalars; `.parameters`-suffix naming rejected.
 - YAML-to-JSON conversion is outside the server (e.g., in a CLI). Reordered object keys and insignificant whitespace are no-op PUTs; real content changes bump revisions. Null/missing parameters produce no sidecar, while `{}` creates an empty JSON parameter object.
-- Both upload routes accept client-defined configuration and parameter paths, including `managed/`, `dscregsync/`, other directories and YAML filenames; preserve those values byte-for-byte and never use them as machine/configuration identities or server storage paths.
+- Report uploads accept client-defined configuration and parameter paths, including `managed/`, `dscregsync/`, other directories and YAML filenames; preserve those values byte-for-byte and never use them as machine/configuration identities or server storage paths.
 - Valid `dscd` failure and success envelopes; `test` drift is not an execution failure; raw result retrievable byte-for-byte as a JSON value.
 - Latest-only replacement/deletion and retained-upload idempotency, conflicting identities, stale/removed configuration reports, pagination, revision-matching machine status, file/SQL/commit failures, cleanup warnings, concurrent readers/writers, and retry after interruption.
 - PostgreSQL and SQLite migrations/data behavior parity; concurrent requests; readiness and graceful shutdown.

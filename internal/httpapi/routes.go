@@ -51,7 +51,6 @@ func (a *adminAPI) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/agent/register", a.authorizeRegistration(a.registerMachine))
 	mux.HandleFunc("GET /v1/agent/configurations", a.authorize(apikey.Machine, a.agentConfigurations))
 	mux.HandleFunc("POST /v1/agent/reports", a.authorize(apikey.Machine, a.uploadReport))
-	mux.HandleFunc("POST /v1/agent/configurations/{name}/report", a.authorize(apikey.Machine, a.uploadReport))
 }
 
 type machineIDContextKey struct{}

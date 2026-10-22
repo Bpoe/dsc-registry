@@ -20,11 +20,11 @@ const success = `{
 }`
 
 func wrapped(result string) []byte {
-	return []byte(`{"configurationRevision":"11111111-1111-4111-8111-111111111111","uploadId":"22222222-2222-4222-8222-222222222222","result":` + result + `}`)
+	return []byte(`{"configurationName":"docker","configurationRevision":"11111111-1111-4111-8111-111111111111","uploadId":"22222222-2222-4222-8222-222222222222","result":` + result + `}`)
 }
 
 func TestRealEnvelopes(t *testing.T) {
-	got, err := Parse(wrapped(success), "docker")
+	got, err := Parse(wrapped(success))
 	if err != nil || got.Outcome != "succeeded" || got.Operation == nil || *got.Operation != "test" ||
 		got.ErrorKind != nil || !bytes.Equal(got.Result, []byte(success)) {
 		t.Fatalf("successful test with drift not preserved: %+v %v", got, err)
@@ -55,7 +55,7 @@ func TestRealEnvelopes(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				got, err := Parse(wrapped(string(body)), "docker")
+				got, err := Parse(wrapped(string(body)))
 				if err != nil || got.ErrorKind == nil || *got.ErrorKind != kind {
 					t.Fatalf("legal failure rejected (omitted=%v): %v", optional, err)
 				}
@@ -64,30 +64,27 @@ func TestRealEnvelopes(t *testing.T) {
 	}
 }
 
-func TestNamedUpload(t *testing.T) {
-	body := append([]byte(`{"configurationName":"docker",`), wrapped(success)[1:]...)
-	got, err := Parse(body, "")
+func TestUploadConfigurationName(t *testing.T) {
+	body := wrapped(success)
+	got, err := Parse(body)
 	if err != nil || got.Name != "docker" || !bytes.Equal(got.Result, []byte(success)) {
-		t.Fatal("named upload changed original envelope", err)
+		t.Fatal("upload changed original envelope", err)
 	}
-	got, err = Parse(bytes.Replace(body, []byte(`"configurationName":"docker"`), []byte(`"configurationName":"other"`), 1), "")
+	got, err = Parse(bytes.Replace(body, []byte(`"configurationName":"docker"`), []byte(`"configurationName":"other"`), 1))
 	if err != nil || got.Name != "other" || !bytes.Equal(got.Result, []byte(success)) {
 		t.Fatal("embedded path overrode configuration name", err)
 	}
 	for _, invalid := range []string{
-		string(wrapped(success)),
+		strings.Replace(string(body), `"configurationName":"docker",`, "", 1),
 		strings.Replace(string(body), `"configurationName":"docker"`, `"configurationName":null`, 1),
 		strings.Replace(string(body), `"configurationName"`, `"ConfigurationName"`, 1),
 		strings.Replace(string(body), `"configurationName":"docker"`, `"configurationName":"../docker"`, 1),
 		strings.Replace(string(body), `"configurationName":"docker"`, `"configurationName":"docker","configurationName":"docker"`, 1),
 		strings.Replace(string(body), `"configurationName"`, `"machineId":"untrusted","configurationName"`, 1),
 	} {
-		if _, err := Parse([]byte(invalid), ""); err == nil {
-			t.Fatal("invalid named upload accepted")
+		if _, err := Parse([]byte(invalid)); err == nil {
+			t.Fatal("invalid upload accepted")
 		}
-	}
-	if _, err := Parse(body, "docker"); err == nil {
-		t.Fatal("legacy path accepted a configuration override")
 	}
 }
 
@@ -116,7 +113,7 @@ func TestReportPathFields(t *testing.T) {
 					replacement = `"` + field.name + `":` + value.raw + ","
 				}
 				result := strings.Replace(success, `"`+field.name+`":`+field.original+",", replacement, 1)
-				got, err := Parse(wrapped(result), "docker")
+				got, err := Parse(wrapped(result))
 				valid := field.optional && (value.raw == "" || value.raw == `""` || value.raw == "null")
 				if valid {
 					if err != nil || !bytes.Equal(got.Result, []byte(result)) {
@@ -135,7 +132,7 @@ func FuzzReportEnvelope(f *testing.F) {
 	f.Add([]byte(`{}`))
 	f.Add(wrapped(strings.Replace(success, `"schemaVersion":1`, `"schemaVersion":1,"SchemaVersion":2`, 1)))
 	f.Fuzz(func(t *testing.T, body []byte) {
-		upload, err := Parse(body, "docker")
+		upload, err := Parse(body)
 		if err != nil {
 			return
 		}
@@ -146,7 +143,7 @@ func FuzzReportEnvelope(f *testing.F) {
 		if !bytes.Equal(upload.Result, bytes.TrimSpace(wrapper["result"])) {
 			t.Fatal("accepted report bytes changed")
 		}
-		again, err := Parse(wrapped(string(upload.Result)), "docker")
+		again, err := Parse(wrapped(string(upload.Result)))
 		if err != nil || !bytes.Equal(again.Result, upload.Result) || again.Outcome != upload.Outcome {
 			t.Fatal("accepted result did not survive rewrapping")
 		}
@@ -171,14 +168,14 @@ func TestInvalidEnvelopes(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, err := Parse(wrapped(string(data)), "docker"); err == nil {
+			if _, err := Parse(wrapped(string(data))); err == nil {
 				t.Fatal("invalid field accepted")
 			}
 			delete(envelope, name)
 			data, _ = json.Marshal(envelope)
 			switch name {
 			case "schemaVersion", "configuration", "startedAt", "finishedAt", "durationMs", "outcome", "operation", "dscResult":
-				if _, err := Parse(wrapped(string(data)), "docker"); err == nil {
+				if _, err := Parse(wrapped(string(data))); err == nil {
 					t.Fatal("missing required success field accepted")
 				}
 			}
@@ -197,7 +194,7 @@ func TestInvalidEnvelopes(t *testing.T) {
 		bytes.Replace(wrapped(success), []byte("opaque"), []byte{0xff}, 1),
 		[]byte(strings.Replace(string(wrapped(success)), "22222222-2222-4222-8222-222222222222", "AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA", 1)),
 	} {
-		if _, err := Parse(data, "docker"); err == nil {
+		if _, err := Parse(data); err == nil {
 			t.Fatalf("ambiguous or malformed input accepted: %s", data)
 		}
 	}

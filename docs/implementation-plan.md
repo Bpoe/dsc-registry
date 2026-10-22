@@ -111,10 +111,10 @@ Results are measurements, not fixed performance-ratio assertions.
 
 ## PR 4 — full-report ingestion and latest status
 
-- Accept a wrapped real dscd envelope; validate required fields and reported configuration revision UUID; preserve nested JSON. Require a nonempty string `result.configuration` and allow omitted/null/string `result.parameters`, without directory, basename or extension restrictions. These client paths are informational only; use the wrapper/route configuration name and authenticated machine for identity, never embedded paths for authorization, database selection or server storage.
+- Accept a wrapped real dscd envelope; validate required fields and reported configuration revision UUID; preserve nested JSON. Require a nonempty string `result.configuration` and allow omitted/null/string `result.parameters`, without directory, basename or extension restrictions. These client paths are informational only; use the wrapper configuration name and authenticated machine for identity, never embedded paths for authorization, database selection or server storage.
 - Write each report directly to a unique file under the single configured report root; sync/close it before the SQL transaction, commit its relative path/metadata, then remove superseded files. No temporary file or filesystem rename.
 - Persist idempotency for the retained machine/name/upload ID. Accept old revisions and removed configurations; reject conflicting reuse of the retained identity.
-- Implement admin machine status, paginated latest reports, metadata and original-content GET; failed writes must not corrupt prior report/status. Preserve existing named routes.
+- Implement admin machine status, paginated latest reports, metadata and original-content GET; failed writes must not corrupt prior report/status. Preserve existing named admin status/report routes.
 - Fault-injection tests for interrupted file writes, DB commit failure, concurrent requests, and orphan handling.
 
 **Done when:** full `dscd` schemaVersion=1 report reaches admin GET unchanged; SQLite and PostgreSQL versions pass the same tests.
@@ -131,8 +131,8 @@ desired state, selecting current-revision executions separately from latest
 received reports. Latest-only storage replaces prior rows/files after successful
 commit. A delayed historical receipt replaces the prior report but is stale,
 never a current-revision execution. Current/stale/removed/unreported states are distinct from
-execution outcomes and online health. New upload receipts use server UUIDs;
-the existing named upload retains its 204 response.
+execution outcomes and online health. Uploads use `POST /v1/agent/reports`;
+receipts use server UUIDs.
 Tests cover file and SQL-commit faults, interrupted-write orphans, concurrency,
 role/machine isolation, historical/deleted configurations, pagination,
 migration/rollback, restart, conflicting retries, delayed historical failures

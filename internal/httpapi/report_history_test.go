@@ -27,7 +27,7 @@ type reportPage struct {
 }
 
 func historyBody(name, revision, uploadID, result string) string {
-	return `{"configurationName":"` + name + `",` + reportBody(revision, uploadID, result)[1:]
+	return `{"configurationName":"` + name + `","configurationRevision":"` + revision + `","uploadId":"` + uploadID + `","result":` + result + `}`
 }
 
 func failedReport(outcome string) string {
@@ -97,9 +97,6 @@ func TestLatestReportsAndMachineStatusBothEngines(t *testing.T) {
 		if !reflect.DeepEqual(first, retry) || !reflect.DeepEqual(got, status()) {
 			t.Fatal("retry changed report or status")
 		}
-		// The same execution retries across the old and new route without duplication.
-		apiRequest(t, handler, key.Key, "POST", "/v1/agent/configurations/docker/report",
-			strings.Replace(body, `"configurationName":"docker",`, "", 1), 204)
 		for _, changed := range []string{
 			strings.Replace(body, config.Revision, uuid.NewString(), 1),
 			strings.Replace(body, rawSuccessReport, failedReport("failed"), 1),
@@ -273,37 +270,29 @@ func TestLatestOnlyReportsRequireMatchingDesiredRevisionBothEngines(t *testing.T
 
 		// Latest-only storage replaces even a current execution with a late
 		// receipt, but must never label that receipt as the desired revision.
-		for _, route := range []string{"/v1/agent/reports", "/v1/agent/configurations/docker/report"} {
-			body := historyBody("docker", oldConfig.Revision, uuid.NewString(), failedReport("failed"))
-			created, retried := 201, 200
-			if route != "/v1/agent/reports" {
-				body = strings.Replace(body, `"configurationName":"docker",`, "", 1)
-				created, retried = 204, 204
-			}
-			apiRequest(t, handler, key.Key, "POST", route, body, created)
-			page := decodeResponse[reportPage](t, apiRequest(t, handler, admin.Key, "GET", base+"/reports", "", 200))
-			delayed := page.Reports[0]
-			if delayed.ConfigurationRevision != oldConfig.Revision || delayed.Outcome != "failed" || delayed.ID == old.ID {
-				t.Fatal("late report was discarded or incorrectly associated", delayed)
-			}
-			assertCurrent(current, delayed, currentResult)
-			if got := apiRequest(t, handler, admin.Key, "GET", base+"/reports/"+delayed.ID+"/content", "", 200).Body.String(); got != failedReport("failed") {
-				t.Fatal("historical report bytes changed")
-			}
-			before := status()
-			apiRequest(t, handler, key.Key, "POST", route, body, retried)
-			if !reflect.DeepEqual(before, status()) {
-				t.Fatal("historical retry changed status")
-			}
-			assertAgentCache(t, agentRequest(handler, key.Key, tag), 304)
+		body := historyBody("docker", oldConfig.Revision, uuid.NewString(), failedReport("failed"))
+		delayed := decodeResponse[database.ReportMetadata](t,
+			apiRequest(t, handler, key.Key, "POST", "/v1/agent/reports", body, 201))
+		if delayed.ConfigurationRevision != oldConfig.Revision || delayed.Outcome != "failed" || delayed.ID == old.ID {
+			t.Fatal("late report was discarded or incorrectly associated", delayed)
 		}
+		assertCurrent(current, delayed, currentResult)
+		if got := apiRequest(t, handler, admin.Key, "GET", base+"/reports/"+delayed.ID+"/content", "", 200).Body.String(); got != failedReport("failed") {
+			t.Fatal("historical report bytes changed")
+		}
+		before := status()
+		apiRequest(t, handler, key.Key, "POST", "/v1/agent/reports", body, 200)
+		if !reflect.DeepEqual(before, status()) {
+			t.Fatal("historical retry changed status")
+		}
+		assertAgentCache(t, agentRequest(handler, key.Key, tag), 304)
 
 		// New executions of the current revision can still change its outcome.
 		currentFailure := strings.ReplaceAll(failedReport("failed"), "T12:00:", "T12:10:")
 		current = upload(config.Revision, currentFailure)
 		assertCurrent(current, current, currentFailure)
 		// Revision matching still takes priority over client timestamps.
-		delayed := upload(oldConfig.Revision, strings.ReplaceAll(rawSuccessReport, "2026-10-18", "2099-10-18"))
+		delayed = upload(oldConfig.Revision, strings.ReplaceAll(rawSuccessReport, "2026-10-18", "2099-10-18"))
 		assertCurrent(current, delayed, currentFailure)
 		assertAgentCache(t, agentRequest(handler, key.Key, tag), 304)
 

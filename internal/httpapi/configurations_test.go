@@ -161,8 +161,8 @@ func TestConfigurationsHTTPBothEngines(t *testing.T) {
 			t.Fatal(err)
 		}
 		for range 2 {
-			apiRequest(t, handler, key.Key, "POST", "/v1/agent/configurations/docker/report",
-				reportBody(first.Revision, uuid.NewString(), rawSuccessReport), 204)
+			apiRequest(t, handler, key.Key, "POST", "/v1/agent/reports",
+				reportBody(first.Revision, uuid.NewString(), rawSuccessReport), 201)
 		}
 		assertAgentCache(t, agentRequest(handler, key.Key, tag), 304)
 		for _, sensitive := range []string{"report", "outcome", "receivedAt", "api_keys", key.Key, "machineConfigurationRevision"} {
@@ -218,7 +218,7 @@ func TestConfigurationsHTTPBothEngines(t *testing.T) {
 		}
 		apiRequest(t, handler, admin.Key, "GET", path+"/docker/status", "", 404)
 		apiRequest(t, handler, admin.Key, "GET", path+"/docker/report", "", 404)
-		apiRequest(t, handler, key.Key, "POST", "/v1/agent/configurations/docker/report", `{}`, 400)
+		apiRequest(t, handler, key.Key, "POST", "/v1/agent/reports", `{}`, 400)
 		missing := "/v1/machines/" + uuid.NewString() + "/configurations"
 		for _, method := range []string{"GET", "PUT", "DELETE"} {
 			apiRequest(t, handler, admin.Key, method, missing+"/one", `{"template":{}}`, 404)

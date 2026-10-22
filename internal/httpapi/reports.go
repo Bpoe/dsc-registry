@@ -12,7 +12,6 @@ import (
 
 func (a *adminAPI) uploadReport(w http.ResponseWriter, r *http.Request) {
 	id := r.Context().Value(machineIDContextKey{}).(string)
-	name := r.PathValue("name")
 	if r.URL.RawQuery != "" {
 		writeError(w, http.StatusBadRequest, "invalid_query", "Report uploads accept no query parameters")
 		return
@@ -21,7 +20,7 @@ func (a *adminAPI) uploadReport(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	upload, err := report.Parse(body, name)
+	upload, err := report.Parse(body)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_report", "Expected a valid wrapped dscd v1 report")
 		return
@@ -53,11 +52,6 @@ func (a *adminAPI) uploadReport(w http.ResponseWriter, r *http.Request) {
 		} else {
 			a.reportError(w, err)
 		}
-		return
-	}
-	if name != "" {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusNoContent)
 		return
 	}
 	w.Header().Set("Location", "/v1/machines/"+id+"/reports/"+publication.Report.ID)

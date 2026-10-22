@@ -30,7 +30,7 @@ const rawSuccessReport = `{
 }`
 
 func reportBody(revision, uploadID, result string) string {
-	return `{"configurationRevision":"` + revision + `","uploadId":"` + uploadID + `","result":` + result + `}`
+	return historyBody("docker", revision, uploadID, result)
 }
 
 func TestReportPathsHTTPBothEngines(t *testing.T) {
@@ -60,64 +60,52 @@ func TestReportPathsHTTPBothEngines(t *testing.T) {
 			{"absolute-windows", `C:\ProgramData\DSC\config.d\docker.json`, `D:\Shared Inputs\values.json`},
 			{"parent-relative", "../custom/docker.yaml", "../parameters/values.yaml"},
 		}
-		routes := []struct {
-			name, path     string
-			created, retry int
-		}{
-			{"collection", "/v1/agent/reports", 201, 200},
-			{"legacy", "/v1/agent/configurations/docker/report", 204, 204},
-		}
-		for _, route := range routes {
-			for _, pathCase := range paths {
-				t.Run(route.name+"/"+pathCase.name, func(t *testing.T) {
-					configuration, err := json.Marshal(pathCase.configuration)
-					if err != nil {
-						t.Fatal(err)
+		for _, pathCase := range paths {
+			t.Run(pathCase.name, func(t *testing.T) {
+				configuration, err := json.Marshal(pathCase.configuration)
+				if err != nil {
+					t.Fatal(err)
+				}
+				parameters, err := json.Marshal(pathCase.parameters)
+				if err != nil {
+					t.Fatal(err)
+				}
+				result := strings.NewReplacer(
+					`"managed/docker.json"`, string(configuration),
+					`"managed/docker.parameters.json"`, string(parameters),
+				).Replace(rawSuccessReport)
+				body := reportBody(config.Revision, uuid.NewString(), result)
+				apiRequest(t, handler, key.Key, "POST", "/v1/agent/reports", body, 201)
+				apiRequest(t, handler, key.Key, "POST", "/v1/agent/reports", body, 200)
+				for _, changed := range []string{
+					strings.Replace(body, `"configuration":`+string(configuration), `"configuration":"changed"`, 1),
+					strings.Replace(body, `"parameters":`+string(parameters), `"parameters":"changed"`, 1),
+				} {
+					apiRequest(t, handler, key.Key, "POST", "/v1/agent/reports", changed, 409)
+				}
+				status := decodeResponse[database.ConfigurationStatus](t,
+					apiRequest(t, handler, admin.Key, "GET", configPath+"/status", "", 200))
+				for _, path := range []string{configPath + "/report", base + "/reports/" + status.ReportID + "/content"} {
+					if got := apiRequest(t, handler, admin.Key, "GET", path, "", 200); got.Body.String() != result {
+						t.Fatal("retrieved report paths or original bytes changed")
 					}
-					parameters, err := json.Marshal(pathCase.parameters)
-					if err != nil {
-						t.Fatal(err)
+				}
+				metadata, err := db.GetReport(context.Background(), machine.ID, status.ReportID, func(path string) error {
+					if filepath.Base(path) != path || !strings.HasSuffix(path, ".json") ||
+						!validUUID(strings.TrimSuffix(path, ".json")) {
+						t.Fatal("report storage key is not a server-generated UUID filename", path)
 					}
-					result := strings.NewReplacer(
-						`"managed/docker.json"`, string(configuration),
-						`"managed/docker.parameters.json"`, string(parameters),
-					).Replace(rawSuccessReport)
-					body := reportBody(config.Revision, uuid.NewString(), result)
-					if route.name == "collection" {
-						body = `{"configurationName":"docker",` + body[1:]
+					stored, err := os.ReadFile(filepath.Join(root, path))
+					if err == nil && string(stored) != result {
+						t.Fatal("stored report paths or original bytes changed")
 					}
-					apiRequest(t, handler, key.Key, "POST", route.path, body, route.created)
-					apiRequest(t, handler, key.Key, "POST", route.path, body, route.retry)
-					for _, changed := range []string{
-						strings.Replace(body, `"configuration":`+string(configuration), `"configuration":"changed"`, 1),
-						strings.Replace(body, `"parameters":`+string(parameters), `"parameters":"changed"`, 1),
-					} {
-						apiRequest(t, handler, key.Key, "POST", route.path, changed, 409)
-					}
-					status := decodeResponse[database.ConfigurationStatus](t,
-						apiRequest(t, handler, admin.Key, "GET", configPath+"/status", "", 200))
-					for _, path := range []string{configPath + "/report", base + "/reports/" + status.ReportID + "/content"} {
-						if got := apiRequest(t, handler, admin.Key, "GET", path, "", 200); got.Body.String() != result {
-							t.Fatal("retrieved report paths or original bytes changed")
-						}
-					}
-					metadata, err := db.GetReport(context.Background(), machine.ID, status.ReportID, func(path string) error {
-						if filepath.Base(path) != path || !strings.HasSuffix(path, ".json") ||
-							!validUUID(strings.TrimSuffix(path, ".json")) {
-							t.Fatal("report storage key is not a server-generated UUID filename", path)
-						}
-						stored, err := os.ReadFile(filepath.Join(root, path))
-						if err == nil && string(stored) != result {
-							t.Fatal("stored report paths or original bytes changed")
-						}
-						return err
-					})
-					if err != nil || metadata.MachineID != machine.ID || metadata.ConfigurationName != "docker" ||
-						metadata.ConfigurationRevision != config.Revision {
-						t.Fatal("embedded paths changed report identity", metadata, err)
-					}
+					return err
 				})
-			}
+				if err != nil || metadata.MachineID != machine.ID || metadata.ConfigurationName != "docker" ||
+					metadata.ConfigurationRevision != config.Revision {
+					t.Fatal("embedded paths changed report identity", metadata, err)
+				}
+			})
 		}
 		entries, err := os.ReadDir(root)
 		if err != nil || len(entries) != 1 {
@@ -138,7 +126,7 @@ func TestReportsHTTPBothEngines(t *testing.T) {
 		defer files.Close()
 		handler := New(db, files, time.Second, 10*time.Second, 37*time.Second, 2048, 4096, slog.New(slog.NewJSONHandler(logs, nil)))
 		path := "/v1/machines/" + machine.ID + "/configurations/docker"
-		agentPath := "/v1/agent/configurations/docker/report"
+		agentPath := "/v1/agent/reports"
 		config := decodeResponse[database.ConfigurationResult](t, apiRequest(t, handler, admin.Key, "PUT", path, `{"template":{},"parameters":{}}`, 201))
 		poll := agentRequest(handler, key.Key)
 		tag := assertAgentCache(t, poll, 200)
@@ -146,6 +134,22 @@ func TestReportsHTTPBothEngines(t *testing.T) {
 		apiRequest(t, handler, admin.Key, "GET", path+"/report", "", 404)
 		uploadID := uuid.NewString()
 		body := reportBody(config.Revision, uploadID, rawSuccessReport)
+		for _, creds := range []string{"", "not-a-key", admin.Key, key.Key} {
+			request := httptest.NewRequest("POST", "/v1/agent/configurations/docker/report", strings.NewReader(body))
+			request.Header.Set("Content-Type", "application/json")
+			if creds != "" {
+				request.Header.Set("Authorization", "ApiKey "+creds)
+			}
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, request)
+			if response.Code != 404 || response.Header().Get("Content-Type") != "text/plain; charset=utf-8" ||
+				response.Header().Get("Location") != "" || response.Header().Get("Allow") != "" ||
+				response.Header().Get("WWW-Authenticate") != "" {
+				t.Fatalf("removed route response: %d %v", response.Code, response.Header())
+			}
+		}
+		apiRequest(t, handler, admin.Key, "GET", path+"/status", "", 404)
+		apiRequest(t, handler, admin.Key, "GET", path+"/report", "", 404)
 		for _, creds := range []string{"", "not-a-key"} {
 			apiRequest(t, handler, creds, "POST", agentPath, body, 401)
 		}
@@ -161,7 +165,7 @@ func TestReportsHTTPBothEngines(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		apiRequest(t, handler, otherKey.Key, "POST", agentPath, body, 204)
+		apiRequest(t, handler, otherKey.Key, "POST", agentPath, body, 201)
 		apiRequest(t, handler, admin.Key, "GET", path+"/report", "", 404)
 		content, err := desired.Parse([]byte(`{"template":{}}`))
 		if err != nil {
@@ -170,8 +174,8 @@ func TestReportsHTTPBothEngines(t *testing.T) {
 		if _, _, err := db.PutConfiguration(context.Background(), other.ID, "docker", content); err != nil {
 			t.Fatal(err)
 		}
-		apiRequest(t, handler, otherKey.Key, "POST", agentPath, body, 204)
-		apiRequest(t, handler, key.Key, "POST", agentPath, body, 204)
+		apiRequest(t, handler, otherKey.Key, "POST", agentPath, body, 200)
+		apiRequest(t, handler, key.Key, "POST", agentPath, body, 201)
 		response := apiRequest(t, handler, admin.Key, "GET", path+"/report", "", 200)
 		if !bytes.Equal(response.Body.Bytes(), []byte(rawSuccessReport)) || response.Header().Get("Content-Type") != "application/json" {
 			t.Fatal("full original report bytes not returned", response.Body)
@@ -195,7 +199,7 @@ func TestReportsHTTPBothEngines(t *testing.T) {
 			t.Fatal("missing current report", entries, err)
 		}
 		firstName := entries[0].Name()
-		apiRequest(t, handler, key.Key, "POST", agentPath, body, 204)
+		apiRequest(t, handler, key.Key, "POST", agentPath, body, 200)
 		retryStatus := apiRequest(t, handler, admin.Key, "GET", path+"/status", "", 200)
 		entries, err = os.ReadDir(root)
 		if err != nil || len(entries) != 2 || entries[0].Name() != firstName ||
@@ -211,7 +215,7 @@ func TestReportsHTTPBothEngines(t *testing.T) {
 				"startedAt":"2026-10-18T12:00:00Z","finishedAt":"2026-10-18T12:00:00.005Z",
 				"durationMs":5,"outcome":"` + outcome + `","exitCode":null,"dscResult":null,
 				"error":{"kind":"` + kind + `","message":"private-error-message"},"stderr":""}`
-			apiRequest(t, handler, key.Key, "POST", agentPath, reportBody(config.Revision, uuid.NewString(), result), 204)
+			apiRequest(t, handler, key.Key, "POST", agentPath, reportBody(config.Revision, uuid.NewString(), result), 201)
 			response = apiRequest(t, handler, admin.Key, "GET", path+"/report", "", 200)
 			if response.Body.String() != result {
 				t.Fatal("failure envelope changed")
@@ -228,14 +232,14 @@ func TestReportsHTTPBothEngines(t *testing.T) {
 		assertAgentCache(t, agentRequest(handler, key.Key, tag), 304)
 		changed := decodeResponse[database.ConfigurationResult](t,
 			apiRequest(t, handler, admin.Key, "PUT", path, `{"template":{"changed":true}}`, 200))
-		apiRequest(t, handler, key.Key, "POST", agentPath, body, 204)
-		apiRequest(t, handler, key.Key, "POST", agentPath, reportBody(changed.Revision, uuid.NewString(), rawSuccessReport), 204)
+		apiRequest(t, handler, key.Key, "POST", agentPath, body, 201)
+		apiRequest(t, handler, key.Key, "POST", agentPath, reportBody(changed.Revision, uuid.NewString(), rawSuccessReport), 201)
 		apiRequest(t, handler, admin.Key, "DELETE", path, "", 204)
-		apiRequest(t, handler, key.Key, "POST", agentPath, body, 204)
+		apiRequest(t, handler, key.Key, "POST", agentPath, body, 201)
 		apiRequest(t, handler, admin.Key, "GET", path+"/status", "", 404)
 		apiRequest(t, handler, admin.Key, "GET", path+"/report", "", 404)
 		apiRequest(t, handler, admin.Key, "PUT", path, `{"template":{}}`, 201)
-		apiRequest(t, handler, key.Key, "POST", agentPath, body, 204)
+		apiRequest(t, handler, key.Key, "POST", agentPath, body, 200)
 		for _, secret := range []string{key.Key, admin.Key, "private-dsc-result", "private-error-message", root, firstName} {
 			if strings.Contains(logs.String(), secret) {
 				t.Fatal("sensitive data in routine logs", secret)
@@ -265,10 +269,10 @@ func TestReportBoundsAndStorageFailureBothEngines(t *testing.T) {
 		body := reportBody(config.Revision, uuid.NewString(), rawSuccessReport)
 		handler := New(db, files, time.Second, time.Second, 37*time.Second, 128, int64(len(body)), slog.New(slog.NewJSONHandler(logs, nil)))
 		path := "/v1/machines/" + machine.ID + "/configurations/docker"
-		agentPath := "/v1/agent/configurations/docker/report"
+		agentPath := "/v1/agent/reports"
 		// The report-specific limit is distinct from max-request-bytes and
 		// includes the entire wrapper, not merely its nested result.
-		apiRequest(t, handler, key.Key, "POST", agentPath, body, 204)
+		apiRequest(t, handler, key.Key, "POST", agentPath, body, 201)
 		apiRequest(t, handler, key.Key, "POST", agentPath, body+" ", 413)
 		for _, media := range []string{"", "text/yaml", "application/json; charset=utf-16"} {
 			request := httptest.NewRequest("POST", agentPath, strings.NewReader(body))
@@ -282,6 +286,8 @@ func TestReportBoundsAndStorageFailureBothEngines(t *testing.T) {
 		}
 		for _, invalid := range []string{
 			`{}`, `[]`, `null`, `"string"`,
+			strings.Replace(body, `"configurationName":"docker",`, "", 1),
+			strings.Replace(body, `"configurationName":"docker"`, `"configurationName":"UPPER"`, 1),
 			strings.Replace(body, `"schemaVersion":1`, `"schemaVersion":2`, 1),
 			strings.Replace(body, `"schemaVersion":1`, `"schemaVersion":1,"schemaVersion":1`, 1),
 			strings.Replace(body, `"operation":"test"`, `"operation":"get"`, 1),
@@ -300,7 +306,6 @@ func TestReportBoundsAndStorageFailureBothEngines(t *testing.T) {
 			apiRequest(t, handler, key.Key, "POST", agentPath, invalid, want)
 		}
 		apiRequest(t, handler, key.Key, "POST", agentPath+"?machineId="+machine.ID, body, 400)
-		apiRequest(t, handler, key.Key, "POST", "/v1/agent/configurations/UPPER/report", body, 400)
 		apiRequest(t, handler, admin.Key, "GET", path+"/status?x=1", "", 400)
 		before := apiRequest(t, handler, admin.Key, "GET", path+"/status", "", 200).Body.String()
 		entries, err := os.ReadDir(root)
@@ -312,7 +317,7 @@ func TestReportBoundsAndStorageFailureBothEngines(t *testing.T) {
 		}
 		apiRequest(t, handler, admin.Key, "GET", path+"/report", "", 503)
 		// Idempotent retry needs no filesystem mutation, even during outage.
-		apiRequest(t, handler, key.Key, "POST", agentPath, body, 204)
+		apiRequest(t, handler, key.Key, "POST", agentPath, body, 200)
 		var wrapper map[string]json.RawMessage
 		if err := json.Unmarshal([]byte(body), &wrapper); err != nil {
 			t.Fatal(err)
@@ -350,14 +355,14 @@ func TestReportRestartRecoveryBothEngines(t *testing.T) {
 		logger := slog.New(slog.NewJSONHandler(logs, nil))
 		handler := New(db, files, time.Second, time.Second, 37*time.Second, 2048, 4096, logger)
 		path := "/v1/machines/" + machine.ID + "/configurations/docker"
-		agentPath := "/v1/agent/configurations/docker/report"
+		agentPath := "/v1/agent/reports"
 		config := decodeResponse[database.ConfigurationResult](t,
 			apiRequest(t, handler, admin.Key, "PUT", path, `{"template":{"precise":9007199254740993123456789},"parameters":{}}`, 201))
 		tag := assertAgentCache(t, agentRequest(handler, key.Key), 200)
 		body := reportBody(config.Revision, uuid.NewString(), rawSuccessReport)
-		apiRequest(t, handler, key.Key, "POST", agentPath, body, 204)
+		apiRequest(t, handler, key.Key, "POST", agentPath, body, 201)
 		body = reportBody(config.Revision, uuid.NewString(), rawSuccessReport)
-		apiRequest(t, handler, key.Key, "POST", agentPath, body, 204)
+		apiRequest(t, handler, key.Key, "POST", agentPath, body, 201)
 		before := apiRequest(t, handler, admin.Key, "GET", path+"/status", "", 200).Body.String()
 		machinePath := "/v1/machines/" + machine.ID
 		history := apiRequest(t, handler, admin.Key, "GET", machinePath+"/reports", "", 200).Body.String()
@@ -387,7 +392,7 @@ func TestReportRestartRecoveryBothEngines(t *testing.T) {
 		handler = New(db, files, time.Second, time.Second, 37*time.Second, 2048, 4096, logger)
 		apiRequest(t, handler, "", "GET", "/health/ready", "", 200)
 		assertAgentCache(t, agentRequest(handler, key.Key, tag), 304)
-		apiRequest(t, handler, key.Key, "POST", agentPath, body, 204)
+		apiRequest(t, handler, key.Key, "POST", agentPath, body, 200)
 		if after := apiRequest(t, handler, admin.Key, "GET", path+"/status", "", 200).Body.String(); after != before {
 			t.Fatal("restart/retry changed persisted status")
 		}

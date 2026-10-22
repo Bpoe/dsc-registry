@@ -234,7 +234,7 @@ func TestRegistrationCredentialIsolationHTTPBothEngines(t *testing.T) {
 		for _, test := range []struct{ method, path string }{
 			{"GET", "/v1/machines"}, {"POST", "/v1/machines"}, {"GET", "/v1/machines/" + machine.ID},
 			{"POST", "/v1/registration-tokens"}, {"GET", "/v1/agent/configurations"},
-			{"POST", "/v1/agent/reports"}, {"POST", "/v1/agent/configurations/docker/report"},
+			{"POST", "/v1/agent/reports"},
 		} {
 			for _, scheme := range []string{"Bearer ", "ApiKey "} {
 				response := registrationRequest(handler, test.method, test.path, `{}`, scheme+token.Token)

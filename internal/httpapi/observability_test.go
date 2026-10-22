@@ -14,7 +14,7 @@ func TestBoundedRequestLabels(t *testing.T) {
 		{"PUT", "/v1/machines/private-id/configurations/private-name", "/v1/machines/{id}/configurations/{name}"},
 		{"GET", "/v1/machines/private-id/configurations/private-name/status", "/v1/machines/{id}/configurations/{name}/status"},
 		{"GET", "/v1/machines/private-id/configurations/private-name/report", "/v1/machines/{id}/configurations/{name}/report"},
-		{"POST", "/v1/agent/configurations/private-name/report", "/v1/agent/configurations/{name}/report"},
+		{"POST", "/v1/agent/configurations/private-name/report", "unmatched"},
 		{"POST", "/v1/agent/reports", "/v1/agent/reports"},
 		{"POST", "/v1/agent/register", "/v1/agent/register"},
 		{"POST", "/v1/registration-tokens", "/v1/registration-tokens"},
