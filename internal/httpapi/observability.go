@@ -17,14 +17,7 @@ func methodLabel(method string) string {
 
 func routeLabel(pattern string) string {
 	if _, route, ok := strings.Cut(pattern, " "); ok {
-		pattern = route
+		return route
 	}
-	switch pattern {
-	case "", "/", "/v1/admins", "/v1/admins/{id}", "/v1/agent":
-		return "unmatched"
-	}
-	if strings.HasSuffix(pattern, "/{rest...}") || strings.HasSuffix(pattern, "/{$}") {
-		return "unmatched"
-	}
-	return pattern
+	return "unmatched"
 }

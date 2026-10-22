@@ -5,8 +5,6 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
-	"path"
-	"strings"
 	"sync"
 	"time"
 
@@ -37,24 +35,12 @@ func New(db *database.Store, reports *reportstore.Store, timeout, requestTimeout
 		writeJSON(w, http.StatusOK, map[string]string{"status": "live"})
 	})
 	mux.Handle("GET /health/ready", ready)
-	for _, pattern := range []string{"/health/live", "/health/ready"} {
-		mux.HandleFunc(pattern, func(w http.ResponseWriter, r *http.Request) {
-			methodNotAllowed(w, "GET, HEAD")
-		})
-	}
 	admin.registerRoutes(mux)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
 		response := &responseWriter{ResponseWriter: w, status: http.StatusOK}
-		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("Cache-Control", "no-store")
-		// Reject noncanonical paths rather than redirecting credentialed requests.
-		escaped := r.URL.EscapedPath()
-		if escaped != "/" && path.Clean(escaped) != strings.TrimSuffix(escaped, "/") {
-			notFound(response, r)
-		} else {
-			mux.ServeHTTP(response, r)
-		}
+		mux.ServeHTTP(response, r)
 		logger.Info("http request", "method", methodLabel(r.Method), "route", routeLabel(r.Pattern),
 			"status", response.status, "duration", time.Since(start))
 	})
@@ -115,6 +101,7 @@ func (p *readinessProbe) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func writeJSON(w http.ResponseWriter, status int, value any) {
+	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	// Responses contain concrete JSON-safe types and cannot fail to marshal.
 	// Transport failures are handled by net/http.

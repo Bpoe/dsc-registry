@@ -45,7 +45,7 @@ func assertRegistrationResponse(t *testing.T, response *httptest.ResponseRecorde
 
 func TestRegistrationTokenCreationHTTPBothEngines(t *testing.T) {
 	testdb.Engines(t, func(t *testing.T, engine, dsn string) {
-		handler, store, admin, machine, key := configurationAPI(t, engine, dsn, io.Discard)
+		handler, store, admin, _, key := configurationAPI(t, engine, dsn, io.Discard)
 		for _, value := range []string{"", "invalid", admin.Key + " "} {
 			response := apiRequest(t, handler, value, "POST", "/v1/registration-tokens", `{}`, 401)
 			if response.Header().Get("WWW-Authenticate") != "ApiKey" {
@@ -88,12 +88,6 @@ func TestRegistrationTokenCreationHTTPBothEngines(t *testing.T) {
 			assertRegistrationResponse(t, response, 400)
 		}
 		apiRequest(t, handler, admin.Key, "POST", "/v1/registration-tokens", `{"unknown":"`+strings.Repeat("x", 2048)+`"}`, 413)
-		apiRequest(t, handler, admin.Key, "GET", "/v1/registration-tokens", "", 405)
-		for _, path := range []string{
-			"/v1/registration-tokens/", "/v1/registration-tokens/" + machine.ID + "/api-keys",
-		} {
-			apiRequest(t, handler, admin.Key, "POST", path, `{}`, 404)
-		}
 		var count int
 		if err := store.DB.QueryRow("SELECT COUNT(*) FROM registration_tokens").Scan(&count); err != nil || count != 4 {
 			t.Fatal("invalid token creation mutated the database", count, err)
@@ -252,7 +246,6 @@ func TestRegistrationCredentialIsolationHTTPBothEngines(t *testing.T) {
 		}
 		apiRequest(t, handler, admin.Key, "GET", "/v1/machines", "", 200)
 		assertAgentCache(t, agentRequest(handler, key.Key), 200)
-		assertRegistrationResponse(t, registrationRequest(handler, "GET", "/v1/agent/register", "", "Bearer "+token.Token), 405)
 		assertRegistrationResponse(t, registrationRequest(handler, "POST", "/v1/agent/register", `{"name":"host"}`, "bearer "+token.Token), 201)
 		// Registration must remain independent of the ordinary API-key lookup.
 		if _, err := store.DB.Exec("ALTER TABLE api_keys RENAME TO protected_api_keys"); err != nil {

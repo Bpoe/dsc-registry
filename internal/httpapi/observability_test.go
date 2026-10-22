@@ -24,11 +24,13 @@ func TestBoundedRequestLabels(t *testing.T) {
 		{"GET", "/v1/machines/private-id/reports/private-report/content", "/v1/machines/{id}/reports/{reportId}/content"},
 		{"DELETE", "/v1/admins/private-id/api-keys/private-key", "/v1/admins/{id}/api-keys/{keyId}"},
 		{"HEAD", "/v1/machines/private-id", "/v1/machines/{id}"},
-		{"PATCH", "/v1/machines/private-id/configurations/private-name", "/v1/machines/{id}/configurations/{name}"},
+		{"PATCH", "/v1/machines/private-id/configurations/private-name", "unmatched"},
 		{"GET", "/v1/machines/private-id/private-suffix", "unmatched"},
 		{"GET", "/v1/admins/private-id", "unmatched"},
 		{"GET", "/v1/agent/private-path", "unmatched"},
 		{"GET", "/v1//private-path", "unmatched"},
+		{"GET", "/v1/machines//private-id", "/v1/machines/{id}"},
+		{"GET", "/private%20path//private-suffix", "unmatched"},
 		{"SECRET-METHOD", "/private-path?secret=private-query", "unmatched"},
 	} {
 		logs.Reset()

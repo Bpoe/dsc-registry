@@ -103,6 +103,7 @@ func (a *adminAPI) deleteMachine(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.removeReportFiles(paths)
+	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -149,6 +150,7 @@ func (a *adminAPI) revokeKey(w http.ResponseWriter, r *http.Request, role string
 		a.resourceError(w, err, role)
 		return
 	}
+	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -268,11 +270,6 @@ func pagination(w http.ResponseWriter, r *http.Request, validCursor func(string)
 func validUUID(value string) bool {
 	id, err := uuid.Parse(value)
 	return err == nil && id.String() == value
-}
-
-func methodNotAllowed(w http.ResponseWriter, allow string) {
-	w.Header().Set("Allow", allow)
-	writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "Method not allowed")
 }
 
 func (a *adminAPI) unauthorized(w http.ResponseWriter) {

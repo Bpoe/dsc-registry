@@ -72,6 +72,7 @@ func (a *adminAPI) deleteConfiguration(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.removeReportFiles(paths)
+	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -124,7 +125,7 @@ func (a *adminAPI) agentConfigurationCache(w http.ResponseWriter, etag string) {
 	w.Header().Set("Vary", "Authorization")
 }
 
-// If-None-Match uses weak comparison for GET. Commas inside opaque quoted
+// If-None-Match uses weak comparison for GET and HEAD. Commas inside opaque quoted
 // validators are data, not list separators; malformed fields are ignored.
 func matchesETag(headers []string, etag string) bool {
 	value := strings.Trim(strings.Join(headers, ","), " \t")

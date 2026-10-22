@@ -162,13 +162,10 @@ func TestLatestReportsAndMachineStatusBothEngines(t *testing.T) {
 		}
 		for _, route := range []string{base + "/status", fullPath, fullPath + "/content"} {
 			apiRequest(t, handler, admin.Key, "GET", route+"?x=1", "", 400)
-			apiRequest(t, handler, admin.Key, "POST", route, "{}", 405)
 		}
 		apiRequest(t, handler, admin.Key, "GET", base+"/reports/not-a-uuid", "", 400)
 		apiRequest(t, handler, admin.Key, "GET", base+"/reports/"+uuid.NewString(), "", 404)
 		apiRequest(t, handler, admin.Key, "GET", "/v1/machines/"+uuid.NewString()+"/status", "", 404)
-		apiRequest(t, handler, admin.Key, "POST", base+"/reports", "{}", 405)
-		apiRequest(t, handler, key.Key, "GET", "/v1/agent/reports", "", 405)
 
 		// Aggregate only current desired names, with failures taking precedence
 		// over canceled, missing and succeeded executions. Removed names remain visible.

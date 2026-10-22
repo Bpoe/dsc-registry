@@ -56,6 +56,7 @@ func (a *adminAPI) uploadReport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if name != "" {
+		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
@@ -121,6 +122,7 @@ func (a *adminAPI) machineReport(w http.ResponseWriter, r *http.Request, full bo
 		return
 	}
 	if full {
+		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write(content)
 	} else {
@@ -172,6 +174,7 @@ func (a *adminAPI) configurationReport(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
+	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(content)
 }

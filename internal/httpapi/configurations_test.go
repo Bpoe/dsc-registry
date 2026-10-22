@@ -101,7 +101,6 @@ func TestConfigurationsHTTPBothEngines(t *testing.T) {
 		}
 		apiRequest(t, handler, "", "GET", "/v1/agent/configurations", "", 401)
 		apiRequest(t, handler, admin.Key, "GET", "/v1/agent/configurations", "", 403)
-		apiRequest(t, handler, key.Key, "POST", "/v1/agent/configurations", "", 405)
 		apiRequest(t, handler, key.Key, "GET", "/v1/agent/configurations?machineId="+other.ID, "", 400)
 		for _, name := range []string{"docker", "UPPER", "x.parameters"} {
 			for _, method := range []string{"GET", "PUT", "DELETE"} {

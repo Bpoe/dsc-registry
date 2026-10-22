@@ -52,61 +52,6 @@ func (a *adminAPI) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /v1/agent/configurations", a.authorize(apikey.Machine, a.agentConfigurations))
 	mux.HandleFunc("POST /v1/agent/reports", a.authorize(apikey.Machine, a.uploadReport))
 	mux.HandleFunc("POST /v1/agent/configurations/{name}/report", a.authorize(apikey.Machine, a.uploadReport))
-
-	// Methodless fallbacks preserve JSON errors and authorization before 405.
-	// Explicit HEAD patterns keep API GET routes from implicitly accepting HEAD.
-	for _, route := range []struct{ path, allow, role string }{
-		{"/v1/machines", "GET, POST", apikey.Admin},
-		{"/v1/machines/{id}", "GET, DELETE", apikey.Admin},
-		{"/v1/machines/{id}/status", "GET", apikey.Admin},
-		{"/v1/machines/{id}/reports", "GET", apikey.Admin},
-		{"/v1/machines/{id}/reports/{reportId}", "GET", apikey.Admin},
-		{"/v1/machines/{id}/reports/{reportId}/content", "GET", apikey.Admin},
-		{"/v1/machines/{id}/configurations", "GET", apikey.Admin},
-		{"/v1/machines/{id}/configurations/{name}", "GET, PUT, DELETE", apikey.Admin},
-		{"/v1/machines/{id}/configurations/{name}/status", "GET", apikey.Admin},
-		{"/v1/machines/{id}/configurations/{name}/report", "GET", apikey.Admin},
-		{"/v1/machines/{id}/api-keys", "GET, POST", apikey.Admin},
-		{"/v1/machines/{id}/api-keys/{keyId}", "DELETE", apikey.Admin},
-		{"/v1/admins/{id}/api-keys", "GET, POST", apikey.Admin},
-		{"/v1/admins/{id}/api-keys/{keyId}", "DELETE", apikey.Admin},
-		{"/v1/registration-tokens", "POST", apikey.Admin},
-		{"/v1/agent/configurations", "GET", apikey.Machine},
-		{"/v1/agent/reports", "POST", apikey.Machine},
-		{"/v1/agent/configurations/{name}/report", "POST", apikey.Machine},
-	} {
-		handler := a.authorize(route.role, func(w http.ResponseWriter, r *http.Request) {
-			methodNotAllowed(w, route.allow)
-		})
-		mux.HandleFunc(route.path, handler)
-		if strings.HasPrefix(route.allow, "GET") {
-			mux.HandleFunc("HEAD "+route.path, handler)
-		}
-	}
-	mux.HandleFunc("/v1/agent/register", a.authorizeRegistration(func(w http.ResponseWriter, r *http.Request) {
-		methodNotAllowed(w, "POST")
-	}))
-
-	// These fallbacks retain the credential boundaries on unknown API paths.
-	for _, route := range []struct{ path, code, message string }{
-		{"/v1/machines/{$}", "invalid_id", "Expected a canonical UUID"},
-		{"/v1/admins", "invalid_id", "Expected a canonical UUID"},
-		{"/v1/admins/{$}", "invalid_id", "Expected a canonical UUID"},
-		{"/v1/machines/{id}/reports/{$}", "invalid_id", "Expected a canonical report UUID"},
-		{"/v1/machines/{id}/configurations/{$}", "invalid_name", "Expected a safe lowercase configuration name of 1-64 characters"},
-		{"/v1/machines/{id}/api-keys/{$}", "invalid_id", "Invalid key ID"},
-		{"/v1/admins/{id}/api-keys/{$}", "invalid_id", "Invalid key ID"},
-	} {
-		mux.HandleFunc(route.path, a.authorize(apikey.Admin, func(w http.ResponseWriter, r *http.Request) {
-			writeError(w, http.StatusBadRequest, route.code, route.message)
-		}))
-	}
-	for _, pattern := range []string{"/v1/machines/{id}/{rest...}", "/v1/admins/{id}", "/v1/admins/{id}/{rest...}"} {
-		mux.HandleFunc(pattern, a.authorize(apikey.Admin, notFound))
-	}
-	mux.HandleFunc("/v1/agent", a.authorize(apikey.Machine, notFound))
-	mux.HandleFunc("/v1/agent/{rest...}", a.authorize(apikey.Machine, notFound))
-	mux.HandleFunc("/", notFound)
 }
 
 type machineIDContextKey struct{}
@@ -171,8 +116,4 @@ func validPathParameters(w http.ResponseWriter, r *http.Request) bool {
 		return false
 	}
 	return true
-}
-
-func notFound(w http.ResponseWriter, r *http.Request) {
-	writeError(w, http.StatusNotFound, "not_found", "Endpoint not found")
 }
