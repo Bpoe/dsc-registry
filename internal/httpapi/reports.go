@@ -10,11 +10,9 @@ import (
 	"github.com/Bpoe/dsc-registry/internal/reportstore"
 )
 
-func (a *adminAPI) uploadReport(w http.ResponseWriter, r *http.Request, id, name string) {
-	if r.Method != http.MethodPost {
-		methodNotAllowed(w, "POST")
-		return
-	}
+func (a *adminAPI) uploadReport(w http.ResponseWriter, r *http.Request) {
+	id := r.Context().Value(machineIDContextKey{}).(string)
+	name := r.PathValue("name")
 	if r.URL.RawQuery != "" {
 		writeError(w, http.StatusBadRequest, "invalid_query", "Report uploads accept no query parameters")
 		return
@@ -58,6 +56,7 @@ func (a *adminAPI) uploadReport(w http.ResponseWriter, r *http.Request, id, name
 		return
 	}
 	if name != "" {
+		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
@@ -77,16 +76,12 @@ func (a *adminAPI) removeReportFiles(paths []string) {
 	}
 }
 
-func (a *adminAPI) machineReports(w http.ResponseWriter, r *http.Request, id string) {
-	if r.Method != http.MethodGet {
-		methodNotAllowed(w, "GET")
-		return
-	}
+func (a *adminAPI) machineReports(w http.ResponseWriter, r *http.Request) {
 	limit, cursor, ok := pagination(w, r, validUUID)
 	if !ok {
 		return
 	}
-	items, err := a.store.ListReports(r.Context(), id, cursor, limit+1)
+	items, err := a.store.ListReports(r.Context(), r.PathValue("id"), cursor, limit+1)
 	if err != nil {
 		a.reportError(w, err)
 		return
@@ -102,7 +97,7 @@ func (a *adminAPI) machineReports(w http.ResponseWriter, r *http.Request, id str
 	}{items, next})
 }
 
-func (a *adminAPI) machineReport(w http.ResponseWriter, r *http.Request, id, reportID string, full bool) {
+func (a *adminAPI) machineReport(w http.ResponseWriter, r *http.Request, full bool) {
 	if !reportReadRequest(w, r) {
 		return
 	}
@@ -117,7 +112,7 @@ func (a *adminAPI) machineReport(w http.ResponseWriter, r *http.Request, id, rep
 			return err
 		}
 	}
-	item, err := a.store.GetReport(r.Context(), id, reportID, read)
+	item, err := a.store.GetReport(r.Context(), r.PathValue("id"), r.PathValue("reportId"), read)
 	if err != nil {
 		if storageFailure && !reportResourceMissing(err) {
 			a.reportStorageError(w)
@@ -127,6 +122,7 @@ func (a *adminAPI) machineReport(w http.ResponseWriter, r *http.Request, id, rep
 		return
 	}
 	if full {
+		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write(content)
 	} else {
@@ -134,11 +130,11 @@ func (a *adminAPI) machineReport(w http.ResponseWriter, r *http.Request, id, rep
 	}
 }
 
-func (a *adminAPI) machineStatus(w http.ResponseWriter, r *http.Request, id string) {
+func (a *adminAPI) machineStatus(w http.ResponseWriter, r *http.Request) {
 	if !reportReadRequest(w, r) {
 		return
 	}
-	status, err := a.store.GetMachineStatus(r.Context(), id)
+	status, err := a.store.GetMachineStatus(r.Context(), r.PathValue("id"))
 	if err != nil {
 		a.reportError(w, err)
 		return
@@ -146,22 +142,25 @@ func (a *adminAPI) machineStatus(w http.ResponseWriter, r *http.Request, id stri
 	writeJSON(w, http.StatusOK, status)
 }
 
-func (a *adminAPI) configurationReport(w http.ResponseWriter, r *http.Request, id, name, kind string) {
+func (a *adminAPI) configurationStatus(w http.ResponseWriter, r *http.Request) {
 	if !reportReadRequest(w, r) {
 		return
 	}
-	if kind == "status" {
-		status, err := a.store.GetConfigurationStatus(r.Context(), id, name)
-		if err != nil {
-			a.reportError(w, err)
-			return
-		}
-		writeJSON(w, http.StatusOK, status)
+	status, err := a.store.GetConfigurationStatus(r.Context(), r.PathValue("id"), r.PathValue("name"))
+	if err != nil {
+		a.reportError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, status)
+}
+
+func (a *adminAPI) configurationReport(w http.ResponseWriter, r *http.Request) {
+	if !reportReadRequest(w, r) {
 		return
 	}
 	var content []byte
 	storageFailure := false
-	err := a.store.ReadReport(r.Context(), id, name, func(path string) error {
+	err := a.store.ReadReport(r.Context(), r.PathValue("id"), r.PathValue("name"), func(path string) error {
 		var err error
 		content, err = a.reports.Read(r.Context(), path, a.maxReportBytes)
 		storageFailure = err != nil
@@ -175,6 +174,7 @@ func (a *adminAPI) configurationReport(w http.ResponseWriter, r *http.Request, i
 		}
 		return
 	}
+	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(content)
 }
@@ -185,10 +185,6 @@ func reportResourceMissing(err error) bool {
 }
 
 func reportReadRequest(w http.ResponseWriter, r *http.Request) bool {
-	if r.Method != http.MethodGet {
-		methodNotAllowed(w, "GET")
-		return false
-	}
 	if r.URL.RawQuery != "" {
 		writeError(w, http.StatusBadRequest, "invalid_query", "Report retrieval accepts no query parameters")
 		return false

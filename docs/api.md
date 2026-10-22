@@ -8,11 +8,38 @@
 - API-key type determines principal: administrator (`dsca_...`) versus machine (`dscm_...`). Registration tokens (`dscr_...`) are a separate credential type, accepted only by `POST /v1/agent/register` using `Authorization: Bearer <token>`. No cookies or OAuth endpoints.
 - UUIDs are strings in standard RFC 4122 format. `name` is a safe lowercase configuration stem described in design.md.
 - Dates in JSON are UTC RFC3339 timestamps. Unknown request fields may be rejected to catch typos; response consumers must ignore additive fields.
-- JSON errors use `{"error":{"code":"machine_not_found","message":"..."}}`. Keep error codes stable; messages are for humans and must not expose secret values, storage paths or existence of another machine's resources.
+- Application errors use `{"error":{"code":"machine_not_found","message":"..."}}`. Keep error codes stable; messages are for humans and must not expose secret values, storage paths or existence of another machine's resources. Router-generated errors use standard HTTP responses as described below.
 - Usual responses: `400` invalid input; `401` missing/invalid key; `403` insufficient role; `404` missing resource; `409` conflicting machine name or upload identity; `413` body too large; `415` unsupported document representation; `429` throttled; `500`/`503` internal/dependency failure.
 - Paginate administrative collection endpoints; don't return an unbounded million-machine listing. `limit`/`cursor` are sufficient. Agent collection size is naturally bounded by one machine.
 - Accept only JSON on the HTTP API. `template` and optional `parameters` are **JSON objects**, not strings or `{format,content}` envelopes. Reject YAML, string-encoded documents, arrays and scalars at those fields. A CLI may accept YAML and convert it before making the request; the service does not translate YAML.
 - Explicitly bound template/parameter size and raw result body size. Start with conservative configurable limits and tests; don't silently truncate.
+
+### Routing and HTTP methods
+
+Routes use standard Go `http.ServeMux` method and path patterns. Unknown paths
+return native plain-text `404`; unsupported methods on known paths return native
+plain-text `405` with a generated `Allow` header. `OPTIONS` is not an implicit
+capability endpoint. Routing happens before authentication; these responses do
+not require credentials. Supported API operations still authenticate and
+authorize before validating resource identifiers or accessing application data.
+Their application errors, including missing resources, retain the JSON shape.
+
+Every `GET` route also supports `HEAD`, with the same authentication,
+authorization, status and cache semantics, but no response body. Conditional
+agent `HEAD` requests support ETags and `304` just like `GET`.
+
+Paths are exact: trailing slashes and missing resource segments do not match
+the listed endpoints. ServeMux applies its standard path normalization,
+including redirects for repeated slashes and literal `.`/`..` segments,
+preserving the query string. The normalized request must still authenticate
+when it reaches an API operation.
+
+ServeMux unescapes each path segment separately. Escaped ordinary characters
+still identify the same resource, but `%2F` remains data within one segment,
+never a route separator. A slash inside a configuration-name wildcard therefore
+returns `400` (`invalid_name`), rather than the old split-path `404`. Escaped
+slashes in fixed route segments do not select a different endpoint. Query
+parameter parsing and validation are unchanged.
 
 ## 2. Admin API
 

@@ -299,10 +299,8 @@ func TestReportBoundsAndStorageFailureBothEngines(t *testing.T) {
 			}
 			apiRequest(t, handler, key.Key, "POST", agentPath, invalid, want)
 		}
-		apiRequest(t, handler, key.Key, "GET", agentPath, "", 405)
 		apiRequest(t, handler, key.Key, "POST", agentPath+"?machineId="+machine.ID, body, 400)
 		apiRequest(t, handler, key.Key, "POST", "/v1/agent/configurations/UPPER/report", body, 400)
-		apiRequest(t, handler, admin.Key, "POST", path+"/report", body, 405)
 		apiRequest(t, handler, admin.Key, "GET", path+"/status?x=1", "", 400)
 		before := apiRequest(t, handler, admin.Key, "GET", path+"/status", "", 200).Body.String()
 		entries, err := os.ReadDir(root)

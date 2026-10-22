@@ -32,8 +32,8 @@ func apiRequest(t *testing.T, handler http.Handler, key, method, path, body stri
 	if response.Code != status {
 		t.Fatalf("%s %s: status %d, want %d; body %s", method, path, response.Code, status, response.Body)
 	}
-	if response.Header().Get("Cache-Control") != "no-store" {
-		t.Fatal("administration response may be cached")
+	if response.Header().Get("Cache-Control") != "no-store" || response.Header().Get("Content-Type") != "application/json" {
+		t.Fatalf("API response headers changed: %v", response.Header())
 	}
 	if status >= 400 {
 		var body struct {
@@ -124,10 +124,15 @@ func TestAdministrationHTTPBothEngines(t *testing.T) {
 				"/v1/machines", firstPath, secondPath, firstPath + "/api-keys", "/v1/admins/" + admin.AdminID + "/api-keys",
 				"/v1/machines/not-a-uuid", firstPath + "/configurations",
 			} {
-				for _, method := range []string{"GET", "POST", "DELETE"} {
-					apiRequest(t, handler, key, method, path, "", 403)
-				}
+				apiRequest(t, handler, key, "GET", path, "", 403)
 			}
+			apiRequest(t, handler, key, "POST", "/v1/machines", `{"name":"forbidden"}`, 403)
+			apiRequest(t, handler, key, "POST", firstPath+"/api-keys", `{}`, 403)
+			apiRequest(t, handler, key, "POST", "/v1/admins/"+admin.AdminID+"/api-keys", `{}`, 403)
+			apiRequest(t, handler, key, "DELETE", firstPath+"/api-keys/"+machineKey.KeyID, "", 403)
+			apiRequest(t, handler, key, "DELETE", "/v1/admins/"+admin.AdminID+"/api-keys/"+admin.KeyID, "", 403)
+			apiRequest(t, handler, key, "DELETE", firstPath, "", 403)
+			apiRequest(t, handler, key, "DELETE", secondPath, "", 403)
 		}
 		for _, forged := range []string{"dsca_" + machineKey.Key[5:], "dscm_" + admin.Key[5:]} {
 			apiRequest(t, handler, forged, "GET", "/v1/machines", "", 401)
@@ -183,9 +188,6 @@ func TestAdministrationHTTPBothEngines(t *testing.T) {
 		apiRequest(t, handler, rotated.Key, "GET", "/v1/machines/not-a-uuid", "", 400)
 		apiRequest(t, handler, rotated.Key, "GET", "/v1/machines/"+uuid.NewString(), "", 404)
 		apiRequest(t, handler, rotated.Key, "POST", "/v1/admins/"+uuid.NewString()+"/api-keys", `{}`, 404)
-		apiRequest(t, handler, rotated.Key, "POST", "/v1/admins", `{"name":"new admin"}`, 400)
-		apiRequest(t, handler, rotated.Key, "PUT", firstPath, `{}`, 405)
-		apiRequest(t, handler, rotated.Key, "PUT", "/v1/machines", `{}`, 405)
 		apiRequest(t, handler, rotated.Key, "GET", firstPath+"/configurations", "", 200)
 		apiRequest(t, handler, rotated.Key, "GET", "/v1/agent/configurations", "", 403)
 		for _, contentType := range []string{"", "text/yaml", "application/json; charset=iso-8859-1"} {

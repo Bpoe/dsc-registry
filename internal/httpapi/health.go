@@ -30,30 +30,18 @@ func New(db *database.Store, reports *reportstore.Store, timeout, requestTimeout
 
 	admin := &adminAPI{store: db, reports: reports, maxRequestBytes: maxRequestBytes, maxReportBytes: maxReportBytes,
 		timeout: requestTimeout, pollMaxAge: pollMaxAge, logger: logger}
-	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.Header().Set("Cache-Control", "no-store")
-		switch r.URL.Path {
-		case "/health/live", "/health/ready":
-			if r.Method != http.MethodGet && r.Method != http.MethodHead {
-				w.Header().Set("Allow", "GET, HEAD")
-				writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "Method not allowed")
-				return
-			}
-			if r.URL.Path == "/health/live" {
-				writeJSON(w, http.StatusOK, map[string]string{"status": "live"})
-			} else {
-				ready.ServeHTTP(w, r)
-			}
-		default:
-			admin.ServeHTTP(w, r)
-		}
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /health/live", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, map[string]string{"status": "live"})
 	})
+	mux.Handle("GET /health/ready", ready)
+	admin.registerRoutes(mux)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
 		response := &responseWriter{ResponseWriter: w, status: http.StatusOK}
-		handler.ServeHTTP(response, r)
-		logger.Info("http request", "method", methodLabel(r.Method), "route", routeLabel(r.URL.Path),
+		w.Header().Set("Cache-Control", "no-store")
+		mux.ServeHTTP(response, r)
+		logger.Info("http request", "method", methodLabel(r.Method), "route", routeLabel(r.Pattern),
 			"status", response.status, "duration", time.Since(start))
 	})
 }
@@ -113,6 +101,7 @@ func (p *readinessProbe) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func writeJSON(w http.ResponseWriter, status int, value any) {
+	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	// Responses contain concrete JSON-safe types and cannot fail to marshal.
 	// Transport failures are handled by net/http.

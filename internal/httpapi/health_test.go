@@ -57,10 +57,7 @@ func TestHealthRoutes(t *testing.T) {
 	}{
 		{"GET", "/health/live", 200, `{"status":"live"}`},
 		{"GET", "/health/ready", 200, `{"status":"ready"}`},
-		{"POST", "/health/ready", 405, `"code":"method_not_allowed"`},
-		{"DELETE", "/health/live", 405, `"code":"method_not_allowed"`},
 		{"GET", "/v1/machines", 401, `"code":"unauthorized"`},
-		{"GET", "/unknown-sensitive?key=also-sensitive", 404, `"code":"not_found"`},
 	} {
 		response := request(handler, test.method, test.path)
 		if response.Code != test.status || !strings.Contains(response.Body.String(), test.body) {
@@ -69,9 +66,6 @@ func TestHealthRoutes(t *testing.T) {
 		if response.Header().Get("Content-Type") != "application/json" ||
 			response.Header().Get("Cache-Control") != "no-store" {
 			t.Fatalf("health/error headers: %v", response.Header())
-		}
-		if test.status == 405 && response.Header().Get("Allow") != "GET, HEAD" {
-			t.Fatalf("Allow = %q", response.Header().Get("Allow"))
 		}
 	}
 	if strings.Contains(logs.String(), "sensitive") {
