@@ -145,10 +145,11 @@ def main():
             "finishedAt": "2026-01-01T00:00:00Z", "durationMs": 0,
             "outcome": "succeeded", "dscResult": {},
         }
-        upload = {"configurationRevision": revision, "uploadId": str(uuid.uuid4()), "result": report}
-        for _ in range(2):
-            assert request("/v1/agent/configurations/package-smoke/report", "POST",
-                           upload, token=machine_key)[0] == 204
+        upload = {"configurationName": "package-smoke", "configurationRevision": revision,
+                  "uploadId": str(uuid.uuid4()), "result": report}
+        for expected_status in (201, 200):
+            assert request("/v1/agent/reports", "POST",
+                           upload, token=machine_key)[0] == expected_status
         assert request(path + "/report", token=machine_key)[0] == 403
         control("stop")
         running = False
