@@ -161,9 +161,10 @@ def main():
                       "startedAt": "2026-10-18T12:00:00Z", "finishedAt": "2026-10-18T12:00:01Z",
                       "durationMs": 1000, "outcome": "failed",
                       "error": {"kind": "start", "message": "dsc-error-canary"}, "stderr": "stderr-canary"}
-            upload = {"configurationRevision": config["revision"], "uploadId": str(uuid.uuid4()), "result": report}
-            upload_path = "/v1/agent/configurations/demo/report"
-            expect(base, upload_path, 204, key=key, method="POST", body=upload)
+            upload = {"configurationName": "demo", "configurationRevision": config["revision"],
+                      "uploadId": str(uuid.uuid4()), "result": report}
+            upload_path = "/v1/agent/reports"
+            expect(base, upload_path, 201, key=key, method="POST", body=upload)
             status = expect(base, config_path + "/status", 200, key=admin)[2]
             original = expect(base, config_path + "/report", 200, key=admin)[2]
 
@@ -176,7 +177,7 @@ def main():
 
             print("Checking cross-replica retry, replica loss, database and storage recovery", flush=True)
             for _ in range(4):
-                expect(base, upload_path, 204, key=key, method="POST", body=upload)
+                expect(base, upload_path, 200, key=key, method="POST", body=upload)
                 unchanged()
             compose("stop", "-t", "10", "api1")
             for _ in range(4):
@@ -217,9 +218,9 @@ def main():
             changed = json.loads(expect(base, config_path, 200, key=admin, method="PUT",
                                         body={"template": {"changed": True}})[2])
             later_report = dict(report, error={"kind": "start", "message": "after-backup-canary"})
-            expect(base, upload_path, 204, key=key, method="POST",
-                   body={"configurationRevision": changed["revision"], "uploadId": str(uuid.uuid4()),
-                         "result": later_report})
+            expect(base, upload_path, 201, key=key, method="POST",
+                   body={"configurationName": "demo", "configurationRevision": changed["revision"],
+                         "uploadId": str(uuid.uuid4()), "result": later_report})
             require(expect(base, config_path + "/report", 200, key=admin)[2] != original,
                     "post-backup report was not replaced")
             compose("stop", "-t", "20", "api1", "api2")
@@ -228,7 +229,7 @@ def main():
             storage("tar -C /reports -xf -", data=archive)
             restart_apis()
             unchanged()
-            expect(base, upload_path, 204, key=key, method="POST", body=upload)
+            expect(base, upload_path, 200, key=key, method="POST", body=upload)
             unchanged()
             # Rotation has overlap; revocation is immediately shared.
             replacement = json.loads(expect(base, path + "/api-keys", 201, key=admin,

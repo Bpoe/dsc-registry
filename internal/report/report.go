@@ -33,7 +33,7 @@ type Upload struct {
 	Result json.RawMessage
 }
 
-func Parse(body []byte, name string) (Upload, error) {
+func Parse(body []byte) (Upload, error) {
 	if desired.ValidateJSON(body) != nil {
 		return Upload{}, ErrInvalid
 	}
@@ -41,14 +41,8 @@ func Parse(body []byte, name string) (Upload, error) {
 	if json.Unmarshal(body, &wrapper) != nil {
 		return Upload{}, ErrInvalid
 	}
-	if name == "" {
-		if len(wrapper) != 4 || !requiredString(wrapper["configurationName"], &name) {
-			return Upload{}, ErrInvalid
-		}
-	} else if len(wrapper) != 3 {
-		return Upload{}, ErrInvalid
-	}
-	if !desired.ValidName(name) {
+	var name string
+	if len(wrapper) != 4 || !requiredString(wrapper["configurationName"], &name) || !desired.ValidName(name) {
 		return Upload{}, ErrInvalid
 	}
 	upload := Upload{Name: name}

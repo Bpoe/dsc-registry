@@ -526,7 +526,7 @@ paths preserved unchanged: `dscregsync/docker.json`, `managed/docker.json`,
 Registry enforces no local directory or filename convention, including for
 parameter paths. These values never determine authorization, database record
 selection, or server filesystem paths; identity comes from the authenticated
-machine and `configurationName` (or `{name}` on the legacy route).
+machine and `configurationName`.
 See the [upload contract](docs/api.md#upload-a-dscd-result)
 for validation and examples. No DSC binary or resource-schema interpretation is
 involved. A successful `test` with drift is still execution success.
@@ -536,13 +536,11 @@ Exact retries return `200` with the original receipt, without changing its
 receive time or acceptance order. Deduplication persists for the latest
 report for the authenticated machine, configuration name and upload ID;
 conflicting revision or nested result bytes return `409`. Preserve original
-result bytes across retries, including formatting. The existing
-`POST /v1/agent/configurations/{name}/report` omits `configurationName` from its
-body and retains `204` for creation/retry, using the same latest report.
+result bytes across retries, including formatting.
 Once replaced or deleted, an upload identity is forgotten; replaying it creates
 a new report, rather than returning the obsolete receipt.
 
-Both routes accept valid historical reports after desired changes or
+Uploads accept valid historical reports after desired changes or
 configuration deletion. Revisions are agent-reported associations, not proof
 that the machine installed or executed specific inputs. The latest report is
 the latest accepted upload, not the largest agent timestamp. A delayed report

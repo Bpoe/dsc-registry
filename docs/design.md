@@ -111,8 +111,8 @@ The envelope's `configuration` is a required nonempty string; `parameters` may
 be omitted, null, or a string (including empty). Both are informational client
 paths, preserved unchanged. Registry enforces no local directory, basename or
 extension: `managed/docker.json`, `dscregsync/docker.json`, and
-`custom/docker.yaml` are all valid examples. Only `configurationName` (or the
-legacy route's `{name}`) and the authenticated machine identify a report's
+`custom/docker.yaml` are all valid examples. Only `configurationName`
+and the authenticated machine identify a report's
 configuration. Embedded paths never select database records, authorize access,
 or determine server filesystem paths.
 

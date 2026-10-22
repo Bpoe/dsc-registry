@@ -241,7 +241,7 @@ func TestFailedPersistenceCleanupWarningPreservesErrorBothEngines(t *testing.T) 
 				}
 				return nil
 			})}
-		upload, err := report.Parse([]byte(historyBody("docker", uuid.NewString(), uuid.NewString(), rawSuccessReport)), "")
+		upload, err := report.Parse([]byte(historyBody("docker", uuid.NewString(), uuid.NewString(), rawSuccessReport)))
 		if err != nil {
 			t.Fatal(err)
 		}
