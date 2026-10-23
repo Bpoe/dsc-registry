@@ -56,24 +56,50 @@ func (a *app) addDescribe(root *cobra.Command) {
 		if err != nil {
 			return err
 		}
+		machinePath := path
 		path += "/configurations/" + url.PathEscape(args[0])
 		cfg, _, err := a.requestObject(c, http.MethodGet, path, nil)
 		if err != nil {
 			return err
 		}
 		status, _, err := a.requestObject(c, http.MethodGet, path+"/status", nil)
-		noReport := false
+		revisionState := "current"
 		if err != nil {
 			var apiErr *client.Error
 			if !errors.As(err, &apiErr) || apiErr.Status != http.StatusNotFound || apiErr.Code != "report_not_found" {
 				return err
 			}
-			noReport = true
+			aggregate, _, err := a.requestObject(c, http.MethodGet, machinePath+"/status", nil)
+			if err != nil {
+				return err
+			}
+			revisionState = ""
+			for _, item := range resourceItems(aggregate["configurations"], "configuration") {
+				if item["name"] == args[0] {
+					revisionState, _ = item["revisionState"].(string)
+					status, _ = item["latestReport"].(map[string]any)
+					break
+				}
+			}
+			switch revisionState {
+			case "stale", "unreported", "removed":
+			case "current":
+				if status == nil {
+					return fmt.Errorf("machine status is missing the current report; retry describe")
+				}
+				status["reportId"] = status["id"]
+			default:
+				return fmt.Errorf("configuration is missing a valid revision state in machine status; retry describe")
+			}
 		}
 		w := tabwriter.NewWriter(a.out, 0, 4, 2, ' ', 0)
 		fmt.Fprintf(w, "Name:\t%s\nMachine:\t%s\nDesired Revision:\t%s\n", display(cfg["name"]), display(machine["name"]), display(cfg["revision"]))
-		if noReport {
-			fmt.Fprintln(w, "Revision State:\tunreported\n\nObservations:\n  No execution reported for the current revision.")
+		if revisionState != "current" {
+			message := observation(revisionState, nil)
+			if revisionState == "unreported" {
+				message = "No execution reported for the current revision."
+			}
+			fmt.Fprintf(w, "Revision State:\t%s\n\nObservations:\n  %s\n", revisionState, message)
 			return w.Flush()
 		}
 		fmt.Fprintf(w, "Revision State:\tcurrent\n\nExecution:\n  Outcome:\t%s\n  Operation:\t%s\n  Started:\t%s\n  Finished:\t%s\n  Report Received:\t%s\n  Error Kind:\t%s\n\nLatest Report:\n  ID:\t%s\n\nObservations:\n  %s\n",

@@ -20,14 +20,7 @@ const resourceReportID = "2e631f22-1183-4264-b131-a328f7dfe789"
 
 func resourceFixture(t *testing.T, handler http.HandlerFunc) string {
 	t.Helper()
-	directory := filepath.Join(".resource-test", strings.ReplaceAll(t.Name(), "/", "-"))
-	if err := os.MkdirAll(directory, 0700); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		os.RemoveAll(directory)
-		os.Remove(".resource-test")
-	})
+	directory := t.TempDir()
 	for _, variable := range []string{"DSCREG_CONTEXT", "DSCREG_SERVER", "DSCREG_API_KEY_FILE"} {
 		t.Setenv(variable, "")
 	}
@@ -278,20 +271,80 @@ func TestResourceDescribeMachineNoNPlusOneOrCompliance(t *testing.T) {
 }
 
 func TestResourceDescribeConfigurationMissingReport(t *testing.T) {
-	resourceFixture(t, func(w http.ResponseWriter, r *http.Request) {
-		switch {
-		case r.URL.Path == "/v1/machines":
-			fixtureMachine(w)
-		case strings.HasSuffix(r.URL.Path, "/status"):
-			w.WriteHeader(404)
-			resourceJSON(w, `{"error":{"code":"report_not_found"}}`)
-		default:
-			resourceJSON(w, `{"name":"docker","revision":"current","template":{"sensitive":"do-not-display"},"parameters":{"password":"secret"}}`)
-		}
-	})
-	code, output, diagnostic := resourceRun("", "describe", "configuration", "docker", "--machine", "apphost01")
-	if code != 0 || !strings.Contains(output, "No execution reported for the current revision.") || strings.Contains(output, "secret") || strings.Contains(output, "do-not-display") {
-		t.Fatalf("%d %s %s", code, output, diagnostic)
+	for _, state := range []string{"unreported", "stale", "removed", "current"} {
+		t.Run(state, func(t *testing.T) {
+			var paths []string
+			resourceFixture(t, func(w http.ResponseWriter, r *http.Request) {
+				paths = append(paths, r.URL.Path)
+				switch r.URL.Path {
+				case "/v1/machines":
+					fixtureMachine(w)
+				case "/v1/machines/" + resourceMachineID + "/configurations/docker/status":
+					w.WriteHeader(404)
+					resourceJSON(w, `{"error":{"code":"report_not_found"}}`)
+				case "/v1/machines/" + resourceMachineID + "/status":
+					resourceJSON(w, `{"configurations":[{"name":"ssh","revisionState":"current"},{"name":"docker","revisionState":"`+state+`","latestReport":{"id":"`+resourceReportID+`","outcome":"succeeded"},"latestReceivedReport":{"configurationRevision":"old"}}]}`)
+				default:
+					resourceJSON(w, `{"name":"docker","revision":"current","template":{"sensitive":"do-not-display"},"parameters":{"password":"secret"}}`)
+				}
+			})
+			code, output, diagnostic := resourceRun("", "describe", "configuration", "docker", "--machine", "apphost01")
+			message := observation(state, "succeeded")
+			if state == "unreported" {
+				message = "No execution reported for the current revision."
+			}
+			if code != 0 || len(paths) != 4 || paths[3] != "/v1/machines/"+resourceMachineID+"/status" || !strings.Contains(output, message) {
+				t.Fatalf("%d %v %s %s", code, paths, output, diagnostic)
+			}
+			if state == "stale" && (!strings.Contains(output, "stale") || strings.Contains(output, "unreported") || strings.Contains(output, "No execution reported")) {
+				t.Fatalf("stale report mislabeled: %s", output)
+			}
+			if strings.Contains(output, "secret") || strings.Contains(output, "do-not-display") {
+				t.Fatalf("describe leaked desired content: %s", output)
+			}
+		})
+	}
+}
+
+func TestResourceDescribeConfigurationFallbackErrors(t *testing.T) {
+	for _, failure := range []string{"configuration_not_found", "aggregate_unavailable", "missing_summary"} {
+		t.Run(failure, func(t *testing.T) {
+			requests := 0
+			resourceFixture(t, func(w http.ResponseWriter, r *http.Request) {
+				requests++
+				switch r.URL.Path {
+				case "/v1/machines":
+					fixtureMachine(w)
+				case "/v1/machines/" + resourceMachineID + "/configurations/docker/status":
+					code := "report_not_found"
+					if failure == "configuration_not_found" {
+						code = failure
+					}
+					w.WriteHeader(404)
+					resourceJSON(w, `{"error":{"code":"`+code+`"}}`)
+				case "/v1/machines/" + resourceMachineID + "/status":
+					if failure == "aggregate_unavailable" {
+						w.WriteHeader(503)
+						resourceJSON(w, `{"error":{"code":"database_unavailable"}}`)
+					} else {
+						resourceJSON(w, `{"configurations":[]}`)
+					}
+				default:
+					resourceJSON(w, `{"name":"docker","revision":"current"}`)
+				}
+			})
+			code, output, diagnostic := resourceRun("", "describe", "configuration", "docker", "--machine", "apphost01")
+			if failure == "configuration_not_found" {
+				if code != 3 || requests != 3 {
+					t.Fatalf("unexpected fallback: %d %d %s", code, requests, diagnostic)
+				}
+			} else if code != 1 || requests != 4 {
+				t.Fatalf("fallback error hidden: %d %d %s", code, requests, diagnostic)
+			}
+			if output != "" {
+				t.Fatalf("failure produced success output: %q", output)
+			}
+		})
 	}
 }
 
@@ -400,6 +453,113 @@ func TestResourceCredentialsTTLAndSave(t *testing.T) {
 	}
 	if code, _, _ := resourceRun("", "create", "api-key", "--machine", "apphost01", "--admin", resourceMachineID); code == 0 {
 		t.Fatal("conflicting owners accepted")
+	}
+}
+
+func TestResourceCredentialDestinationReservedBeforeRequests(t *testing.T) {
+	for _, resource := range []string{"api-key", "registration-token"} {
+		for _, destination := range []string{"existing", "missing-parent"} {
+			t.Run(resource+"/"+destination, func(t *testing.T) {
+				requests := 0
+				directory := resourceFixture(t, func(w http.ResponseWriter, r *http.Request) {
+					requests++
+					t.Error("invalid credential destination made an HTTP request")
+				})
+				path := filepath.Join(directory, "credential")
+				if destination == "existing" {
+					if err := os.WriteFile(path, []byte("original"), 0600); err != nil {
+						t.Fatal(err)
+					}
+				} else {
+					path = filepath.Join(directory, "missing", "credential")
+				}
+				args := []string{"create", resource, "--save-key-to", path}
+				if resource == "api-key" {
+					args = append(args, "--machine", "apphost01")
+				}
+				if code, _, diagnostic := resourceRun("", args...); code == 0 || requests != 0 {
+					t.Fatalf("invalid destination: %d requests=%d %s", code, requests, diagnostic)
+				}
+				if destination == "existing" {
+					data, err := os.ReadFile(path)
+					if err != nil || string(data) != "original" {
+						t.Fatal("existing credential destination changed")
+					}
+				}
+			})
+		}
+	}
+}
+
+func TestResourceCredentialReservationAndCleanup(t *testing.T) {
+	for _, resource := range []string{"api-key", "registration-token"} {
+		for _, succeeds := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/%t", resource, succeeds), func(t *testing.T) {
+				var path string
+				directory := resourceFixture(t, func(w http.ResponseWriter, r *http.Request) {
+					if r.URL.Path == "/v1/machines" {
+						fixtureMachine(w)
+						return
+					}
+					info, err := os.Stat(path)
+					if err != nil || info.Size() != 0 {
+						t.Errorf("protected destination was not reserved before credential issuance: %v", err)
+					}
+					if !succeeds {
+						w.WriteHeader(503)
+						resourceJSON(w, `{"error":{"code":"database_unavailable"}}`)
+						return
+					}
+					resourceJSON(w, `{"keyId":"k_test","key":"dscm_secret","token":"dscr_secret","expiresAt":"2026-10-24T00:00:00Z"}`)
+				})
+				path = filepath.Join(directory, "credential")
+				args := []string{"create", resource, "--save-key-to", path}
+				if resource == "api-key" {
+					args = append(args, "--machine", "apphost01")
+				}
+				code, output, diagnostic := resourceRun("", args...)
+				if strings.Contains(output+diagnostic, "dscm_secret") || strings.Contains(output+diagnostic, "dscr_secret") {
+					t.Fatal("saved credential leaked in output")
+				}
+				if !succeeds {
+					if code != 1 {
+						t.Fatalf("request failure: %d %s", code, diagnostic)
+					}
+					if _, err := os.Stat(path); !os.IsNotExist(err) {
+						t.Fatalf("failed request left reserved destination: %v", err)
+					}
+					return
+				}
+				data, err := readPrivate(path)
+				expected := "dscm_secret\n"
+				if resource == "registration-token" {
+					expected = "dscr_secret\n"
+				}
+				if code != 0 || err != nil || data != expected {
+					t.Fatalf("saved credential: %d %v %s", code, err, diagnostic)
+				}
+			})
+		}
+	}
+}
+
+func TestResourceAPIKeyNameOutputRequiresSavedSecret(t *testing.T) {
+	requests := 0
+	directory := resourceFixture(t, func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		resourceJSON(w, `{"keyId":"k_test","key":"dsca_secret"}`)
+	})
+	for _, owner := range []string{"--machine", "--admin"} {
+		code, output, diagnostic := resourceRun("", "create", "api-key", owner, resourceMachineID, "-o", "name")
+		if code != 2 || output != "" || requests != 0 || !strings.Contains(diagnostic, "--save-key-to") {
+			t.Fatalf("one-time secret discarded: %d requests=%d %q %s", code, requests, output, diagnostic)
+		}
+	}
+	path := filepath.Join(directory, "key")
+	code, output, diagnostic := resourceRun("", "create", "api-key", "--admin", resourceMachineID, "-o", "name", "--save-key-to", path)
+	key, err := readPrivate(path)
+	if code != 0 || requests != 1 || output != "api-key/k_test\n" || err != nil || key != "dsca_secret\n" {
+		t.Fatalf("saved name output: %d %q %v %s", code, output, err, diagnostic)
 	}
 }
 

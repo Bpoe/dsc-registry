@@ -149,7 +149,10 @@ func TestRegistryCLIEndToEndBothEngines(t *testing.T) {
 		if !strings.Contains(out, "stale") {
 			t.Fatalf("missing stale observation %q", out)
 		}
-		run("describe", "configuration", "docker", "--machine", "apphost01")
+		out = run("describe", "configuration", "docker", "--machine", "apphost01")
+		if !strings.Contains(out, "stale") || !strings.Contains(out, "Latest retained report is for a previous revision.") || strings.Contains(out, "unreported") {
+			t.Fatalf("configuration lost stale report state: %q", out)
+		}
 		run("delete", "configuration", "docker", "--machine", "apphost01", "--yes")
 		run("delete", "configuration", "docker", "--machine", "apphost01", "--yes", "--ignore-not-found")
 		run("delete", "machine", "apphost01", "--yes")

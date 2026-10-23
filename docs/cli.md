@@ -200,7 +200,9 @@ dscreg create registration-token --ttl 1h --save-key-to ./registration-token
 
 Tokens default to one hour; TTL must be a whole number of seconds from 1 through
 86400. Plaintext is returned only once. `--save-key-to` creates a new protected
-file instead of printing the secret in human-readable output. There are no
+file before requesting issuance instead of printing the secret in human-readable
+output. If writing the issued token fails, the error identifies its expiration;
+the token cannot be revoked and remains valid until then. There are no
 token-list/revoke commands or machine self-registration in this CLI.
 
 ## API-key rotation
@@ -219,6 +221,9 @@ dscreg delete api-key OLD_KEY_ID --admin ADMIN_UUID
 `--machine` and `--admin` are mutually exclusive. Newly issued keys are shown
 once or saved to a protected file. Listings contain metadata only. Revoking the
 last administrator key requires recovery through local `dscregd bootstrap`.
+`create api-key -o name` requires `--save-key-to` so the one-time secret is not
+discarded. The protected destination is reserved before issuance; if a later
+write, sync, or close fails, the error identifies the issued key to revoke.
 
 ## Output and scripting
 

@@ -368,33 +368,34 @@ func (a *app) addCreate(create *cobra.Command) {
 		if a.output == "name" {
 			return invalid("registration tokens have no resource identifier; use table, json, or yaml output")
 		}
-		c, err := a.client()
-		if err != nil {
-			return err
-		}
-		value, _, err := a.requestObject(c, http.MethodPost, "/v1/registration-tokens", map[string]any{"ttlSeconds": int64(ttl / time.Second)})
-		if err != nil {
-			return err
-		}
-		return a.secretResult(value, "registration-token", "token", saveToken)
+		return a.issueCredential("registration-token", "token", saveToken, func() (map[string]any, error) {
+			c, err := a.client()
+			if err != nil {
+				return nil, err
+			}
+			value, _, err := a.requestObject(c, http.MethodPost, "/v1/registration-tokens", map[string]any{"ttlSeconds": int64(ttl / time.Second)})
+			return value, err
+		})
 	})
 	token.Flags().DurationVar(&ttl, "ttl", time.Hour, "Registration token lifetime")
 	token.Flags().StringVar(&saveToken, "save-key-to", "", "Write the one-time token to a new protected file")
 	create.AddCommand(token)
 	var machine, admin, description, saveKey string
 	key := resourceCommand("api-key", []string{"api-keys"}, cobra.NoArgs, func(cmd *cobra.Command, args []string) error {
+		if a.output == "name" && saveKey == "" {
+			return invalid("API-key name output requires --save-key-to to preserve the one-time secret")
+		}
 		if description != "" && !config.ValidDisplayName(description, 1024) {
 			return invalid("invalid key description")
 		}
-		c, path, err := a.keyClient(machine, admin)
-		if err != nil {
-			return err
-		}
-		value, _, err := a.requestObject(c, http.MethodPost, path, map[string]any{"description": description})
-		if err != nil {
-			return err
-		}
-		return a.secretResult(value, "api-key", "key", saveKey)
+		return a.issueCredential("api-key", "key", saveKey, func() (map[string]any, error) {
+			c, path, err := a.keyClient(machine, admin)
+			if err != nil {
+				return nil, err
+			}
+			value, _, err := a.requestObject(c, http.MethodPost, path, map[string]any{"description": description})
+			return value, err
+		})
 	})
 	ownerFlags(key, &machine, &admin)
 	key.Flags().StringVar(&description, "description", "", "Credential description")
@@ -403,16 +404,6 @@ func (a *app) addCreate(create *cobra.Command) {
 }
 
 func (a *app) secretResult(value map[string]any, resource, field, destination string) error {
-	if destination != "" {
-		secret, ok := value[field].(string)
-		if !ok || secret == "" {
-			return fmt.Errorf("server did not return the issued credential")
-		}
-		if err := writePrivateNew(destination, []byte(secret+"\n")); err != nil {
-			return err
-		}
-		delete(value, field)
-	}
 	if a.output == "json" || a.output == "yaml" || a.output == "name" {
 		return a.format(value, resource)
 	}
