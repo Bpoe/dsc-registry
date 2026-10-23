@@ -1,6 +1,21 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+verify_cli_on_path() {
+    local installed=${1:?Supply the installed CLI path}
+    local resolved
+    resolved=$(command -v dscreg) || {
+        echo "Installed dscreg is not available on PATH." >&2; return 1;
+    }
+    [[ $resolved -ef $installed && -x $installed ]] || {
+        echo "PATH does not resolve dscreg to the installed executable." >&2; return 1;
+    }
+}
+
+if [[ ${BASH_SOURCE[0]} != "$0" ]]; then
+    return
+fi
+
 [[ ${GITHUB_ACTIONS:-} == true && $EUID == 0 ]] || {
     echo "Requires root on a disposable CI runner." >&2; exit 1;
 }
@@ -30,7 +45,7 @@ else
     installed=true
     service=none
 fi
-[[ $(command -v dscreg) == /usr/bin/dscreg && -x /usr/bin/dscreg ]]
+verify_cli_on_path /usr/bin/dscreg
 [[ ! -e /usr/lib/systemd/system/dscreg.service ]]
 python3 packaging/verify-installed.py --binary /usr/bin/dscregd --archive "$archive" \
     --root /var/lib/dscregd --config /etc/dscregd/config.json \
