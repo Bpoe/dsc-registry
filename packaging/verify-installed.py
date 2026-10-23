@@ -14,6 +14,34 @@ import uuid
 import zipfile
 
 
+def verify_binaries(binary, archive_path, version, commit):
+    for name in ("dscregd", "dscreg"):
+        installed = binary.with_name(name + binary.suffix)
+        expected = f"{name} {version} ({commit})"
+        version_argument = "version" if name == "dscreg" else "--version"
+        actual = subprocess.check_output([str(installed), version_argument], text=True, timeout=15).strip()
+        if actual != expected:
+            raise RuntimeError(f"Installed {name} version/commit mismatch.")
+        member = f"/bin/{installed.name}"
+        if archive_path.suffix == ".zip":
+            with zipfile.ZipFile(archive_path) as archive:
+                entries = [entry for entry in archive.infolist() if entry.filename.endswith(member)]
+                if len(entries) != 1 or entries[0].is_dir():
+                    raise RuntimeError(f"Archive must contain exactly one {name} file.")
+                archived = archive.read(entries[0])
+        else:
+            with tarfile.open(archive_path) as archive:
+                entries = [entry for entry in archive.getmembers() if entry.name.endswith(member)]
+                if len(entries) != 1 or not entries[0].isfile():
+                    raise RuntimeError(f"Archive must contain exactly one {name} file.")
+                archived = archive.extractfile(entries[0]).read()
+        if not archived or hashlib.sha256(archived).digest() != hashlib.sha256(installed.read_bytes()).digest():
+            raise RuntimeError(f"Installed and archived {name} binaries differ.")
+    # CLI help/version must work before any local server configuration or bootstrap.
+    subprocess.run([str(binary.with_name("dscreg" + binary.suffix)), "--help"],
+                   stdout=subprocess.DEVNULL, check=True, timeout=15)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--binary", required=True, type=Path)
@@ -29,24 +57,7 @@ def main():
     config = args.config
     if config.exists() or (args.root / "registry.db").exists():
         parser.error("Refusing to replace existing operator data.")
-    expected = f"dscregd {args.version} ({args.commit})"
-    actual = subprocess.check_output([str(args.binary), "--version"], text=True).strip()
-    if actual != expected:
-        raise RuntimeError("Installed binary version/commit mismatch.")
-    if args.archive.suffix == ".zip":
-        with zipfile.ZipFile(args.archive) as archive:
-            entries = [name for name in archive.namelist() if name.endswith("/bin/dscregd.exe")]
-            if len(entries) != 1:
-                raise RuntimeError("Archive must contain exactly one daemon.")
-            archived = archive.read(entries[0])
-    else:
-        with tarfile.open(args.archive) as archive:
-            entries = [entry for entry in archive.getmembers() if entry.name.endswith("/bin/dscregd")]
-            if len(entries) != 1 or not entries[0].isfile():
-                raise RuntimeError("Archive must contain exactly one daemon.")
-            archived = archive.extractfile(entries[0]).read()
-    if hashlib.sha256(archived).digest() != hashlib.sha256(args.binary.read_bytes()).digest():
-        raise RuntimeError("Installed and archived binaries differ.")
+    verify_binaries(args.binary, args.archive, args.version, args.commit)
     # Packages never install an active configuration.
     config.write_text(json.dumps({
         "listenAddress": "127.0.0.1:18080",
@@ -167,7 +178,7 @@ def main():
         elif process is not None and process.poll() is None:
             process.terminate()
             process.wait(timeout=25)
-    print("Installed/archive parity, bootstrap, authorization, ETag, report retry and restart checks passed.")
+    print("Daemon/CLI version and archive parity, standalone CLI help, bootstrap, authorization, ETag, report retry and restart checks passed.")
 
 
 if __name__ == "__main__":

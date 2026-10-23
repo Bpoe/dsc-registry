@@ -3,12 +3,17 @@ arch: ${GOARCH}
 platform: linux
 version: ${VERSION}
 maintainer: Bpoe <Bpoe@users.noreply.github.com>
-description: DSC Registry configuration-delivery API server
+description: DSC Registry configuration-delivery API server and standalone administrator CLI
 homepage: https://github.com/Bpoe/dsc-registry
 license: MIT
 contents:
   - src: ${STAGE_DIR}/dscregd
     dst: /usr/bin/dscregd
+    expand: true
+    file_info:
+      mode: 0755
+  - src: ${STAGE_DIR}/dscreg
+    dst: /usr/bin/dscreg
     expand: true
     file_info:
       mode: 0755

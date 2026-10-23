@@ -4,6 +4,28 @@ import argparse
 import hashlib
 from pathlib import Path
 import re
+import tarfile
+import zipfile
+
+
+def verify_archive(path, version, platform):
+    root = f"dscregd-{version}-{platform}/bin/"
+    suffix = ".exe" if platform.startswith("windows-") else ""
+    required = {root + name + suffix for name in ("dscregd", "dscreg")}
+    if suffix:
+        with zipfile.ZipFile(path) as archive:
+            entries = [entry for entry in archive.infolist() if entry.filename in required]
+            if {entry.filename for entry in entries} != required or len(entries) != 2:
+                raise ValueError(f"Archive must contain exactly one daemon and CLI: {path.name}")
+            if any(entry.is_dir() or entry.file_size == 0 for entry in entries):
+                raise ValueError(f"Archive binaries must be nonempty files: {path.name}")
+    else:
+        with tarfile.open(path) as archive:
+            entries = [entry for entry in archive.getmembers() if entry.name in required]
+            if {entry.name for entry in entries} != required or len(entries) != 2:
+                raise ValueError(f"Archive must contain exactly one daemon and CLI: {path.name}")
+            if any(not entry.isfile() or entry.size == 0 or not entry.mode & 0o111 for entry in entries):
+                raise ValueError(f"Archive binaries must be nonempty executable files: {path.name}")
 
 
 def asset_names(version):
@@ -52,6 +74,8 @@ def verify(directory, version):
                 digest = hashlib.file_digest(source, "sha256").hexdigest()
             if digest != manifest[name]:
                 raise ValueError(f"Checksum mismatch: {name}")
+            if name.endswith((".tar.gz", ".zip")):
+                verify_archive(path, version, platform)
             combined.append(f"{digest}  {name}\n")
     return "".join(sorted(combined, key=lambda line: line[66:]))
 

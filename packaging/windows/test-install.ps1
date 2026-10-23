@@ -24,6 +24,19 @@ function Invoke-Msi([string] $Action) {
 }
 Invoke-Msi '/i'
 try {
+    if (Get-Service dscreg -ErrorAction SilentlyContinue) { throw 'CLI must not be installed as a service.' }
+    $machinePath = [Environment]::GetEnvironmentVariable('PATH', 'Machine')
+    if ($installed.TrimEnd('\') -notin @($machinePath.Split(';') | ForEach-Object { $_.TrimEnd('\') })) {
+        throw 'MSI did not add the CLI directory to the machine PATH.'
+    }
+    $savedPath = $env:PATH
+    try {
+        $env:PATH = $machinePath
+        if ((Get-Command dscreg.exe -CommandType Application).Source -ine "$installed\dscreg.exe") {
+            throw 'CLI is not accessible through PATH.'
+        }
+    }
+    finally { $env:PATH = $savedPath }
     $service = Get-CimInstance Win32_Service -Filter "Name='dscregd'"
     if ($service.StartName -ne 'NT AUTHORITY\LocalService' -or
         $service.StartMode -ne 'Manual' -or $service.State -ne 'Stopped') {
@@ -47,8 +60,13 @@ try {
 finally {
     Invoke-Msi '/x'
 }
-if ((Get-Service dscregd -ErrorAction SilentlyContinue) -or (Test-Path "$installed\dscregd.exe")) {
+if ((Get-Service dscregd -ErrorAction SilentlyContinue) -or (Test-Path "$installed\dscregd.exe") -or
+    (Test-Path "$installed\dscreg.exe")) {
     throw 'Uninstall left the service or executable behind.'
+}
+$machinePath = [Environment]::GetEnvironmentVariable('PATH', 'Machine')
+if ($installed.TrimEnd('\') -in @($machinePath.Split(';') | ForEach-Object { $_.TrimEnd('\') })) {
+    throw 'Uninstall left the CLI machine PATH entry behind.'
 }
 if (-not (Test-Path "$root\registry.db") -or -not (Test-Path "$root\config.json") -or
     -not (Test-Path "$root\reports")) { throw 'Uninstall removed operator data.' }

@@ -20,6 +20,12 @@
                           Arguments='-config "[DATAFOLDER]config.json"' />
           <ServiceControl Id="RegistryControl" Name="dscregd" Stop="both" Remove="uninstall" Wait="yes" />
         </Component>
+        <Component Id="CLI" Guid="{A92DE784-0BE4-43BA-9358-77AB251A2A1E}" Bitness="always64">
+          <File Id="CliFile" Source="$(var.CliBinaryPath)" Name="dscreg.exe" KeyPath="yes"
+                DefaultVersion="$(var.ProductVersion).0" DefaultLanguage="0" />
+          <Environment Id="CliPath" Name="PATH" Value="[INSTALLFOLDER]" Action="set"
+                       Part="last" System="yes" />
+        </Component>
         <Component Id="Documentation" Guid="{66AA4799-B00E-4579-A426-9B9423346BDB}" Bitness="always64">
           <File Source="$(sys.SOURCEFILEDIR)..\..\..\LICENSE" KeyPath="yes" />
           <File Source="$(sys.SOURCEFILEDIR)..\..\..\README.md" />
@@ -31,6 +37,7 @@
             <File Source="$(sys.SOURCEFILEDIR)..\..\..\docs\api.md" />
             <File Source="$(sys.SOURCEFILEDIR)..\..\..\docs\design.md" />
             <File Source="$(sys.SOURCEFILEDIR)..\..\..\docs\implementation-plan.md" />
+            <File Source="$(sys.SOURCEFILEDIR)..\..\..\docs\cli.md" />
           </Component>
         </Directory>
         <Component Id="EventSource" Guid="{A70F8F98-4327-4C94-B311-9DB159323AE5}" Bitness="always64">
@@ -62,6 +69,7 @@
     </StandardDirectory>
     <Feature Id="Complete" Title="DSC Registry" Level="1">
       <ComponentRef Id="Daemon" />
+      <ComponentRef Id="CLI" />
       <ComponentRef Id="Documentation" />
       <ComponentRef Id="Operations" />
       <ComponentRef Id="EventSource" />

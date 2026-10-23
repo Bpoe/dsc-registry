@@ -6,7 +6,7 @@
     <OutputName>dscregd-$(ReleaseVersion)-windows-amd64</OutputName>
     <!-- CI's VERSION environment variable contains a v-prefixed tag, not a NuGet version. -->
     <Version>$(ProductVersion)</Version>
-    <DefineConstants>ReleaseVersion=$(ReleaseVersion);ProductVersion=$(ProductVersion);BinaryPath=$(BinaryPath)</DefineConstants>
+    <DefineConstants>ReleaseVersion=$(ReleaseVersion);ProductVersion=$(ProductVersion);BinaryPath=$(BinaryPath);CliBinaryPath=$(CliBinaryPath)</DefineConstants>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
     <!-- Go emits an unversioned PE; MSI supplies its release file version. -->
     <SuppressSpecificWarnings>1103</SuppressSpecificWarnings>

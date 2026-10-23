@@ -29,6 +29,15 @@ function Read-Row([string] $Query, [int] $Columns = 1) {
 try {
     $value = Read-Row "SELECT ``Value`` FROM ``Property`` WHERE ``Property`` = 'ProductVersion'"
     if ($value[0] -cne $productVersion) { throw 'MSI product version mismatch.' }
+    $cli = Read-Row "SELECT ``Component_``, ``FileName`` FROM ``File`` WHERE ``File`` = 'CliFile'" 2
+    if ($cli[0] -cne 'CLI' -or $cli[1].Split('|')[-1] -cne 'dscreg.exe') {
+        throw 'MSI must include the standalone CLI in its own component.'
+    }
+    $path = Read-Row "SELECT ``Name``, ``Value``, ``Component_`` FROM ``Environment`` WHERE ``Environment`` = 'CliPath'" 3
+    if (-not $path[0].EndsWith('PATH') -or -not $path[0].Contains('*') -or
+        $path[1] -cne '[~];[INSTALLFOLDER]' -or $path[2] -cne 'CLI') {
+        throw 'MSI must append the CLI install directory to the machine PATH.'
+    }
     $service = Read-Row 'SELECT `Name`, `ServiceType`, `StartType`, `StartName`, `Arguments` FROM `ServiceInstall`' 5
     if ($service[0] -cne 'dscregd' -or $service[1] -ne '16' -or $service[2] -ne '3' -or
         $service[3] -cne 'NT AUTHORITY\LocalService' -or $service[4] -cne '-config "[DATAFOLDER]config.json"') {
@@ -49,4 +58,4 @@ finally {
     [Runtime.InteropServices.Marshal]::FinalReleaseComObject($database) | Out-Null
     [Runtime.InteropServices.Marshal]::FinalReleaseComObject($installer) | Out-Null
 }
-Write-Output 'MSI version, service registration and protected data ACL metadata passed.'
+Write-Output 'MSI version, CLI/PATH, daemon-only service registration and protected data ACL metadata passed.'

@@ -9,7 +9,7 @@ set -euo pipefail
 : "${GOARCH:?}"
 package=$(realpath "${1:?Supply a DEB or RPM}")
 archive=$(realpath "${2:?Supply the matching tar.gz}")
-[[ ! -e /usr/bin/dscregd && ! -e /etc/dscregd && ! -e /var/lib/dscregd ]] || {
+[[ ! -e /usr/bin/dscregd && ! -e /usr/bin/dscreg && ! -e /etc/dscregd && ! -e /var/lib/dscregd ]] || {
     echo "Refusing to modify an existing dscregd installation or operator data." >&2; exit 1;
 }
 installed=false
@@ -30,6 +30,8 @@ else
     installed=true
     service=none
 fi
+[[ $(command -v dscreg) == /usr/bin/dscreg && -x /usr/bin/dscreg ]]
+[[ ! -e /usr/lib/systemd/system/dscreg.service ]]
 python3 packaging/verify-installed.py --binary /usr/bin/dscregd --archive "$archive" \
     --root /var/lib/dscregd --config /etc/dscregd/config.json \
     --version "$VERSION" --commit "$COMMIT" --service "$service"
@@ -39,7 +41,7 @@ else
     rpm -e dscregd
 fi
 installed=false
-[[ ! -e /usr/bin/dscregd && ! -e /usr/lib/systemd/system/dscregd.service ]]
+[[ ! -e /usr/bin/dscregd && ! -e /usr/bin/dscreg && ! -e /usr/lib/systemd/system/dscregd.service ]]
 [[ -f /var/lib/dscregd/registry.db && -f /etc/dscregd/config.json && -d /var/lib/dscregd/reports ]]
 [[ -n $(find /var/lib/dscregd/reports -type f -print -quit) ]]
 echo "Uninstall preserves operator data."

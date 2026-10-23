@@ -77,17 +77,25 @@ asset, compare its SHA-256 to that exact filename's entry (PowerShell:
 These builds are **not signed**; retrieve checksums from the trusted release
 page. Checksums are not independent authentication.
 
-Archives contain `bin/`, operator/API docs, the license, and example configuration.
+Archives contain both versioned `bin/dscregd` and `bin/dscreg` (`.exe` on Windows),
+operator/API/CLI docs, the license, and example configuration.
 Linux archives also include the manual systemd unit from `deploy/`. Extract a
 Linux archive, change to its top-level directory, and follow the manual install
 above using `bin/dscregd` rather than a locally built binary. The archive unit
 uses `/usr/local/bin/dscregd`.
+For CLI-only use, copy `bin/dscreg` into a directory on `PATH` (for example
+`sudo install -m 0755 bin/dscreg /usr/local/bin/dscreg` on Linux), or copy
+`bin\dscreg.exe` to a user-controlled directory on Windows and add that directory
+to your user `PATH`. Neither binary needs to be kept beside the other.
+`dscreg --version` shows the release and source commit; see
+[the CLI guide](cli.md) for remote connection and credential setup.
+The CLI needs no local DSC, `dscd`, sync daemon or running Registry server.
 
 ### Linux DEB/RPM
 
 Install with `sudo apt install ./dscregd_X.Y.Z_amd64.deb` or
 `sudo dnf install ./dscregd-X.Y.Z-1.x86_64.rpm` (use `arm64` / `aarch64` for
-ARM64). Packages install `/usr/bin/dscregd`, a systemd unit referencing that
+ARM64). Packages install `/usr/bin/dscregd` and `/usr/bin/dscreg` (on `PATH`), a systemd unit referencing the daemon
 path, docs under `/usr/share/doc/dscregd`, and the license. They create a
 non-login `dscregd` account and private `/etc/dscregd`, `/var/lib/dscregd` and
 `/var/lib/dscregd/reports` directories when absent; existing ownership and modes
@@ -114,7 +122,9 @@ and removal in Fedora without systemd, not RPM systemd lifecycle.
 
 Use an elevated terminal to install:
 `msiexec.exe /i dscregd-vX.Y.Z-windows-amd64.msi`.
-The MSI installs to `%ProgramFiles%\dscregd`, registers a **manual-start**
+The MSI installs both `dscregd.exe` and `dscreg.exe` to `%ProgramFiles%\dscregd`
+and adds that directory to the machine `PATH` (open a new terminal after install).
+Only the daemon registers a **manual-start**
 `dscregd` service running as `NT AUTHORITY\LocalService`, and creates protected
 `%ProgramData%\dscregd` and `reports` directories. Only SYSTEM, Administrators
 and LocalService receive access to this data tree. It does not install active
@@ -133,11 +143,12 @@ After confirming readiness, operators may choose automatic startup with
 SCM stop/shutdown requests use the same bounded HTTP drain as console shutdown.
 Service logs go to the Windows Application event log under source `dscregd`;
 console invocations still log to stderr. No secrets or request bodies are added
-to logs. The ZIP contains the same daemon and docs but **does not register a
+to logs. The CLI is never a service. The ZIP contains the same daemon, CLI and docs but **does not register a
 service**, event source or data ACLs; use the MSI for native service installation.
 No DSC runtime, evaluator or Windows sync client is bundled.
 
-MSI uninstall stops/removes the service and binaries while retaining the protected
+MSI uninstall stops/removes the service, both binaries and the installed `PATH`
+entry while retaining the protected
 data tree, including configuration, SQLite and reports. Back up these files
 before changing versions. MSI supports major upgrades/downgrade rejection,
 but automated upgrade/migration and custom service-account/startup-setting
@@ -154,8 +165,9 @@ leading zeroes and build metadata are not accepted.
 The tag run reruns all Go/SQLite/PostgreSQL and race/fuzz checks before native
 package builds. Container and shared-volume deployment checks then reuse the
 validated package artifacts from that same run, without another Go build.
-Package lifecycle tests check the **same packaged binaries** against their
-archive counterparts, one-time bootstrap, health,
+Package lifecycle tests check **both packaged binaries** against their
+archive counterparts and their injected version/commit, standalone CLI help
+before any server configuration, CLI `PATH` installation/removal, one-time bootstrap, health,
 authorization, configuration ETags, report upload/retry and retrieval after
 restart. All platforms check that uninstall retains a stored report alongside
 SQL and configuration. DEB tests use Ubuntu systemd (amd64/arm64), RPM tests
@@ -165,7 +177,8 @@ data ACLs and uninstall preservation. It does not certify upgrades, real NFS,
 capacity, RPM systemd behavior, or Authenticode/package signatures.
 
 Only successful package jobs upload artifacts. The release job downloads from
-that invoking run, verifies the exact eight-asset set and all checksums, rechecks
+that invoking run, verifies the exact eight-asset set, both executable archive
+entries and all checksums, rechecks
 the remote tag's commit, and creates a draft with generated notes and combined
 checksums only after both container startup/readiness smoke tests pass. Only that
 final draft job receives `contents: write`. Existing releases,
