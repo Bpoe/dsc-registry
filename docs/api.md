@@ -453,6 +453,22 @@ Never add machine status, full reports, secret credentials, or server-side host 
 
 The nested `result` is the **unmodified dscd schemaVersion=1 JSON envelope**. This example is a failure; `dscResult` can be a large opaque object on execution success.
 
+Supported report operations are `set`, `test`, and `export`. Export results use
+the same `POST /v1/agent/reports` wrapper, receipts, size limits, idempotency,
+latest-only retention and admin retrieval endpoints as other execution reports.
+Report metadata records `operation: "export"`; content endpoints return the
+original envelope, including the opaque `dscResult`, without extracting,
+flattening or interpreting exported resources. There is no required nested
+export response structure beyond the existing object-valued `dscResult` rule.
+Inventory indexing and fleet-wide search are outside Registry's current scope;
+an optional external service can retrieve reports through the existing admin API.
+
+Successful and failed exports participate in the existing execution-outcome
+and revision-matching status rules, with no separate inventory or compliance
+state. Registry does not interpret `metadata.dscd.operation` or
+`metadata.dscd.frequency` in templates or schedule collection; scheduling
+belongs to the local `dscd` reconciler.
+
 ```http
 POST /v1/agent/reports
 Authorization: ApiKey dscm_<id>.<secret>
@@ -681,7 +697,8 @@ describing the client's local input, without directory or filename restrictions.
 `startedAt`/`finishedAt` must be nonzero UTC RFC3339 timestamps ending in `Z`,
 with finish not before start; `durationMs` is a nonnegative int64.
 Duration need not exactly equal wall-clock subtraction (dscd uses a monotonic
-duration). `operation`, when present/non-null, is `set` or `test`. Optional/null
+duration). `operation`, when present/non-null, is `set`, `test`, or `export`;
+other values (including `get`) are rejected. Optional/null
 failure fields (`operation`, `parameters`, `inputHash`, `exitCode`, `dscResult`,
 `stderr`) are allowed. A present non-null `parameters` value must be a string,
 with no directory or filename restrictions; empty strings are allowed.
@@ -737,5 +754,6 @@ for that name. No periodic or startup sweep is added.
 - YAML-to-JSON conversion is outside the server (e.g., in a CLI). Reordered object keys and insignificant whitespace are no-op PUTs; real content changes bump revisions. Null/missing parameters produce no sidecar, while `{}` creates an empty JSON parameter object.
 - Report uploads accept client-defined configuration and parameter paths, including `managed/`, `dscregsync/`, other directories and YAML filenames; preserve those values byte-for-byte and never use them as machine/configuration identities or server storage paths.
 - Valid `dscd` failure and success envelopes; `test` drift is not an execution failure; raw result retrievable byte-for-byte as a JSON value.
+- Successful and failed `export` reports use the same upload, retry, metadata, content, latest-only retention and execution-status behavior as `set` and `test`; nested export results remain opaque.
 - Latest-only replacement/deletion and retained-upload idempotency, conflicting identities, stale/removed configuration reports, pagination, revision-matching machine status, file/SQL/commit failures, cleanup warnings, concurrent readers/writers, and retry after interruption.
 - PostgreSQL and SQLite migrations/data behavior parity; concurrent requests; readiness and graceful shutdown.

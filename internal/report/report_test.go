@@ -88,6 +88,33 @@ func TestUploadConfigurationName(t *testing.T) {
 	}
 }
 
+func TestReportOperations(t *testing.T) {
+	for _, operation := range []string{"set", "test", "export", "get", "unknown", "EXPORT", ""} {
+		for _, outcome := range []string{"succeeded", "failed"} {
+			t.Run(operation+"/"+outcome, func(t *testing.T) {
+				result := strings.Replace(success, `"operation":"test"`, `"operation":"`+operation+`"`, 1)
+				if outcome == "failed" {
+					result = strings.NewReplacer(
+						`"outcome":"succeeded"`, `"outcome":"failed"`,
+						`"error":null`, `"error":{"kind":"dsc","message":"execution failed"}`,
+					).Replace(result)
+				}
+				got, err := Parse(wrapped(result))
+				if operation != "set" && operation != "test" && operation != "export" {
+					if err == nil {
+						t.Fatal("unsupported operation accepted")
+					}
+					return
+				}
+				if err != nil || got.Operation == nil || *got.Operation != operation ||
+					got.Outcome != outcome || !bytes.Equal(got.Result, []byte(result)) {
+					t.Fatalf("operation rejected or envelope changed: %+v %v", got, err)
+				}
+			})
+		}
+	}
+}
+
 func TestReportPathFields(t *testing.T) {
 	for _, field := range []struct {
 		name, original string
