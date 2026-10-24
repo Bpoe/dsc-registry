@@ -17,11 +17,14 @@ cd "$(dirname "$0")/../.."
 output=$(realpath -m "${1:?Supply an output directory}")
 mkdir -p "$output"
 export STAGE_DIR
-STAGE_DIR=$(mktemp -d)
+STAGE_DIR="$PWD/.package-stage-$(python3 -c 'import uuid; print(uuid.uuid4().hex)')"
+mkdir "$STAGE_DIR"
 trap 'rm -rf "$STAGE_DIR"' EXIT
-CGO_ENABLED=0 GOOS=linux go build -trimpath -buildvcs=false \
-    -ldflags "-s -w -X main.version=$VERSION -X main.commit=$COMMIT" \
-    -o "$STAGE_DIR/dscregd" ./cmd/dscregd
+for executable in dscregd dscreg; do
+    CGO_ENABLED=0 GOOS=linux go build -trimpath -buildvcs=false \
+        -ldflags "-s -w -X main.version=$VERSION -X main.commit=$COMMIT" \
+        -o "$STAGE_DIR/$executable" "./cmd/$executable"
+done
 # Packaged units use /usr/bin; the manual archive retains /usr/local/bin.
 sed 's@/usr/local/bin/dscregd@/usr/bin/dscregd@' deploy/dscregd.service > "$STAGE_DIR/dscregd.service"
 rpm_arch=x86_64
@@ -33,7 +36,7 @@ nfpm package --config packaging/linux/nfpm.yaml --packager rpm \
 name="dscregd-$VERSION-linux-$GOARCH"
 package="$STAGE_DIR/$name"
 mkdir -p "$package/bin" "$package/deploy" "$package/packaging/linux"
-cp "$STAGE_DIR/dscregd" "$package/bin/"
+cp "$STAGE_DIR/dscregd" "$STAGE_DIR/dscreg" "$package/bin/"
 cp README.md LICENSE "$package/"
 cp -R docs "$package/"
 cp deploy/dscregd.service "$package/deploy/"

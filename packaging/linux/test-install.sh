@@ -1,6 +1,21 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+verify_cli_on_path() {
+    local installed=${1:?Supply the installed CLI path}
+    local resolved
+    resolved=$(command -v dscreg) || {
+        echo "Installed dscreg is not available on PATH." >&2; return 1;
+    }
+    [[ $resolved -ef $installed && -x $installed ]] || {
+        echo "PATH does not resolve dscreg to the installed executable." >&2; return 1;
+    }
+}
+
+if [[ ${BASH_SOURCE[0]} != "$0" ]]; then
+    return
+fi
+
 [[ ${GITHUB_ACTIONS:-} == true && $EUID == 0 ]] || {
     echo "Requires root on a disposable CI runner." >&2; exit 1;
 }
@@ -9,7 +24,7 @@ set -euo pipefail
 : "${GOARCH:?}"
 package=$(realpath "${1:?Supply a DEB or RPM}")
 archive=$(realpath "${2:?Supply the matching tar.gz}")
-[[ ! -e /usr/bin/dscregd && ! -e /etc/dscregd && ! -e /var/lib/dscregd ]] || {
+[[ ! -e /usr/bin/dscregd && ! -e /usr/bin/dscreg && ! -e /etc/dscregd && ! -e /var/lib/dscregd ]] || {
     echo "Refusing to modify an existing dscregd installation or operator data." >&2; exit 1;
 }
 installed=false
@@ -30,6 +45,8 @@ else
     installed=true
     service=none
 fi
+verify_cli_on_path /usr/bin/dscreg
+[[ ! -e /usr/lib/systemd/system/dscreg.service ]]
 python3 packaging/verify-installed.py --binary /usr/bin/dscregd --archive "$archive" \
     --root /var/lib/dscregd --config /etc/dscregd/config.json \
     --version "$VERSION" --commit "$COMMIT" --service "$service"
@@ -39,7 +56,7 @@ else
     rpm -e dscregd
 fi
 installed=false
-[[ ! -e /usr/bin/dscregd && ! -e /usr/lib/systemd/system/dscregd.service ]]
+[[ ! -e /usr/bin/dscregd && ! -e /usr/bin/dscreg && ! -e /usr/lib/systemd/system/dscregd.service ]]
 [[ -f /var/lib/dscregd/registry.db && -f /etc/dscregd/config.json && -d /var/lib/dscregd/reports ]]
 [[ -n $(find /var/lib/dscregd/reports -type f -print -quit) ]]
 echo "Uninstall preserves operator data."

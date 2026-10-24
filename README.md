@@ -37,6 +37,27 @@ for installation, mounts, TLS, key recovery and paired backup/restore.
 See [the staged plan](docs/implementation-plan.md)
 and the [API](docs/api.md) and [design](docs/design.md) contracts.
 
+## Administration CLI
+
+`dscreg` is the standalone Registry administration client, separate from the
+`dscregd` service, machine synchronization agent (`dscregsyncd`/`dscsyncd`), and
+local `dscd` reconciler. Release archives and native packages include it.
+It supports named contexts, protected administrator credentials, resource-oriented
+commands, YAML/JSON configuration apply and export, execution observations,
+reports, and credential rotation without local DSC or database access.
+
+```sh
+dscreg config set-context homelab --server https://registry.example.com
+dscreg config use-context homelab
+dscreg auth login --api-key-stdin
+dscreg get machines
+dscreg apply -f registry.yaml
+dscreg describe machine apphost01
+```
+
+See the [CLI guide](docs/cli.md) for installation, manifests, authentication,
+contexts, output formats, and shell completion.
+
 ## Releases
 
 Stable `vMAJOR.MINOR.PATCH` tags on commits already in `main` run the
