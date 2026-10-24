@@ -107,6 +107,14 @@ A configuration `PUT` is create-or-replace. Identical content should be a no-op.
 
 Agent uploads submit the original v1 `dscd` result envelope, wrapped with the configuration name, service content revision and stable idempotency identifier. The server extracts only the small stable envelope fields needed for the status summary; `dscResult` is preserved unchanged and is **not** interpreted for resource compliance. Valid historical uploads are accepted even after desired-state changes or configuration deletion. Revision UUIDs are agent-reported associations, not proof of execution of particular inputs; the server does not retain historical desired documents to verify them. The local sync agent must map its installed inputs to the matching service revision, including outstanding results from an older revision.
 
+Report operations are `set`, `test`, and `export`. Exports use the existing
+report upload/retrieval API, storage, latest-only retention, and execution-status
+rules without interpreting or transforming the exported DSC resources.
+Inventory indexing and fleet-wide search belong to optional external consumers
+of the admin report API, not Registry. Templates remain opaque, including
+`metadata.dscd.operation` and `metadata.dscd.frequency`; scheduling belongs to
+the local reconciler, not the server.
+
 The envelope's `configuration` is a required nonempty string; `parameters` may
 be omitted, null, or a string (including empty). Both are informational client
 paths, preserved unchanged. Registry enforces no local directory, basename or

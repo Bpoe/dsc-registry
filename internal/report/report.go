@@ -82,7 +82,7 @@ func Parse(body []byte) (Upload, error) {
 		!optionalString(fields["parameters"], &parameters) || !optionalString(fields["stderr"], &stderr) {
 		return Upload{}, ErrInvalid
 	}
-	if upload.Operation != nil && *upload.Operation != "set" && *upload.Operation != "test" {
+	if upload.Operation != nil && *upload.Operation != "set" && *upload.Operation != "test" && *upload.Operation != "export" {
 		return Upload{}, ErrInvalid
 	}
 	if upload.InputHash != nil && *upload.InputHash != "" {

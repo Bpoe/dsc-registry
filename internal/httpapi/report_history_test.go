@@ -41,6 +41,118 @@ func failedReport(outcome string) string {
 		"error":{"kind":"` + kind + `","message":"private-error"}}`
 }
 
+func TestReportOperationsHTTPBothEngines(t *testing.T) {
+	for _, operation := range []string{"set", "test", "export"} {
+		t.Run(operation, func(t *testing.T) {
+			testdb.Engines(t, func(t *testing.T, engine, dsn string) {
+				logs := &strings.Builder{}
+				_, db, admin, machine, key := configurationAPI(t, engine, dsn, logs)
+				root := t.TempDir()
+				files, err := reportstore.Open(context.Background(), root)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer files.Close()
+				handler := New(db, files, time.Second, 5*time.Second, 37*time.Second, 2048, 4096,
+					slog.New(slog.NewJSONHandler(logs, nil)))
+				base := "/v1/machines/" + machine.ID
+				configPath := base + "/configurations/docker"
+				config := decodeResponse[database.ConfigurationResult](t,
+					apiRequest(t, handler, admin.Key, "PUT", configPath, `{"template":{}}`, 201))
+				tag := assertAgentCache(t, agentRequest(handler, key.Key), 200)
+				var previous database.ReportMetadata
+				for _, outcome := range []string{"succeeded", "failed", "succeeded"} {
+					result := strings.Replace(rawSuccessReport, `"operation":"test"`, `"operation":"`+operation+`"`, 1)
+					if operation == "export" {
+						result = strings.Replace(result, `"metadata":{},"results":`, `"result":{"resources":[]},"unrecognizedExportData":`, 1)
+					}
+					if outcome == "failed" {
+						result = strings.NewReplacer(
+							`"outcome":"succeeded"`, `"outcome":"failed"`,
+							`"error":null`, `"error":{"kind":"dsc","message":"private-export-error"}`,
+						).Replace(result)
+					}
+					body := reportBody(config.Revision, uuid.NewString(), result)
+					response := apiRequest(t, handler, key.Key, "POST", "/v1/agent/reports", body, 201)
+					current := decodeResponse[database.ReportMetadata](t, response)
+					location := base + "/reports/" + current.ID
+					if current.Operation == nil || *current.Operation != operation || current.Outcome != outcome ||
+						current.MachineID != machine.ID || current.ConfigurationName != "docker" ||
+						current.ConfigurationRevision != config.Revision || response.Header().Get("Location") != location {
+						t.Fatal("incorrect operation receipt", current)
+					}
+					if (outcome == "failed" && (current.ErrorKind == nil || *current.ErrorKind != "dsc")) ||
+						(outcome == "succeeded" && current.ErrorKind != nil) {
+						t.Fatal("incorrect execution error summary", current)
+					}
+					retryResponse := apiRequest(t, handler, key.Key, "POST", "/v1/agent/reports", body, 200)
+					retry := decodeResponse[database.ReportMetadata](t, retryResponse)
+					if !reflect.DeepEqual(current, retry) || retryResponse.Header().Get("Location") != location {
+						t.Fatal("duplicate upload changed the receipt")
+					}
+					for _, invalid := range []string{"get", "unknown"} {
+						bad := strings.Replace(body, `"operation":"`+operation+`"`, `"operation":"`+invalid+`"`, 1)
+						apiRequest(t, handler, key.Key, "POST", "/v1/agent/reports", bad, 400)
+					}
+					conflict := strings.Replace(body, `"durationMs":5`, `"durationMs":6`, 1)
+					apiRequest(t, handler, key.Key, "POST", "/v1/agent/reports", conflict, 409)
+					metadata := decodeResponse[database.ReportMetadata](t,
+						apiRequest(t, handler, admin.Key, "GET", location, "", 200))
+					page := decodeResponse[reportPage](t,
+						apiRequest(t, handler, admin.Key, "GET", base+"/reports", "", 200))
+					if !reflect.DeepEqual(current, metadata) || len(page.Reports) != 1 ||
+						!reflect.DeepEqual(current, page.Reports[0]) || page.NextCursor != "" {
+						t.Fatal("metadata or latest-only listing changed", metadata, page)
+					}
+					for _, path := range []string{location + "/content", configPath + "/report"} {
+						if got := apiRequest(t, handler, admin.Key, "GET", path, "", 200); got.Body.String() != result {
+							t.Fatal("original operation result bytes changed")
+						}
+						apiRequest(t, handler, key.Key, "GET", path, "", 403)
+					}
+					summary := decodeResponse[database.ConfigurationStatus](t,
+						apiRequest(t, handler, admin.Key, "GET", configPath+"/status", "", 200))
+					status := decodeResponse[database.MachineStatus](t,
+						apiRequest(t, handler, admin.Key, "GET", base+"/status", "", 200))
+					if !summary.HasReport || summary.ReportID != current.ID || !reflect.DeepEqual(summary.Summary, current.Summary) ||
+						status.Outcome != outcome || status.HasStaleReports || len(status.Configurations) != 1 ||
+						status.Configurations[0].RevisionState != "current" || status.Configurations[0].Outcome != outcome ||
+						!reflect.DeepEqual(status.LatestReport, &current) || !reflect.DeepEqual(status.LatestReceivedReport, &current) {
+						t.Fatal("operation changed existing execution status semantics", summary, status)
+					}
+					if previous.ID != "" {
+						if current.ID == previous.ID {
+							t.Fatal("successive execution reused a report ID")
+						}
+						apiRequest(t, handler, admin.Key, "GET", base+"/reports/"+previous.ID, "", 404)
+						apiRequest(t, handler, admin.Key, "GET", base+"/reports/"+previous.ID+"/content", "", 404)
+					}
+					entries, err := os.ReadDir(root)
+					if err != nil || len(entries) != 1 {
+						t.Fatal("replacement or duplicate upload left extra files", entries, err)
+					}
+					var count int
+					if err := db.DB.QueryRowContext(context.Background(), "SELECT COUNT(*) FROM reports WHERE machine_id = $1", machine.ID).Scan(&count); err != nil || count != 1 {
+						t.Fatal("replacement or duplicate upload left extra SQL reports", count, err)
+					}
+					assertAgentCache(t, agentRequest(handler, key.Key, tag), 304)
+					previous = current
+				}
+				apiRequest(t, handler, admin.Key, "PUT", configPath, `{"template":{"changed":true}}`, 200)
+				stale := decodeResponse[database.MachineStatus](t,
+					apiRequest(t, handler, admin.Key, "GET", base+"/status", "", 200))
+				if stale.Outcome != "unknown" || !stale.HasStaleReports || stale.LatestReport != nil ||
+					len(stale.Configurations) != 1 || stale.Configurations[0].RevisionState != "stale" ||
+					!reflect.DeepEqual(stale.LatestReceivedReport, &previous) {
+					t.Fatal("operation bypassed desired-revision status matching", stale)
+				}
+				apiRequest(t, handler, admin.Key, "GET", configPath+"/status", "", 404)
+				apiRequest(t, handler, admin.Key, "GET", configPath+"/report", "", 404)
+			})
+		})
+	}
+}
+
 func TestLatestReportsAndMachineStatusBothEngines(t *testing.T) {
 	testdb.Engines(t, func(t *testing.T, engine, dsn string) {
 		handler, db, admin, machine, key := configurationAPI(t, engine, dsn, io.Discard)
