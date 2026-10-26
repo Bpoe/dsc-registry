@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/Bpoe/dsc-registry/internal/database"
+	"github.com/Bpoe/dsc-registry/internal/eventing"
 	"github.com/Bpoe/dsc-registry/internal/report"
 	"github.com/Bpoe/dsc-registry/internal/reportstore"
 	"github.com/Bpoe/dsc-registry/internal/testdb"
@@ -63,7 +64,8 @@ func testReportFileCleanup(t *testing.T, engine, dsn, operation, state string) {
 		t.Fatal(err)
 	}
 	defer files.Close()
-	handler := New(db, files, time.Second, 5*time.Second, time.Second, 2048, 4096,
+	recorder := &recordingEvents{}
+	handler := New(db, files, recorder, time.Second, 5*time.Second, time.Second, 2048, 4096,
 		slog.New(slog.NewJSONHandler(&logs, nil)))
 	base := "/v1/machines/" + machine.ID
 	configPath := base + "/configurations/docker"
@@ -98,6 +100,7 @@ func testReportFileCleanup(t *testing.T, engine, dsn, operation, state string) {
 		}
 	}
 	logs.Reset()
+	recorder.items = nil
 	switch operation {
 	case "replace":
 		apiRequest(t, handler, key.Key, "POST", "/v1/agent/reports",
@@ -108,6 +111,14 @@ func testReportFileCleanup(t *testing.T, engine, dsn, operation, state string) {
 		apiRequest(t, handler, admin.Key, "DELETE", base, "", 204)
 		apiRequest(t, handler, key.Key, "GET", "/v1/agent/configurations", "", 401)
 	}
+	wantTypes := []string{eventing.ReportUpdated}
+	switch operation {
+	case "configuration":
+		wantTypes = []string{eventing.ConfigurationDeleted, eventing.MachineUpdated}
+	case "machine":
+		wantTypes = []string{eventing.MachineDeleted}
+	}
+	recorder.assertTypes(t, wantTypes...)
 	current := storedReportPaths(t, db, machine.ID)
 	if operation == "replace" {
 		if len(current) != 1 || current[0] == paths[0] {
@@ -154,7 +165,8 @@ func TestReportCleanupRollbackBothEngines(t *testing.T) {
 					}
 
 					defer files.Close()
-					handler := New(db, files, time.Second, 5*time.Second, time.Second, 2048, 4096,
+					recorder := &recordingEvents{}
+					handler := New(db, files, recorder, time.Second, 5*time.Second, time.Second, 2048, 4096,
 						slog.New(slog.NewJSONHandler(&logs, nil)))
 					base := "/v1/machines/" + machine.ID
 					configPath := base + "/configurations/docker"
@@ -164,6 +176,7 @@ func TestReportCleanupRollbackBothEngines(t *testing.T) {
 						apiRequest(t, handler, key.Key, "POST", "/v1/agent/reports",
 							historyBody("docker", config.Revision, uuid.NewString(), rawSuccessReport), 201))
 					oldPath := storedReportPaths(t, db, machine.ID)[0]
+					recorder.items = nil
 					table, event := "reports", "INSERT"
 					if operation == "configuration" {
 						table, event = "configurations", "DELETE"
@@ -204,6 +217,7 @@ func TestReportCleanupRollbackBothEngines(t *testing.T) {
 					case "machine":
 						apiRequest(t, handler, admin.Key, "DELETE", base, "", 503)
 					}
+					recorder.assertTypes(t)
 					if paths := storedReportPaths(t, db, machine.ID); len(paths) != 1 || paths[0] != oldPath {
 						t.Fatal("failed operation changed committed reference", paths)
 					}

@@ -198,11 +198,17 @@ Expose liveness/readiness endpoints, structured request logs without sensitive b
 ### Optional event publishing
 
 The [eventing contract and operator guide](eventing.md) defines an optional,
-disabled-by-default AMQP 1.0 producer. Successful machine/configuration/report
-mutation transactions notify a no-op dispatcher or non-blocking bounded channel;
-one in-process worker owns transport-independent `Publisher.Publish/Close`,
+disabled-by-default AMQP 1.0 producer. HTTP handlers notify a no-op dispatcher or
+non-blocking bounded channel after machine/configuration/report persistence
+succeeds. One in-process worker owns transport-independent `Publisher.Publish/Close`,
 connection reuse, delivery outcomes and bounded reconnect backoff. No outbox,
 event SQL records, new daemon or HTTP API changes are introduced.
+
+The database has no eventing dependency: it returns committed mutation outcomes,
+and the handlers choose notifications without extra classification queries.
+`cmd/dscregd` injects the dispatcher into the HTTP API and owns worker startup and
+shutdown. Direct persistence calls are silent; there is no service layer,
+transaction hook or database callback for eventing.
 
 Events are CloudEvents 1.0 structured JSON with identifiers only, not documents
 or status/compliance. Configuration CRUD is assignment CRUD and also changes

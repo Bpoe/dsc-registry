@@ -215,14 +215,19 @@ persistent connection reuse, accepted-delivery checks and bounded exponential
 reconnect backoff. It does not add an Azure authentication dependency, broker
 provisioning, outbox, event persistence, status/compliance events or a daemon.
 
-Machine/configuration/report notifications originate only after successful
-shared mutation commits. No-op desired PUTs, idempotent report retries and
-internal report file cleanup are silent. Parent removal communicates child
-removal without redundant notifications; no standalone report-delete API is
-introduced. JSON settings, environment-referenced passwords, relative TLS paths,
+Machine/configuration/report notifications originate in HTTP handlers only after
+successful persistence operations. The database has no eventing dependency and
+returns created/updated/unchanged mutation outcomes without extra classification
+queries or public response fields. `cmd/dscregd` injects the dispatcher into the
+HTTP API, retaining worker startup/shutdown ownership. No-op desired PUTs,
+idempotent report retries and internal report file cleanup are silent.
+Parent removal communicates child removal without redundant notifications;
+no standalone report-delete API is introduced. JSON settings,
+environment-referenced passwords, relative TLS paths,
 redacted diagnostic signals and bounded graceful drain integrate with existing
 startup/shutdown. Unit tests cover queues, failure/cancellation, SASL/TLS and
-both-engine mutations; opt-in RabbitMQ 4.x integration also runs in normal/race CI.
+both-engine HTTP mutations and persistence outcomes; opt-in RabbitMQ 4.x
+integration also runs in normal/race CI.
 
 ## Separate project: dscsyncd
 

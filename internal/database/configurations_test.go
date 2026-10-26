@@ -36,9 +36,9 @@ func TestConfigurationsBothEngines(t *testing.T) {
 			t.Fatal(err)
 		}
 		content := parseDesired(t, `{"template":{"n":9007199254740993123456789,"huge":1e999999,"nul":"\u0000"}}`)
-		first, created, err := store.PutConfiguration(ctx, machine.ID, "one", content)
-		if err != nil || !created || first.MachineConfigurationRevision != 1 || !validRevision(first.Revision) {
-			t.Fatalf("create: %+v, %v, %v", first, created, err)
+		first, outcome, err := store.PutConfiguration(ctx, machine.ID, "one", content)
+		if err != nil || outcome != MutationCreated || first.MachineConfigurationRevision != 1 || !validRevision(first.Revision) {
+			t.Fatalf("create: %+v, %v, %v", first, outcome, err)
 		}
 		var firstUpdated string
 		if err := store.DB.QueryRow("SELECT updated_at FROM configurations WHERE machine_id = $1 AND name = 'one'", machine.ID).
@@ -46,8 +46,8 @@ func TestConfigurationsBothEngines(t *testing.T) {
 			t.Fatal(err)
 		}
 		noop := parseDesired(t, `{"parameters":null,"template":{"nul":"\u0000","huge":10e999998,"n":9007199254740993123456789.0}}`)
-		got, created, err := store.PutConfiguration(ctx, machine.ID, "one", noop)
-		if err != nil || created || got.Revision != first.Revision || got.MachineConfigurationRevision != 1 {
+		got, outcome, err := store.PutConfiguration(ctx, machine.ID, "one", noop)
+		if err != nil || outcome != MutationUnchanged || got.Revision != first.Revision || got.MachineConfigurationRevision != 1 {
 			t.Fatalf("no-op changed revisions: %+v, %v", got, err)
 		}
 		var noopUpdated string
@@ -60,8 +60,8 @@ func TestConfigurationsBothEngines(t *testing.T) {
 			t.Fatalf("lossless storage/get: %+v, %v", got, err)
 		}
 		withParameters := parseDesired(t, `{"template":{"n":9007199254740993123456789,"huge":1e999999,"nul":"\u0000"},"parameters":{}}`)
-		changed, created, err := store.PutConfiguration(ctx, machine.ID, "one", withParameters)
-		if err != nil || created || changed.Revision == first.Revision || changed.MachineConfigurationRevision != 2 || string(changed.Parameters) != "{}" {
+		changed, outcome, err := store.PutConfiguration(ctx, machine.ID, "one", withParameters)
+		if err != nil || outcome != MutationUpdated || changed.Revision == first.Revision || changed.MachineConfigurationRevision != 2 || string(changed.Parameters) != "{}" {
 			t.Fatalf("empty parameter object not material: %+v, %v", changed, err)
 		}
 		before, err := store.ConfigurationSnapshot(ctx, machine.ID)
@@ -108,8 +108,8 @@ func TestConfigurationsBothEngines(t *testing.T) {
 		if _, err := store.DeleteConfiguration(ctx, machine.ID, "one"); !errors.Is(err, ErrConfigurationNotFound) {
 			t.Fatalf("repeat deletion: %v", err)
 		}
-		recreated, created, err := store.PutConfiguration(ctx, machine.ID, "one", content)
-		if err != nil || !created || recreated.Revision == first.Revision || recreated.Revision == changed.Revision || recreated.MachineConfigurationRevision != 6 {
+		recreated, outcome, err := store.PutConfiguration(ctx, machine.ID, "one", content)
+		if err != nil || outcome != MutationCreated || recreated.Revision == first.Revision || recreated.Revision == changed.Revision || recreated.MachineConfigurationRevision != 6 {
 			t.Fatalf("recreate: %+v %v", recreated, err)
 		}
 		other, err := store.CreateMachine(ctx, "other-host")
@@ -246,10 +246,10 @@ func TestConfigurationMutationRollbackBothEngines(t *testing.T) {
 				CREATE TRIGGER fail_revision BEFORE UPDATE OF configuration_revision ON machines
 				FOR EACH ROW EXECUTE FUNCTION fail_revision()`)
 		}
-		if _, _, err := store.PutConfiguration(ctx, machine.ID, "one", parseDesired(t, `{"template":{"new":true}}`)); err == nil {
+		if _, outcome, err := store.PutConfiguration(ctx, machine.ID, "one", parseDesired(t, `{"template":{"new":true}}`)); err == nil || outcome != MutationUnchanged {
 			t.Fatal("failed replacement reported success")
 		}
-		if _, _, err := store.PutConfiguration(ctx, machine.ID, "new", content); err == nil {
+		if _, outcome, err := store.PutConfiguration(ctx, machine.ID, "new", content); err == nil || outcome != MutationUnchanged {
 			t.Fatal("failed creation reported success")
 		}
 		if _, err := store.DeleteConfiguration(ctx, machine.ID, "one"); err == nil {
@@ -261,7 +261,7 @@ func TestConfigurationMutationRollbackBothEngines(t *testing.T) {
 			t.Fatalf("failed mutations corrupted state: %+v %v", snapshot, err)
 		}
 		// A no-op must not even issue a collection-revision UPDATE.
-		if _, _, err := store.PutConfiguration(ctx, machine.ID, "one", content); err != nil {
+		if _, outcome, err := store.PutConfiguration(ctx, machine.ID, "one", content); err != nil || outcome != MutationUnchanged {
 			t.Fatal("no-op performed a revision write")
 		}
 	})

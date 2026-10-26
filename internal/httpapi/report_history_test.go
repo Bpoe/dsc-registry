@@ -53,7 +53,7 @@ func TestReportOperationsHTTPBothEngines(t *testing.T) {
 					t.Fatal(err)
 				}
 				defer files.Close()
-				handler := New(db, files, time.Second, 5*time.Second, 37*time.Second, 2048, 4096,
+				handler := New(db, files, nil, time.Second, 5*time.Second, 37*time.Second, 2048, 4096,
 					slog.New(slog.NewJSONHandler(logs, nil)))
 				base := "/v1/machines/" + machine.ID
 				configPath := base + "/configurations/docker"
@@ -457,7 +457,7 @@ func TestReportHistoryFailuresBothEngines(t *testing.T) {
 		}
 		defer files.Close()
 		body := historyBody("docker", uuid.NewString(), uuid.NewString(), rawSuccessReport)
-		handler := New(db, files, time.Second, 5*time.Second, 37*time.Second, 128, int64(len(body)), slog.New(slog.NewTextHandler(io.Discard, nil)))
+		handler := New(db, files, nil, time.Second, 5*time.Second, 37*time.Second, 128, int64(len(body)), slog.New(slog.NewTextHandler(io.Discard, nil)))
 		base := "/v1/machines/" + machine.ID
 		first := decodeResponse[database.ReportMetadata](t, apiRequest(t, handler, key.Key, "POST", "/v1/agent/reports", body, 201))
 		apiRequest(t, handler, key.Key, "POST", "/v1/agent/reports", body+" ", 413)
@@ -549,8 +549,8 @@ func TestConcurrentHistoryUploadsBothEngines(t *testing.T) {
 		}
 		defer second.DB.Close()
 		handlers := []http.Handler{
-			New(db, files, time.Second, 30*time.Second, time.Second, 128, 4096, slog.New(slog.NewTextHandler(io.Discard, nil))),
-			New(second, files, time.Second, 30*time.Second, time.Second, 128, 4096, slog.New(slog.NewTextHandler(io.Discard, nil))),
+			New(db, files, nil, time.Second, 30*time.Second, time.Second, 128, 4096, slog.New(slog.NewTextHandler(io.Discard, nil))),
+			New(second, files, nil, time.Second, 30*time.Second, time.Second, 128, 4096, slog.New(slog.NewTextHandler(io.Discard, nil))),
 		}
 		revision, uploadID := uuid.NewString(), uuid.NewString()
 		for _, duplicate := range []bool{true, false} {

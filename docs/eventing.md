@@ -6,11 +6,26 @@ There are no schema migrations, new HTTP endpoints or changes to existing
 HTTP responses, report retention, revisions or ETags.
 
 When configured, `dscregd` starts one publisher worker in the existing process.
-Successful SQL mutation boundaries make a non-blocking attempt to enqueue a
-notification into a bounded in-memory channel. The worker owns a persistent
-AMQP 1.0 connection/session/sender and waits for broker delivery outcomes.
+HTTP handlers make a non-blocking attempt to enqueue a notification into a
+bounded in-memory channel only after the corresponding persistence operation
+succeeds. The worker owns a persistent AMQP 1.0 connection/session/sender and
+waits for broker delivery outcomes.
 Handlers never communicate with the broker or wait for delivery. A full queue
 drops the **new** event without failing the mutation.
+
+`internal/database` owns persistence, transactions and mutation outcomes, with
+no eventing dependency. Configuration PUTs and report publications return
+internal created/updated/unchanged outcomes computed from their existing
+transaction state; handlers choose event types without extra classification
+queries or exposing outcomes in HTTP responses. `cmd/dscregd` injects the
+dispatcher into `internal/httpapi` and owns the worker lifecycle.
+
+All current production machine/configuration/report mutation entrypoints are
+HTTP handlers, including CLI operations, which use the HTTP client. Local
+administrator bootstrap and credential/token maintenance do not emit events.
+Direct database callers, including tests and future non-HTTP entrypoints, are
+silent; a future application entrypoint must explicitly notify after successful
+persistence rather than adding notification hooks to the database.
 
 ## Configuration
 
@@ -231,8 +246,10 @@ Stop/remove the disposable broker with `docker rm --force registry-rabbit`.
 ## Tests
 
 Ordinary unit tests use fake publishers, a local SASL peer, and local TLS
-certificates; they need no broker. SQLite/PostgreSQL mutation tests exercise
-the same post-commit event generation and statement/commit failures.
+certificates; they need no broker. SQLite/PostgreSQL HTTP tests exercise
+post-success event generation, rejected mutations, statement/commit failures,
+lost commit acknowledgements, silent retries and cleanup. Database tests cover
+persistence and mutation outcomes without depending on eventing.
 
 Opt-in RabbitMQ integration requires an AMQP 1.0 listener and the management
 HTTP API on a **disposable** RabbitMQ 4.x broker. Set:

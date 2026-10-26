@@ -17,12 +17,18 @@ import (
 	"github.com/Bpoe/dsc-registry/internal/apikey"
 	"github.com/Bpoe/dsc-registry/internal/database"
 	"github.com/Bpoe/dsc-registry/internal/desired"
+	"github.com/Bpoe/dsc-registry/internal/eventing"
 	"github.com/Bpoe/dsc-registry/internal/reportstore"
 	"github.com/Bpoe/dsc-registry/internal/testdb"
 	"github.com/google/uuid"
 )
 
 func configurationAPI(t testing.TB, engine, dsn string, logs io.Writer) (http.Handler, *database.Store, database.BootstrapResult, database.Machine, database.IssuedKey) {
+	t.Helper()
+	return configurationAPIWithEvents(t, engine, dsn, logs, nil)
+}
+
+func configurationAPIWithEvents(t testing.TB, engine, dsn string, logs io.Writer, events eventing.Dispatcher) (http.Handler, *database.Store, database.BootstrapResult, database.Machine, database.IssuedKey) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -48,7 +54,7 @@ func configurationAPI(t testing.TB, engine, dsn string, logs io.Writer) (http.Ha
 	if err != nil {
 		t.Fatal(err)
 	}
-	handler := New(store, reports, time.Second, 5*time.Second, 37*time.Second, 2048, 16<<20, slog.New(slog.NewJSONHandler(logs, nil)))
+	handler := New(store, reports, events, time.Second, 5*time.Second, 37*time.Second, 2048, 16<<20, slog.New(slog.NewJSONHandler(logs, nil)))
 	return handler, store, admin, machine, key
 }
 
@@ -301,7 +307,7 @@ func TestConcurrentHTTPConfigurationPollingBothEngines(t *testing.T) {
 		}
 		defer otherStore.DB.Close()
 		// Poll another API replica/connection pool while this one mutates.
-		pollHandler := New(otherStore, nil, time.Second, 5*time.Second, 37*time.Second, 2048, 16<<20,
+		pollHandler := New(otherStore, nil, nil, time.Second, 5*time.Second, 37*time.Second, 2048, 16<<20,
 			slog.New(slog.NewJSONHandler(io.Discard, nil)))
 		path := "/v1/machines/" + machine.ID + "/configurations/current"
 		start := make(chan struct{})

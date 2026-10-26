@@ -70,7 +70,7 @@ func TestAdministrationHTTPBothEngines(t *testing.T) {
 		}
 		t.Cleanup(func() { reports.Close() })
 		logs := &bytes.Buffer{}
-		handler := New(store, reports, time.Second, time.Second, 5*time.Minute, 2048, 16<<20, slog.New(slog.NewJSONHandler(logs, nil)))
+		handler := New(store, reports, nil, time.Second, time.Second, 5*time.Minute, 2048, 16<<20, slog.New(slog.NewJSONHandler(logs, nil)))
 		admin, err := store.Bootstrap(ctx, "operator")
 		if err != nil {
 			t.Fatal(err)

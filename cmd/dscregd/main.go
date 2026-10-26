@@ -107,7 +107,6 @@ func runWithReady(ctx context.Context, settings config.Settings, logger *slog.Lo
 		return fmt.Errorf("listen HTTP: %w", err)
 	}
 	server := &http.Server{
-		Handler:           httpapi.New(db, reports, settings.ProbeTimeout, settings.ReadTimeout, settings.PollMaxAge, settings.MaxRequestBytes, settings.MaxReportBytes, logger),
 		ReadHeaderTimeout: settings.ReadHeaderTimeout,
 		ReadTimeout:       settings.ReadTimeout,
 		WriteTimeout:      settings.WriteTimeout,
@@ -116,13 +115,14 @@ func runWithReady(ctx context.Context, settings config.Settings, logger *slog.Lo
 		ErrorLog:          log.New(&serverErrorLog{logger: logger}, "", 0),
 		TLSConfig:         tlsConfig,
 	}
+	var dispatcher eventing.Dispatcher = eventing.Noop{}
 	if publisher != nil {
 		worker, startErr := eventing.Start(publisher, settings.Eventing.QueueCapacity, settings.Eventing.PublishTimeout, logger)
 		if startErr != nil {
 			_ = listener.Close()
 			return startErr
 		}
-		db.Events = worker
+		dispatcher = worker
 		server.RegisterOnShutdown(worker.Stop)
 		defer func() {
 			shutdown, cancel := context.WithTimeout(context.Background(), settings.Eventing.ShutdownTimeout)
@@ -130,6 +130,7 @@ func runWithReady(ctx context.Context, settings config.Settings, logger *slog.Lo
 			err = errors.Join(err, worker.Shutdown(shutdown))
 		}()
 	}
+	server.Handler = httpapi.New(db, reports, dispatcher, settings.ProbeTimeout, settings.ReadTimeout, settings.PollMaxAge, settings.MaxRequestBytes, settings.MaxReportBytes, logger)
 	if settings.TLS == nil {
 		logger.Warn("HTTP transport is unencrypted; API keys and registration tokens may be exposed in transit")
 	}

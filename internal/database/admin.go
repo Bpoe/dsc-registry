@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/Bpoe/dsc-registry/internal/apikey"
-	"github.com/Bpoe/dsc-registry/internal/eventing"
 	"github.com/google/uuid"
 )
 
@@ -122,7 +121,6 @@ func (s *Store) CreateMachine(ctx context.Context, name string) (Machine, error)
 	if err := tx.Commit(); err != nil {
 		return Machine{}, err
 	}
-	s.notify(eventing.MachineCreated, eventing.Identifiers{MachineID: machine.ID})
 	return machine, nil
 }
 
@@ -192,7 +190,6 @@ func (s *Store) DeleteMachine(ctx context.Context, id string) ([]string, error) 
 	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
-	s.notify(eventing.MachineDeleted, eventing.Identifiers{MachineID: id})
 	return paths, nil
 }
 

@@ -16,12 +16,14 @@ import (
 	"github.com/Bpoe/dsc-registry/internal/apikey"
 	"github.com/Bpoe/dsc-registry/internal/config"
 	"github.com/Bpoe/dsc-registry/internal/database"
+	"github.com/Bpoe/dsc-registry/internal/eventing"
 	"github.com/Bpoe/dsc-registry/internal/reportstore"
 	"github.com/google/uuid"
 )
 
 type adminAPI struct {
 	store           *database.Store
+	events          eventing.Dispatcher
 	maxRequestBytes int64
 	maxReportBytes  int64
 	reports         *reportstore.Store
@@ -40,6 +42,7 @@ func (a *adminAPI) createMachine(w http.ResponseWriter, r *http.Request) {
 		a.machineCreationError(w, err)
 		return
 	}
+	a.events.Notify(eventing.MachineCreated, eventing.Identifiers{MachineID: machine.ID})
 	w.Header().Set("Location", "/v1/machines/"+machine.ID)
 	writeJSON(w, http.StatusCreated, machine)
 }
@@ -102,6 +105,7 @@ func (a *adminAPI) deleteMachine(w http.ResponseWriter, r *http.Request) {
 		a.resourceError(w, err, apikey.Machine)
 		return
 	}
+	a.events.Notify(eventing.MachineDeleted, eventing.Identifiers{MachineID: r.PathValue("id")})
 	a.removeReportFiles(paths)
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusNoContent)

@@ -9,7 +9,6 @@ import (
 	"os"
 
 	"github.com/Bpoe/dsc-registry/internal/apikey"
-	"github.com/Bpoe/dsc-registry/internal/eventing"
 	"github.com/Bpoe/dsc-registry/internal/report"
 	"github.com/google/uuid"
 )
@@ -29,7 +28,7 @@ type ReportMetadata struct {
 
 type Publication struct {
 	Report       ReportMetadata
-	Created      bool
+	Outcome      MutationOutcome
 	CleanupPaths []string
 }
 
@@ -182,12 +181,11 @@ func (s *Store) publishReport(ctx context.Context, id, name string, upload repor
 	if err := tx.Commit(); err != nil {
 		return Publication{}, true, err
 	}
-	kind := eventing.ReportCreated
+	outcome := MutationCreated
 	if len(previous) != 0 {
-		kind = eventing.ReportUpdated
+		outcome = MutationUpdated
 	}
-	s.notify(kind, eventing.Identifiers{MachineID: id, ConfigurationName: name, ReportID: metadata.ID})
-	return Publication{Report: metadata, Created: true, CleanupPaths: previous}, true, nil
+	return Publication{Report: metadata, Outcome: outcome, CleanupPaths: previous}, true, nil
 }
 
 func reportPaths(ctx context.Context, tx *sql.Tx, id, name string) ([]string, error) {

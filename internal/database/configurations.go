@@ -9,7 +9,6 @@ import (
 
 	"github.com/Bpoe/dsc-registry/internal/apikey"
 	"github.com/Bpoe/dsc-registry/internal/desired"
-	"github.com/Bpoe/dsc-registry/internal/eventing"
 	"github.com/google/uuid"
 )
 
@@ -35,19 +34,19 @@ type ConfigurationSnapshot struct {
 	Configurations        []Configuration `json:"configurations"`
 }
 
-func (s *Store) PutConfiguration(ctx context.Context, id, name string, content desired.Content) (ConfigurationResult, bool, error) {
+func (s *Store) PutConfiguration(ctx context.Context, id, name string, content desired.Content) (ConfigurationResult, MutationOutcome, error) {
 	tx, err := s.begin(ctx, "put_configuration")
 	if err != nil {
-		return ConfigurationResult{}, false, err
+		return ConfigurationResult{}, MutationUnchanged, err
 	}
 	defer tx.Rollback()
 	if err := s.lockOwner(ctx, tx.Tx, apikey.Machine, id); err != nil {
-		return ConfigurationResult{}, false, err
+		return ConfigurationResult{}, MutationUnchanged, err
 	}
 	current, err := getConfiguration(ctx, tx.Tx, id, name)
 	created := errors.Is(err, ErrConfigurationNotFound)
 	if err != nil && !created {
-		return ConfigurationResult{}, false, err
+		return ConfigurationResult{}, MutationUnchanged, err
 	}
 	changed := created || !bytes.Equal(current.Template, content.Template) || !bytes.Equal(current.Parameters, content.Parameters)
 	if changed {
@@ -70,29 +69,27 @@ func (s *Store) PutConfiguration(ctx context.Context, id, name string, content d
 			content_sha256 = excluded.content_sha256, updated_at = excluded.updated_at`,
 			id, name, current.Revision, string(content.Template), parameters, hash.Sum(nil), timestamp())
 		if err != nil {
-			return ConfigurationResult{}, false, err
+			return ConfigurationResult{}, MutationUnchanged, err
 		}
 		if _, err := tx.ExecContext(ctx, `UPDATE machines SET configuration_revision = configuration_revision + 1 WHERE id = $1`, id); err != nil {
-			return ConfigurationResult{}, false, err
+			return ConfigurationResult{}, MutationUnchanged, err
 		}
 	}
 	result := ConfigurationResult{Configuration: current}
 	if err := tx.QueryRowContext(ctx, "SELECT configuration_revision FROM machines WHERE id = $1", id).
 		Scan(&result.MachineConfigurationRevision); err != nil {
-		return ConfigurationResult{}, false, err
+		return ConfigurationResult{}, MutationUnchanged, err
 	}
 	if err := tx.Commit(); err != nil {
-		return ConfigurationResult{}, false, err
+		return ConfigurationResult{}, MutationUnchanged, err
 	}
-	if changed {
-		kind := eventing.ConfigurationUpdated
-		if created {
-			kind = eventing.ConfigurationCreated
-		}
-		s.notify(kind, eventing.Identifiers{MachineID: id, ConfigurationName: name})
-		s.notify(eventing.MachineUpdated, eventing.Identifiers{MachineID: id})
+	outcome := MutationUnchanged
+	if created {
+		outcome = MutationCreated
+	} else if changed {
+		outcome = MutationUpdated
 	}
-	return result, created, nil
+	return result, outcome, nil
 }
 
 func getConfiguration(ctx context.Context, tx *sql.Tx, id, name string) (Configuration, error) {
@@ -202,8 +199,6 @@ func (s *Store) DeleteConfiguration(ctx context.Context, id, name string) ([]str
 	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
-	s.notify(eventing.ConfigurationDeleted, eventing.Identifiers{MachineID: id, ConfigurationName: name})
-	s.notify(eventing.MachineUpdated, eventing.Identifiers{MachineID: id})
 	return paths, nil
 }
 
