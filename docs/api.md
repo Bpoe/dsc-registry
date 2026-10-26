@@ -740,6 +740,22 @@ Latest-only storage needs no schema change. Older history already in SQL is
 hidden from reads and removed, with its files, on the next replacement/deletion
 for that name. No periodic or startup sweep is added.
 
+### Optional change notifications
+
+Operators may enable [best-effort AMQP 1.0 CloudEvents](eventing.md). Existing
+HTTP contracts, authentication, ETags, idempotency and report retention are
+unchanged. Events contain identifiers only and require consumers to use existing
+administrator APIs to retrieve content. Material configuration mutations emit
+the configuration change plus `machine.updated`; retained report replacement
+emits `report.updated`. Unchanged PUTs, retained upload retries, reads, status,
+credentials and failed commits emit nothing. Parent deletions convey removal of
+their indexed children, without redundant child deletion events.
+
+Delivery may be missing, duplicated or out of order, and retrieval after an
+event may return a newer resource or `404`. Periodically reconcile through the
+API when correctness depends on complete state. An unavailable broker or full
+queue never changes mutation responses or readiness.
+
 ## 4. Health
 
 `GET /health/live` confirms the HTTP process is alive. `GET /health/ready` confirms database connectivity and availability of configured active report storage. Health responses must not reveal secrets or internal connection strings. Rate-limit as appropriate; probes are unauthenticated only to the extent necessary for infrastructure health checks.

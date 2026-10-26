@@ -18,6 +18,7 @@ import (
 
 	"github.com/Bpoe/dsc-registry/internal/config"
 	"github.com/Bpoe/dsc-registry/internal/database"
+	"github.com/Bpoe/dsc-registry/internal/eventing"
 	"github.com/Bpoe/dsc-registry/internal/httpapi"
 	"github.com/Bpoe/dsc-registry/internal/reportstore"
 )
@@ -93,6 +94,13 @@ func runWithReady(ctx context.Context, settings config.Settings, logger *slog.Lo
 	}
 	defer func() { err = errors.Join(err, db.DB.Close()) }()
 	db.Logger = logger
+	var publisher *eventing.AMQP
+	if settings.Eventing != nil {
+		publisher, err = eventing.NewAMQP(*settings.Eventing, logger)
+		if err != nil {
+			return err
+		}
+	}
 	listener, err := (&net.ListenConfig{}).Listen(ctx, "tcp", settings.ListenAddress)
 	if err != nil {
 		logger.Error("HTTP listener startup failed")
@@ -107,6 +115,20 @@ func runWithReady(ctx context.Context, settings config.Settings, logger *slog.Lo
 		MaxHeaderBytes:    64 << 10,
 		ErrorLog:          log.New(&serverErrorLog{logger: logger}, "", 0),
 		TLSConfig:         tlsConfig,
+	}
+	if publisher != nil {
+		worker, startErr := eventing.Start(publisher, settings.Eventing.QueueCapacity, settings.Eventing.PublishTimeout, logger)
+		if startErr != nil {
+			_ = listener.Close()
+			return startErr
+		}
+		db.Events = worker
+		server.RegisterOnShutdown(worker.Stop)
+		defer func() {
+			shutdown, cancel := context.WithTimeout(context.Background(), settings.Eventing.ShutdownTimeout)
+			defer cancel()
+			err = errors.Join(err, worker.Shutdown(shutdown))
+		}()
 	}
 	if settings.TLS == nil {
 		logger.Warn("HTTP transport is unencrypted; API keys and registration tokens may be exposed in transit")

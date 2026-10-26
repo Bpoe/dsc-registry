@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/Bpoe/dsc-registry/internal/apikey"
+	"github.com/Bpoe/dsc-registry/internal/eventing"
 )
 
 const (
@@ -99,5 +100,6 @@ func (s *Store) CreateMachineWithKey(ctx context.Context, name string) (Register
 	if err := tx.Commit(); err != nil {
 		return RegisteredMachine{}, err
 	}
+	s.notify(eventing.MachineCreated, eventing.Identifiers{MachineID: machine.ID})
 	return RegisteredMachine{ID: machine.ID, Name: machine.Name, APIKey: key.Key}, nil
 }

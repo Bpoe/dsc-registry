@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/Bpoe/dsc-registry/internal/eventing"
 	"github.com/Bpoe/dsc-registry/migrations"
 	_ "github.com/jackc/pgx/v5/stdlib"
 )
@@ -108,6 +109,7 @@ type Store struct {
 	DB     *sql.DB
 	Engine string
 	Logger *slog.Logger
+	Events eventing.Dispatcher
 }
 
 func Connect(ctx context.Context, engine, dsn string, busyTimeout time.Duration) (*Store, error) {
@@ -124,5 +126,5 @@ func Connect(ctx context.Context, engine, dsn string, busyTimeout time.Duration)
 	if err != nil {
 		return nil, err
 	}
-	return &Store{DB: db, Engine: engine}, nil
+	return &Store{DB: db, Engine: engine, Events: eventing.Noop{}}, nil
 }

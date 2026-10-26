@@ -9,6 +9,7 @@ import (
 	"os"
 
 	"github.com/Bpoe/dsc-registry/internal/apikey"
+	"github.com/Bpoe/dsc-registry/internal/eventing"
 	"github.com/Bpoe/dsc-registry/internal/report"
 	"github.com/google/uuid"
 )
@@ -181,6 +182,11 @@ func (s *Store) publishReport(ctx context.Context, id, name string, upload repor
 	if err := tx.Commit(); err != nil {
 		return Publication{}, true, err
 	}
+	kind := eventing.ReportCreated
+	if len(previous) != 0 {
+		kind = eventing.ReportUpdated
+	}
+	s.notify(kind, eventing.Identifiers{MachineID: id, ConfigurationName: name, ReportID: metadata.ID})
 	return Publication{Report: metadata, Created: true, CleanupPaths: previous}, true, nil
 }
 

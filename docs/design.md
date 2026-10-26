@@ -48,7 +48,7 @@ administrator ── admin API ──┐
 
 ### Explicit non-goals for v1
 
-No web UI, general-purpose event history, report analytics, groups/tags/policy inheritance, template catalog, rollout orchestrator, API-key OAuth exchange, SSH/mTLS/Entra identities, per-tenant RBAC, message broker, queues, Kubernetes dependency, database partitioning, automatic NFS provisioning, or support for generic remote report/object storage providers. Do not implement speculative hooks for these.
+No web UI, general-purpose event history, report analytics, groups/tags/policy inheritance, template catalog, rollout orchestrator, API-key OAuth exchange, SSH/mTLS/Entra API identities, per-tenant RBAC, required message broker, persistent event queues, Kubernetes dependency, database partitioning, automatic NFS provisioning, or support for generic remote report/object storage providers. Do not implement speculative hooks for these. Optional best-effort event publishing is described below; broker certificate authentication does not change Registry API authentication.
 
 ## 3. Terminology and invariants
 
@@ -194,6 +194,29 @@ A database-backed key lookup on each call is acceptable initially; consider cach
 - Beyond a measured single-primary limit: operate independent stamps with machine ownership rather than require a distributed database for all customers. Global directory/router is not in v1.
 
 Expose liveness/readiness endpoints, structured request logs without sensitive bodies, reasonable timeouts and graceful shutdown. Collect request rates/latencies/status codes, database transaction latency/locks/WAL/autovacuum signals, and report write latency/errors. Do not add expensive per-request external telemetry services by default.
+
+### Optional event publishing
+
+The [eventing contract and operator guide](eventing.md) defines an optional,
+disabled-by-default AMQP 1.0 producer. Successful machine/configuration/report
+mutation transactions notify a no-op dispatcher or non-blocking bounded channel;
+one in-process worker owns transport-independent `Publisher.Publish/Close`,
+connection reuse, delivery outcomes and bounded reconnect backoff. No outbox,
+event SQL records, new daemon or HTTP API changes are introduced.
+
+Events are CloudEvents 1.0 structured JSON with identifiers only, not documents
+or status/compliance. Configuration CRUD is assignment CRUD and also changes
+the machine's desired collection. Retained-report retries and no-op PUTs are
+silent; latest report replacement emits `report.updated`, not file-deletion
+events. Machine/configuration deletion communicates child removal without
+redundant child events. There is no standalone report deletion API.
+
+Delivery is best-effort: bounded memory, drop-new on saturation, failed attempts
+may be dropped, no exactly-once or global ordering guarantee, and pending events
+are lost on crash/restart. Broker outages do not affect HTTP/readiness. Shutdown
+stops admission, drains within an additional bounded eventing timeout, then
+cancels delivery and closes the connection. Consumers must reconcile through
+existing administrator APIs when consistency is required.
 
 ## 9. Compatibility with existing dscd
 

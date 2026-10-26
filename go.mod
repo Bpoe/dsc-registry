@@ -3,6 +3,7 @@ module github.com/Bpoe/dsc-registry
 go 1.26.0
 
 require (
+	github.com/Azure/go-amqp v1.7.0
 	github.com/google/uuid v1.6.0
 	github.com/jackc/pgx/v5 v5.7.6
 	golang.org/x/sys v0.48.0

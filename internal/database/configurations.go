@@ -9,6 +9,7 @@ import (
 
 	"github.com/Bpoe/dsc-registry/internal/apikey"
 	"github.com/Bpoe/dsc-registry/internal/desired"
+	"github.com/Bpoe/dsc-registry/internal/eventing"
 	"github.com/google/uuid"
 )
 
@@ -48,7 +49,8 @@ func (s *Store) PutConfiguration(ctx context.Context, id, name string, content d
 	if err != nil && !created {
 		return ConfigurationResult{}, false, err
 	}
-	if created || !bytes.Equal(current.Template, content.Template) || !bytes.Equal(current.Parameters, content.Parameters) {
+	changed := created || !bytes.Equal(current.Template, content.Template) || !bytes.Equal(current.Parameters, content.Parameters)
+	if changed {
 		current = Configuration{ConfigurationSummary: ConfigurationSummary{Name: name, Revision: uuid.NewString()}, Content: content}
 		// A NUL separator cannot occur literally in valid JSON; it also marks
 		// absent parameters distinctly from a present empty object.
@@ -81,6 +83,14 @@ func (s *Store) PutConfiguration(ctx context.Context, id, name string, content d
 	}
 	if err := tx.Commit(); err != nil {
 		return ConfigurationResult{}, false, err
+	}
+	if changed {
+		kind := eventing.ConfigurationUpdated
+		if created {
+			kind = eventing.ConfigurationCreated
+		}
+		s.notify(kind, eventing.Identifiers{MachineID: id, ConfigurationName: name})
+		s.notify(eventing.MachineUpdated, eventing.Identifiers{MachineID: id})
 	}
 	return result, created, nil
 }
@@ -192,6 +202,8 @@ func (s *Store) DeleteConfiguration(ctx context.Context, id, name string) ([]str
 	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
+	s.notify(eventing.ConfigurationDeleted, eventing.Identifiers{MachineID: id, ConfigurationName: name})
+	s.notify(eventing.MachineUpdated, eventing.Identifiers{MachineID: id})
 	return paths, nil
 }
 
