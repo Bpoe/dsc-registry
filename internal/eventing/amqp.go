@@ -191,6 +191,10 @@ func (p *AMQP) connect(ctx context.Context) error {
 	if err != nil {
 		return errors.New("AMQP network connection failed")
 	}
+	// Interrupt handshake I/O even when cancellation precedes its deadline.
+	network := p.network
+	stop := context.AfterFunc(ctx, func() { _ = network.Close() })
+	defer stop()
 	p.conn, err = amqp.NewConn(ctx, p.network, &p.options)
 	if err != nil {
 		return errors.New("AMQP negotiation failed")

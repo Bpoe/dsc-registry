@@ -118,8 +118,10 @@ trusted operator control; filesystem protection is not a substitute for
 ownership and ACLs.
 
 Ctrl+C requests graceful shutdown, allowing in-flight requests to finish until
-the configured shutdown deadline. A deadline failure closes connections and
-exits unsuccessfully. Startup fails on invalid settings, inaccessible storage,
+the configured HTTP shutdown deadline. An HTTP deadline failure closes connections
+and exits unsuccessfully. Optional eventing drains afterward within its own
+timeout; event-only drain/close failures warn without failing a clean shutdown.
+Startup fails on invalid settings, inaccessible storage,
 database errors, or an unsupported migration version.
 
 ## Settings

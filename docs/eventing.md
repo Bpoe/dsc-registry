@@ -196,13 +196,22 @@ connection monitor. Rejected, released, modified, unknown or timed-out deliverie
 are failures; only an AMQP `accepted` outcome counts as published. A timeout can
 mean the broker received a message even though Registry could not confirm it.
 
-HTTP shutdown stops admission safely even while handlers finish. The worker
-drains pending events within `eventing.shutdownTimeout` after HTTP shutdown
-(additional to the HTTP `shutdownTimeout`). On deadline it cancels the active
-attempt and discards pending events. The worker closes the transport socket
-without waiting for a peer close handshake and releases AMQP resources.
-The deadline is logged and the existing application error path reports an
-unsuccessful drain. No channel can be closed concurrently with a sender.
+Shutdown first stops accepting new HTTP requests and lets active requests finish
+within the HTTP `shutdownTimeout`. Event admission remains open during that
+HTTP drain so successfully committed in-flight mutations can still enqueue.
+After HTTP shutdown completes or times out and connections are closed, the
+worker stops event admission and drains pending events within
+`eventing.shutdownTimeout`, additional to the HTTP timeout. On deadline it
+cancels the active attempt and discards pending events. Shutdown waits for the
+worker to close the transport socket and release AMQP resources without waiting
+for a peer close handshake. No channel can be closed concurrently with a sender.
+
+Event drain timeouts and publisher-close failures are warnings, not process
+failures; a broker outage does not fail an otherwise clean Registry shutdown.
+Timeout warnings include the discarded pending count, and failed active
+deliveries are logged separately. HTTP shutdown timeouts and other server or
+storage failures retain their unsuccessful exit status. Requests forced closed
+at the HTTP deadline are not guaranteed to finish or enqueue.
 
 Structured `slog` records provide log-derived counts: `event delivery` with
 `outcome=queued`, `queue_full`, `published`, or `publish_failed`, plus event type,

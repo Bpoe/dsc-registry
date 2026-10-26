@@ -149,7 +149,8 @@ func TestWorkerContinuesAfterFailure(t *testing.T) {
 
 func TestShutdownTimeoutCancelsInFlightAndDiscardsPending(t *testing.T) {
 	p := &fakePublisher{entered: make(chan Event, 3), release: make(chan struct{})}
-	w := startTestWorker(t, p, 2, io.Discard)
+	var logs bytes.Buffer
+	w := startTestWorker(t, p, 2, &logs)
 	w.Notify(MachineCreated, Identifiers{})
 	waitFor(t, p.entered)
 	w.Notify(MachineUpdated, Identifiers{})
@@ -158,9 +159,11 @@ func TestShutdownTimeoutCancelsInFlightAndDiscardsPending(t *testing.T) {
 	if err := w.Shutdown(ctx); !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatal("shutdown ignored deadline", err)
 	}
-	waitFor(t, w.done)
 	if p.calls.Load() != 1 || p.closed.Load() != 1 {
-		t.Fatal("worker did not discard queue and close")
+		t.Fatal("shutdown returned before discarding the queue and closing the publisher")
+	}
+	if !strings.Contains(logs.String(), `"outcome":"timeout","pending":1`) {
+		t.Fatal("shutdown omitted pending event loss", logs.String())
 	}
 }
 

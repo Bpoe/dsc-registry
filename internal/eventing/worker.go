@@ -53,7 +53,8 @@ func (w *Worker) Notify(kind string, data Identifiers) {
 }
 
 // Shutdown closes admission under the same lock as Notify, then drains until
-// the deadline. Only the worker touches the publisher, including Close.
+// the deadline, then cancels and waits for publisher cleanup. Only the worker
+// touches the publisher, whose methods must honor cancellation and close promptly.
 func (w *Worker) Shutdown(ctx context.Context) error {
 	w.Stop()
 	select {
@@ -61,6 +62,7 @@ func (w *Worker) Shutdown(ctx context.Context) error {
 		return w.closeErr
 	case <-ctx.Done():
 		w.cancel()
+		<-w.done
 		w.logger.Warn("event shutdown", "outcome", "timeout", "pending", len(w.queue))
 		return ctx.Err()
 	}

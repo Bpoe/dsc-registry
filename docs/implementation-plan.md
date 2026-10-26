@@ -225,7 +225,9 @@ Parent removal communicates child removal without redundant notifications;
 no standalone report-delete API is introduced. JSON settings,
 environment-referenced passwords, relative TLS paths,
 redacted diagnostic signals and bounded graceful drain integrate with existing
-startup/shutdown. Unit tests cover queues, failure/cancellation, SASL/TLS and
+startup/shutdown. HTTP requests drain before event admission stops; event-only
+drain/close failures warn without failing clean HTTP shutdown. Unit tests cover
+queues, shutdown ordering/failure/cancellation, SASL/TLS and
 both-engine HTTP mutations and persistence outcomes; opt-in RabbitMQ 4.x
 integration also runs in normal/race CI.
 

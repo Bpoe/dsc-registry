@@ -231,6 +231,56 @@ func TestAMQPLocalConfigurationErrorsAndNoEagerDial(t *testing.T) {
 	}
 }
 
+func TestAMQPCancelClosesBlockedNegotiation(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	accepted := make(chan net.Conn, 1)
+	go func() {
+		conn, _ := listener.Accept()
+		accepted <- conn
+	}()
+	settings := amqpSettings()
+	settings.Endpoint, settings.ConnectTimeout = "amqp://"+listener.Addr().String(), time.Hour
+	publisher, err := NewAMQP(settings, slog.New(slog.NewJSONHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	published, done := make(chan error, 1), make(chan struct{})
+	go func() {
+		defer close(done)
+		published <- publisher.Publish(ctx, newEvent(MachineCreated, Identifiers{}))
+	}()
+	conn := waitFor(t, accepted)
+	if conn == nil {
+		t.Fatal("broker did not accept negotiation")
+	}
+	defer func() {
+		cancel()
+		_ = conn.Close()
+		waitFor(t, done)
+		_ = publisher.Close()
+	}()
+	if err := conn.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	header := make([]byte, 8)
+	if _, err := io.ReadFull(conn, header); err != nil {
+		t.Fatal("client did not start negotiation", err)
+	}
+	cancel()
+	if err := waitFor(t, published); err == nil || publisher.network != nil || publisher.conn != nil {
+		t.Fatal("canceled negotiation retained its connection", err)
+	}
+	if _, err := io.Copy(io.Discard, conn); err != nil {
+		t.Fatal("cancellation did not promptly close the negotiation socket", err)
+	}
+}
+
 func TestAMQPConnectTimeoutAndBackoff(t *testing.T) {
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {

@@ -220,9 +220,11 @@ redundant child events. There is no standalone report deletion API.
 Delivery is best-effort: bounded memory, drop-new on saturation, failed attempts
 may be dropped, no exactly-once or global ordering guarantee, and pending events
 are lost on crash/restart. Broker outages do not affect HTTP/readiness. Shutdown
-stops admission, drains within an additional bounded eventing timeout, then
-cancels delivery and closes the connection. Consumers must reconcile through
-existing administrator APIs when consistency is required.
+drains HTTP requests before stopping event admission, then drains events within
+an additional bounded timeout and closes the connection. Event-only shutdown
+failures log warnings rather than fail a clean server shutdown; HTTP shutdown
+failures remain errors. Consumers must reconcile through existing administrator
+APIs when consistency is required.
 
 ## 9. Compatibility with existing dscd
 

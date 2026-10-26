@@ -116,19 +116,15 @@ func runWithReady(ctx context.Context, settings config.Settings, logger *slog.Lo
 		TLSConfig:         tlsConfig,
 	}
 	var dispatcher eventing.Dispatcher = eventing.Noop{}
+	var worker *eventing.Worker
 	if publisher != nil {
-		worker, startErr := eventing.Start(publisher, settings.Eventing.QueueCapacity, settings.Eventing.PublishTimeout, logger)
+		var startErr error
+		worker, startErr = eventing.Start(publisher, settings.Eventing.QueueCapacity, settings.Eventing.PublishTimeout, logger)
 		if startErr != nil {
 			_ = listener.Close()
 			return startErr
 		}
 		dispatcher = worker
-		server.RegisterOnShutdown(worker.Stop)
-		defer func() {
-			shutdown, cancel := context.WithTimeout(context.Background(), settings.Eventing.ShutdownTimeout)
-			defer cancel()
-			err = errors.Join(err, worker.Shutdown(shutdown))
-		}()
 	}
 	server.Handler = httpapi.New(db, reports, dispatcher, settings.ProbeTimeout, settings.ReadTimeout, settings.PollMaxAge, settings.MaxRequestBytes, settings.MaxReportBytes, logger)
 	if settings.TLS == nil {
@@ -138,7 +134,15 @@ func runWithReady(ctx context.Context, settings config.Settings, logger *slog.Lo
 	if ready != nil {
 		ready()
 	}
-	return serve(ctx, server, listener, settings, logger)
+	err = serve(ctx, server, listener, settings, logger)
+	if worker != nil {
+		shutdown, cancel := context.WithTimeout(context.Background(), settings.Eventing.ShutdownTimeout)
+		defer cancel()
+		if shutdownErr := worker.Shutdown(shutdown); shutdownErr != nil {
+			logger.Warn("event worker shutdown incomplete", "reason", "best_effort_event_loss")
+		}
+	}
+	return err
 }
 
 func bootstrap(ctx context.Context, args []string, output io.Writer) error {
