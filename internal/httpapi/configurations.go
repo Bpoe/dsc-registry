@@ -9,6 +9,7 @@ import (
 
 	"github.com/Bpoe/dsc-registry/internal/database"
 	"github.com/Bpoe/dsc-registry/internal/desired"
+	"github.com/Bpoe/dsc-registry/internal/eventing"
 )
 
 func (a *adminAPI) configurations(w http.ResponseWriter, r *http.Request) {
@@ -43,15 +44,24 @@ func (a *adminAPI) putConfiguration(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id, name := r.PathValue("id"), r.PathValue("name")
-	result, created, err := a.store.PutConfiguration(r.Context(), id, name, content)
+	result, outcome, err := a.store.PutConfiguration(r.Context(), id, name, content)
 	if err != nil {
 		a.configurationError(w, err)
 		return
 	}
 	status := http.StatusOK
-	if created {
+	if outcome == database.MutationCreated {
 		status = http.StatusCreated
 		w.Header().Set("Location", "/v1/machines/"+id+"/configurations/"+name)
+	}
+	switch outcome {
+	case database.MutationCreated:
+		a.events.Notify(eventing.ConfigurationCreated, eventing.Identifiers{MachineID: id, ConfigurationName: name})
+	case database.MutationUpdated:
+		a.events.Notify(eventing.ConfigurationUpdated, eventing.Identifiers{MachineID: id, ConfigurationName: name})
+	}
+	if outcome != database.MutationUnchanged {
+		a.events.Notify(eventing.MachineUpdated, eventing.Identifiers{MachineID: id})
 	}
 	writeJSON(w, status, result)
 }
@@ -66,11 +76,14 @@ func (a *adminAPI) getConfiguration(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *adminAPI) deleteConfiguration(w http.ResponseWriter, r *http.Request) {
-	paths, err := a.store.DeleteConfiguration(r.Context(), r.PathValue("id"), r.PathValue("name"))
+	id, name := r.PathValue("id"), r.PathValue("name")
+	paths, err := a.store.DeleteConfiguration(r.Context(), id, name)
 	if err != nil {
 		a.configurationError(w, err)
 		return
 	}
+	a.events.Notify(eventing.ConfigurationDeleted, eventing.Identifiers{MachineID: id, ConfigurationName: name})
+	a.events.Notify(eventing.MachineUpdated, eventing.Identifiers{MachineID: id})
 	a.removeReportFiles(paths)
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusNoContent)

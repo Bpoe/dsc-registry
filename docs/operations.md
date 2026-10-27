@@ -311,8 +311,12 @@ No server-side proxy assertion is needed. For this TLS-edge example, keep port
 it to a private shared network and remove the host port mapping; do not use
 the proxy container's own loopback to reach the API.
 
-There are no implicit application environment overrides. Mount configuration
-read-only and never bake keys, passwords, databases or reports into an image.
+There are no implicit application environment overrides. Optional eventing
+explicitly references a password environment variable by name; supply it through
+the deployment's protected secret mechanism. Mount configuration read-only and
+never bake keys, passwords, databases or reports into an image. See the
+[eventing guide](eventing.md) for RabbitMQ provisioning, TLS/SASL, diagnostics,
+delivery limitations and the additional bounded event-drain shutdown timeout.
 
 For multiple replicas all containers must use PostgreSQL and see the **same**
 report directory; two identically named local directories on different hosts

@@ -74,6 +74,49 @@ func reportReader(ctx context.Context, files *reportstore.Store) func(string) ([
 	return func(path string) ([]byte, error) { return files.Read(ctx, path, 1<<20) }
 }
 
+func TestReportMutationOutcomesBothEngines(t *testing.T) {
+	testdb.Engines(t, func(t *testing.T, engine, dsn string) {
+		store, files, _, machine, configuration := reportSetup(t, engine, dsn)
+		ctx := context.Background()
+		upload := reportUpload(configuration.Revision)
+		writes := 0
+		save := func() Publication {
+			t.Helper()
+			result, err := publishStoredReport(ctx, store, files, machine.ID, "one", upload, func() (string, error) {
+				writes++
+				return files.Write(ctx, upload.Result)
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			return result
+		}
+		first := save()
+		if first.Outcome != MutationCreated || writes != 1 || len(first.CleanupPaths) != 0 {
+			t.Fatal("first report did not report creation", first, writes)
+		}
+		retry := save()
+		if retry.Outcome != MutationUnchanged || !reflect.DeepEqual(retry.Report, first.Report) || writes != 1 {
+			t.Fatal("retained retry changed the receipt", retry, writes)
+		}
+		exec(t, store.DB, "UPDATE reports SET result_sha256 = NULL WHERE machine_id = $1", machine.ID)
+		backfill := save()
+		if backfill.Outcome != MutationUnchanged || !reflect.DeepEqual(backfill.Report, first.Report) || writes != 1 {
+			t.Fatal("digest backfill changed the receipt", backfill, writes)
+		}
+		upload.ID = uuid.NewString()
+		replacement := save()
+		if replacement.Outcome != MutationUpdated || replacement.Report.ID == first.Report.ID ||
+			writes != 2 || len(replacement.CleanupPaths) != 1 {
+			t.Fatal("replacement did not report an update", replacement, writes)
+		}
+		upload.ID, upload.ConfigurationRevision = uuid.NewString(), uuid.NewString()
+		if historical := save(); historical.Outcome != MutationUpdated || historical.Report.ID == replacement.Report.ID || writes != 3 {
+			t.Fatal("historical replacement did not report an update", historical, writes)
+		}
+	})
+}
+
 func TestLegacyReportRetryDuringReplacementBothEngines(t *testing.T) {
 	testdb.Engines(t, func(t *testing.T, engine, dsn string) {
 		store, files, root, machine, config := reportSetup(t, engine, dsn)
@@ -125,7 +168,7 @@ func TestLegacyReportRetryDuringReplacementBothEngines(t *testing.T) {
 				}
 				return content, err
 			})
-		if err != nil || !result.Created || result.Report.ID == replacementID || len(result.CleanupPaths) != 1 {
+		if err != nil || result.Outcome != MutationUpdated || result.Report.ID == replacementID || len(result.CleanupPaths) != 1 {
 			t.Fatal("legacy retry did not restart publication after replacement", result, err)
 		}
 		for _, path := range result.CleanupPaths {
@@ -212,7 +255,7 @@ func TestReportsBothEngines(t *testing.T) {
 			t.Error("retry wrote a second file")
 			return "", errors.New("must not write")
 		}, reportReader(ctx, files))
-		if err != nil || retried.Created || retried.Report.ID != before.ReportID {
+		if err != nil || retried.Outcome != MutationUnchanged || retried.Report.ID != before.ReportID {
 			t.Fatal("retry failed", err)
 		}
 		after, err := second.GetConfigurationStatus(ctx, machine.ID, "one")
@@ -612,7 +655,7 @@ func TestReportLostCommitAcknowledgementBothEngines(t *testing.T) {
 			next, err = files.Write(ctx, upload.Result)
 			return next, err
 		}, reportReader(ctx, files))
-		if !errors.Is(err, lost) || len(result.CleanupPaths) != 0 {
+		if !errors.Is(err, lost) || result.Outcome != MutationUnchanged || len(result.CleanupPaths) != 0 {
 			t.Fatal("ambiguous commit allowed file deletion or masked error", result, err)
 		}
 		var referenced string
@@ -632,7 +675,7 @@ func TestReportLostCommitAcknowledgementBothEngines(t *testing.T) {
 			t.Error("retry of committed report wrote another file")
 			return "", nil
 		}, reportReader(ctx, files))
-		if err != nil || retry.Created || len(retry.CleanupPaths) != 0 {
+		if err != nil || retry.Outcome != MutationUnchanged || len(retry.CleanupPaths) != 0 {
 			t.Fatal("uncertain commit did not resolve to the accepted report", retry, err)
 		}
 	})
@@ -662,7 +705,7 @@ func TestReportPersistenceErrorReturnsUnusedFileBothEngines(t *testing.T) {
 			candidate, err = files.Write(ctx, upload.Result)
 			return candidate, err
 		}, reportReader(ctx, files))
-		if !errors.Is(err, injected) || len(result.CleanupPaths) != 1 || result.CleanupPaths[0] != candidate {
+		if !errors.Is(err, injected) || result.Outcome != MutationUnchanged || len(result.CleanupPaths) != 1 || result.CleanupPaths[0] != candidate {
 			t.Fatal("database error masked or unused file not returned", result, err)
 		}
 		if failed.DB.Stats().InUse != 0 {

@@ -30,6 +30,8 @@ API-key authentication, token-based machine self-registration, machine and crede
 migrations, desired-configuration CRUD and conditional machine polling,
 full dscd report ingestion, latest-only report storage, derived machine status,
 admin-only report retrieval, report-storage checks, graceful shutdown, and health endpoints.
+Optional [best-effort AMQP 1.0 event publishing](docs/eventing.md) notifies
+external consumers of committed machine, configuration and report changes.
 Production-readiness additions include redacted structured operation timings,
 recovery/fuzz coverage, Linux/container examples and a bounded two-replica
 PostgreSQL/TLS/recovery harness. See the [operator runbook](docs/operations.md)
@@ -116,8 +118,10 @@ trusted operator control; filesystem protection is not a substitute for
 ownership and ACLs.
 
 Ctrl+C requests graceful shutdown, allowing in-flight requests to finish until
-the configured shutdown deadline. A deadline failure closes connections and
-exits unsuccessfully. Startup fails on invalid settings, inaccessible storage,
+the configured HTTP shutdown deadline. An HTTP deadline failure closes connections
+and exits unsuccessfully. Optional eventing drains afterward within its own
+timeout; event-only drain/close failures warn without failing a clean shutdown.
+Startup fails on invalid settings, inaccessible storage,
 database errors, or an unsupported migration version.
 
 ## Settings
@@ -163,7 +167,7 @@ CLI flags**, including flags explicitly set to their default value.
 Omitted properties keep existing defaults; explicit empty strings and zero
 are not treated as missing. Durations use Go strings such as `"500ms"`, `"5s"`,
 or `"5m"`. Unknown properties are ignored for forward and backward
-compatibility, including inside `database` and `tls`, regardless of their JSON
+compatibility, including inside `database`, `tls`, and optional `eventing`, regardless of their JSON
 value type. An unknown-only `tls` object does not select native TLS mode.
 Obsolete `externalHttps` and `developmentHttp` properties are likewise ignored;
 existing JSON files containing them still load.
@@ -174,9 +178,11 @@ documents are also rejected. This applies to both server startup and bootstrap, 
 Registry API payload validation. Final merged settings must pass normal validation.
 An unreadable file is fatal when `-config` is supplied. Without it, only defaults
 and explicit CLI flags apply. There is no implicit file discovery, environment
-override, or hot reload; restart to apply file changes.
+override, or hot reload; restart to apply file changes. Optional eventing
+passwords can explicitly reference an environment variable by name.
 
-Relative `reportRoot`, SQLite `database.dsn`, `tls.certFile`, and `tls.keyFile` values **supplied in the file**
+Relative `reportRoot`, SQLite `database.dsn`, `tls.certFile`, `tls.keyFile`,
+and eventing TLS CA/certificate/key paths **supplied in the file**
 are resolved against the configuration file's directory, not the current
 working directory. Absolute paths stay unchanged. Omitted path defaults and
 paths explicitly supplied through CLI flags retain working-directory semantics.
@@ -209,6 +215,38 @@ settings without printing their values or file contents.
 | `-shutdown-timeout` | `15s` | Graceful shutdown deadline |
 | `-probe-timeout` | `2s` | Readiness deadline, less than the write timeout |
 | `-sqlite-busy-timeout` | `5s` | Per-connection lock wait, whole milliseconds up to `1m` |
+
+### Optional events
+
+Omit `eventing` for the existing no-broker behavior: no event queue, worker,
+connections or event persistence. To enable, add this object to the JSON file
+and supply the named password environment variable securely to the service:
+
+```json
+{
+  "eventing": {
+    "endpoint": "amqps://rabbitmq.example.com:5671",
+    "address": "/queues/registry-events",
+    "auth": {
+      "type": "plain",
+      "username": "registry",
+      "passwordEnv": "DSC_EVENTING_PASSWORD"
+    }
+  }
+}
+```
+
+Provision the destination outside Registry. Committed machine, configuration
+and report changes produce CloudEvents 1.0 JSON notifications containing only
+resource identifiers. A bounded queue (default 1,000) and one in-process AMQP
+1.0 worker isolate HTTP operations from broker latency/outages. Full queues and
+failed deliveries drop events without changing HTTP success; pending events
+are lost on restart. Consumers must tolerate missing, duplicate or out-of-order
+notifications and periodically reconcile when consistency matters.
+
+See the [eventing guide](docs/eventing.md) for event types/payloads, RabbitMQ 4.x
+setup/addressing, PLAIN/ANONYMOUS/EXTERNAL authentication, verified TLS/private
+CAs/client certificates, timeouts, shutdown, diagnostics and integration tests.
 
 ### HTTP and HTTPS
 

@@ -35,7 +35,7 @@ func observedPollingAPI(t *testing.T, store *database.Store, dsn string, before 
 		func(ctx context.Context, query string, _ []driver.NamedValue) error {
 			return before(ctx, strings.Join(strings.Fields(query), " "))
 		})}
-	return New(reader, nil, time.Second, 5*time.Second, 37*time.Second, 2048, 16<<20,
+	return New(reader, nil, nil, time.Second, 5*time.Second, 37*time.Second, 2048, 16<<20,
 		slog.New(slog.NewJSONHandler(io.Discard, nil)))
 }
 

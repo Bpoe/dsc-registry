@@ -9,12 +9,16 @@ import (
 	"time"
 
 	"github.com/Bpoe/dsc-registry/internal/database"
+	"github.com/Bpoe/dsc-registry/internal/eventing"
 	"github.com/Bpoe/dsc-registry/internal/reportstore"
 )
 
 const unavailable = `{"error":{"code":"not_ready","message":"Service dependencies are unavailable"}}` + "\n"
 
-func New(db *database.Store, reports *reportstore.Store, timeout, requestTimeout, pollMaxAge time.Duration, maxRequestBytes, maxReportBytes int64, logger *slog.Logger) http.Handler {
+func New(db *database.Store, reports *reportstore.Store, events eventing.Dispatcher, timeout, requestTimeout, pollMaxAge time.Duration, maxRequestBytes, maxReportBytes int64, logger *slog.Logger) http.Handler {
+	if events == nil {
+		events = eventing.Noop{}
+	}
 	ready := &readinessProbe{timeout: timeout, check: func(ctx context.Context) error {
 		dependency := "database"
 		err := db.DB.PingContext(ctx)
@@ -28,7 +32,7 @@ func New(db *database.Store, reports *reportstore.Store, timeout, requestTimeout
 		return err
 	}}
 
-	admin := &adminAPI{store: db, reports: reports, maxRequestBytes: maxRequestBytes, maxReportBytes: maxReportBytes,
+	admin := &adminAPI{store: db, reports: reports, events: events, maxRequestBytes: maxRequestBytes, maxReportBytes: maxReportBytes,
 		timeout: requestTimeout, pollMaxAge: pollMaxAge, logger: logger}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health/live", func(w http.ResponseWriter, r *http.Request) {

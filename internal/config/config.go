@@ -17,6 +17,7 @@ import (
 type Settings struct {
 	ListenAddress     string
 	TLS               *TLSSettings
+	Eventing          *EventingSettings
 	DatabaseEngine    string
 	DatabaseDSN       string
 	ReportRoot        string
@@ -144,6 +145,11 @@ func (s Settings) Validate() error {
 	}
 	if err := s.validateDatabase(); err != nil {
 		return err
+	}
+	if s.Eventing != nil {
+		if err := s.Eventing.Validate(); err != nil {
+			return err
+		}
 	}
 	if strings.TrimSpace(s.ReportRoot) == "" {
 		return errors.New("report-root must not be empty")

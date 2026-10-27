@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/Bpoe/dsc-registry/internal/database"
+	"github.com/Bpoe/dsc-registry/internal/eventing"
 	"github.com/Bpoe/dsc-registry/internal/report"
 	"github.com/Bpoe/dsc-registry/internal/reportstore"
 )
@@ -45,8 +46,8 @@ func (a *adminAPI) uploadReport(w http.ResponseWriter, r *http.Request) {
 		storageFailure = err != nil
 		return content, err
 	})
-	a.removeReportFiles(publication.CleanupPaths)
 	if err != nil {
+		a.removeReportFiles(publication.CleanupPaths)
 		if storageFailure && !reportResourceMissing(err) {
 			a.reportStorageError(w)
 		} else {
@@ -54,9 +55,17 @@ func (a *adminAPI) uploadReport(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
+	data := eventing.Identifiers{MachineID: id, ConfigurationName: upload.Name, ReportID: publication.Report.ID}
+	switch publication.Outcome {
+	case database.MutationCreated:
+		a.events.Notify(eventing.ReportCreated, data)
+	case database.MutationUpdated:
+		a.events.Notify(eventing.ReportUpdated, data)
+	}
+	a.removeReportFiles(publication.CleanupPaths)
 	w.Header().Set("Location", "/v1/machines/"+id+"/reports/"+publication.Report.ID)
 	status := http.StatusOK
-	if publication.Created {
+	if publication.Outcome != database.MutationUnchanged {
 		status = http.StatusCreated
 	}
 	writeJSON(w, status, publication.Report)

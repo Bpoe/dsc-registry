@@ -29,11 +29,19 @@ func mergeFile(flags *flag.FlagSet, path string, s *Settings) error {
 	}
 	// Flag values are saved before loading so even explicit default values win.
 	var tls TLSSettings
+	eventing := EventingDefaults()
 	fields := map[string]any{
 		"listenAddress": &s.ListenAddress,
 		"tls":           map[string]any{"certFile": &tls.CertFile, "keyFile": &tls.KeyFile},
-		"reportRoot":    &s.ReportRoot,
-		"pollMaxAge":    &s.PollMaxAge, "maxRequestBytes": &s.MaxRequestBytes,
+		"eventing": map[string]any{
+			"type": &eventing.Type, "endpoint": &eventing.Endpoint, "address": &eventing.Address,
+			"queueCapacity": &eventing.QueueCapacity, "connectTimeout": &eventing.ConnectTimeout,
+			"publishTimeout": &eventing.PublishTimeout, "shutdownTimeout": &eventing.ShutdownTimeout,
+			"auth": map[string]any{"type": &eventing.Auth.Type, "username": &eventing.Auth.Username, "passwordEnv": &eventing.Auth.PasswordEnv},
+			"tls":  map[string]any{"caFile": &eventing.TLS.CAFile, "certFile": &eventing.TLS.CertFile, "keyFile": &eventing.TLS.KeyFile},
+		},
+		"reportRoot": &s.ReportRoot,
+		"pollMaxAge": &s.PollMaxAge, "maxRequestBytes": &s.MaxRequestBytes,
 		"maxReportBytes": &s.MaxReportBytes, "readHeaderTimeout": &s.ReadHeaderTimeout,
 		"readTimeout": &s.ReadTimeout, "writeTimeout": &s.WriteTimeout,
 		"idleTimeout": &s.IdleTimeout, "startupTimeout": &s.StartupTimeout,
@@ -52,6 +60,9 @@ func mergeFile(flags *flag.FlagSet, path string, s *Settings) error {
 	}
 	if present["tls"] {
 		s.TLS = &tls
+	}
+	if present["eventing"] {
+		s.Eventing = &eventing
 	}
 	for name, value := range overrides {
 		if err := flags.Set(name, value); err != nil {
@@ -75,6 +86,13 @@ func mergeFile(flags *flag.FlagSet, path string, s *Settings) error {
 	}
 	if s.TLS != nil {
 		for _, path := range []*string{&s.TLS.CertFile, &s.TLS.KeyFile} {
+			if strings.TrimSpace(*path) != "" && !filepath.IsAbs(*path) {
+				*path = filepath.Join(directory, *path)
+			}
+		}
+	}
+	if s.Eventing != nil {
+		for _, path := range []*string{&s.Eventing.TLS.CAFile, &s.Eventing.TLS.CertFile, &s.Eventing.TLS.KeyFile} {
 			if strings.TrimSpace(*path) != "" && !filepath.IsAbs(*path) {
 				*path = filepath.Join(directory, *path)
 			}
@@ -121,13 +139,15 @@ func decodeObject(decoder *json.Decoder, fields map[string]any, prefix string, p
 			}
 			continue
 		}
-		knownProperty, present[setting] = true, true
+		present[setting] = true
 		if nested, ok := target.(map[string]any); ok {
 			if err := decodeObject(decoder, nested, setting+".", present); err != nil {
 				return err
 			}
+			knownProperty = knownProperty || present[setting]
 			continue
 		}
+		knownProperty = true
 		var raw json.RawMessage
 		if err := decoder.Decode(&raw); err != nil {
 			return fmt.Errorf("invalid configuration property %s", setting)

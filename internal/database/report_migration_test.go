@@ -125,7 +125,7 @@ func testReportHistoryUpgrade(t *testing.T, engine, dsn string, machineNames boo
 			t.Fatal("migrated payload conflict accepted", err)
 		}
 		got, err := store.PublishReport(ctx, machineID, item.ConfigurationName, upload, noWrite, reportReader(ctx, files))
-		if err != nil || got.Created || !reflect.DeepEqual(got.Report, item) {
+		if err != nil || got.Outcome != MutationUnchanged || !reflect.DeepEqual(got.Report, item) {
 			t.Fatal("migrated retry changed metadata", got, err)
 		}
 		_, err = store.PublishReport(ctx, machineID, item.ConfigurationName, upload, noWrite, func(string) ([]byte, error) {

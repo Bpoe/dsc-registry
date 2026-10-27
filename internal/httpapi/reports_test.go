@@ -43,7 +43,7 @@ func TestReportPathsHTTPBothEngines(t *testing.T) {
 			t.Fatal(err)
 		}
 		defer files.Close()
-		handler := New(db, files, time.Second, 5*time.Second, 37*time.Second, 2048, 4096, slog.New(slog.NewJSONHandler(logs, nil)))
+		handler := New(db, files, nil, time.Second, 5*time.Second, 37*time.Second, 2048, 4096, slog.New(slog.NewJSONHandler(logs, nil)))
 		base := "/v1/machines/" + machine.ID
 		configPath := base + "/configurations/docker"
 		config := decodeResponse[database.ConfigurationResult](t,
@@ -124,7 +124,7 @@ func TestReportsHTTPBothEngines(t *testing.T) {
 			t.Fatal(err)
 		}
 		defer files.Close()
-		handler := New(db, files, time.Second, 10*time.Second, 37*time.Second, 2048, 4096, slog.New(slog.NewJSONHandler(logs, nil)))
+		handler := New(db, files, nil, time.Second, 10*time.Second, 37*time.Second, 2048, 4096, slog.New(slog.NewJSONHandler(logs, nil)))
 		path := "/v1/machines/" + machine.ID + "/configurations/docker"
 		agentPath := "/v1/agent/reports"
 		config := decodeResponse[database.ConfigurationResult](t, apiRequest(t, handler, admin.Key, "PUT", path, `{"template":{},"parameters":{}}`, 201))
@@ -267,7 +267,7 @@ func TestReportBoundsAndStorageFailureBothEngines(t *testing.T) {
 			t.Fatal(err)
 		}
 		body := reportBody(config.Revision, uuid.NewString(), rawSuccessReport)
-		handler := New(db, files, time.Second, time.Second, 37*time.Second, 128, int64(len(body)), slog.New(slog.NewJSONHandler(logs, nil)))
+		handler := New(db, files, nil, time.Second, time.Second, 37*time.Second, 128, int64(len(body)), slog.New(slog.NewJSONHandler(logs, nil)))
 		path := "/v1/machines/" + machine.ID + "/configurations/docker"
 		agentPath := "/v1/agent/reports"
 		// The report-specific limit is distinct from max-request-bytes and
@@ -353,7 +353,7 @@ func TestReportRestartRecoveryBothEngines(t *testing.T) {
 			t.Fatal(err)
 		}
 		logger := slog.New(slog.NewJSONHandler(logs, nil))
-		handler := New(db, files, time.Second, time.Second, 37*time.Second, 2048, 4096, logger)
+		handler := New(db, files, nil, time.Second, time.Second, 37*time.Second, 2048, 4096, logger)
 		path := "/v1/machines/" + machine.ID + "/configurations/docker"
 		agentPath := "/v1/agent/reports"
 		config := decodeResponse[database.ConfigurationResult](t,
@@ -389,7 +389,7 @@ func TestReportRestartRecoveryBothEngines(t *testing.T) {
 			t.Fatal(err)
 		}
 		defer files.Close()
-		handler = New(db, files, time.Second, time.Second, 37*time.Second, 2048, 4096, logger)
+		handler = New(db, files, nil, time.Second, time.Second, 37*time.Second, 2048, 4096, logger)
 		apiRequest(t, handler, "", "GET", "/health/ready", "", 200)
 		assertAgentCache(t, agentRequest(handler, key.Key, tag), 304)
 		apiRequest(t, handler, key.Key, "POST", agentPath, body, 200)

@@ -205,6 +205,32 @@ The publishing workflow verifies that release's archive checksums, extracts the
 binaries, and builds/pushes one multi-platform image with only the `vX.Y.Z` tag,
 using the tagged Dockerfile. No workflow deploys the published image.
 
+### Optional eventing follow-up
+
+Implemented [optional best-effort event publishing](eventing.md), disabled by
+default, using a bounded channel and one in-process worker behind a small
+transport-independent publisher interface. The AMQP 1.0 transport uses
+`github.com/Azure/go-amqp`, verified TLS and PLAIN/ANONYMOUS/EXTERNAL SASL,
+persistent connection reuse, accepted-delivery checks and bounded exponential
+reconnect backoff. It does not add an Azure authentication dependency, broker
+provisioning, outbox, event persistence, status/compliance events or a daemon.
+
+Machine/configuration/report notifications originate in HTTP handlers only after
+successful persistence operations. The database has no eventing dependency and
+returns created/updated/unchanged mutation outcomes without extra classification
+queries or public response fields. `cmd/dscregd` injects the dispatcher into the
+HTTP API, retaining worker startup/shutdown ownership. No-op desired PUTs,
+idempotent report retries and internal report file cleanup are silent.
+Parent removal communicates child removal without redundant notifications;
+no standalone report-delete API is introduced. JSON settings,
+environment-referenced passwords, relative TLS paths,
+redacted diagnostic signals and bounded graceful drain integrate with existing
+startup/shutdown. HTTP requests drain before event admission stops; event-only
+drain/close failures warn without failing clean HTTP shutdown. Unit tests cover
+queues, shutdown ordering/failure/cancellation, SASL/TLS and
+both-engine HTTP mutations and persistence outcomes; opt-in RabbitMQ 4.x
+integration also runs in normal/race CI.
+
 ## Separate project: dscsyncd
 
 Do not add agent code inside the DSC Registry server repository. A separate design and implementation cycle should address:

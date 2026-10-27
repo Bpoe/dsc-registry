@@ -38,7 +38,7 @@ func TestRegistryCLIEndToEndBothEngines(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		server := httptest.NewServer(httpapi.New(db, reports, time.Second, 5*time.Second, time.Minute, 1<<20, 16<<20, slog.New(slog.NewTextHandler(io.Discard, nil))))
+		server := httptest.NewServer(httpapi.New(db, reports, nil, time.Second, 5*time.Second, time.Minute, 1<<20, 16<<20, slog.New(slog.NewTextHandler(io.Discard, nil))))
 		defer server.Close()
 		t.Setenv("DSCREG_SERVER", server.URL)
 		t.Setenv("DSCREG_API_KEY", admin.Key)

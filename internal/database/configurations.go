@@ -34,21 +34,22 @@ type ConfigurationSnapshot struct {
 	Configurations        []Configuration `json:"configurations"`
 }
 
-func (s *Store) PutConfiguration(ctx context.Context, id, name string, content desired.Content) (ConfigurationResult, bool, error) {
+func (s *Store) PutConfiguration(ctx context.Context, id, name string, content desired.Content) (ConfigurationResult, MutationOutcome, error) {
 	tx, err := s.begin(ctx, "put_configuration")
 	if err != nil {
-		return ConfigurationResult{}, false, err
+		return ConfigurationResult{}, MutationUnchanged, err
 	}
 	defer tx.Rollback()
 	if err := s.lockOwner(ctx, tx.Tx, apikey.Machine, id); err != nil {
-		return ConfigurationResult{}, false, err
+		return ConfigurationResult{}, MutationUnchanged, err
 	}
 	current, err := getConfiguration(ctx, tx.Tx, id, name)
 	created := errors.Is(err, ErrConfigurationNotFound)
 	if err != nil && !created {
-		return ConfigurationResult{}, false, err
+		return ConfigurationResult{}, MutationUnchanged, err
 	}
-	if created || !bytes.Equal(current.Template, content.Template) || !bytes.Equal(current.Parameters, content.Parameters) {
+	changed := created || !bytes.Equal(current.Template, content.Template) || !bytes.Equal(current.Parameters, content.Parameters)
+	if changed {
 		current = Configuration{ConfigurationSummary: ConfigurationSummary{Name: name, Revision: uuid.NewString()}, Content: content}
 		// A NUL separator cannot occur literally in valid JSON; it also marks
 		// absent parameters distinctly from a present empty object.
@@ -68,21 +69,27 @@ func (s *Store) PutConfiguration(ctx context.Context, id, name string, content d
 			content_sha256 = excluded.content_sha256, updated_at = excluded.updated_at`,
 			id, name, current.Revision, string(content.Template), parameters, hash.Sum(nil), timestamp())
 		if err != nil {
-			return ConfigurationResult{}, false, err
+			return ConfigurationResult{}, MutationUnchanged, err
 		}
 		if _, err := tx.ExecContext(ctx, `UPDATE machines SET configuration_revision = configuration_revision + 1 WHERE id = $1`, id); err != nil {
-			return ConfigurationResult{}, false, err
+			return ConfigurationResult{}, MutationUnchanged, err
 		}
 	}
 	result := ConfigurationResult{Configuration: current}
 	if err := tx.QueryRowContext(ctx, "SELECT configuration_revision FROM machines WHERE id = $1", id).
 		Scan(&result.MachineConfigurationRevision); err != nil {
-		return ConfigurationResult{}, false, err
+		return ConfigurationResult{}, MutationUnchanged, err
 	}
 	if err := tx.Commit(); err != nil {
-		return ConfigurationResult{}, false, err
+		return ConfigurationResult{}, MutationUnchanged, err
 	}
-	return result, created, nil
+	outcome := MutationUnchanged
+	if created {
+		outcome = MutationCreated
+	} else if changed {
+		outcome = MutationUpdated
+	}
+	return result, outcome, nil
 }
 
 func getConfiguration(ctx context.Context, tx *sql.Tx, id, name string) (Configuration, error) {

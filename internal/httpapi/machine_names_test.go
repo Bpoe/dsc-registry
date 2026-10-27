@@ -148,7 +148,7 @@ func TestConcurrentMachineNamesHTTPBothEngines(t *testing.T) {
 			t.Fatal(err)
 		}
 		t.Cleanup(func() { reports.Close() })
-		second := New(secondStore, reports, time.Second, 5*time.Second, time.Minute, 2048, 16<<20, slog.New(slog.NewTextHandler(io.Discard, nil)))
+		second := New(secondStore, reports, nil, time.Second, 5*time.Second, time.Minute, 2048, 16<<20, slog.New(slog.NewTextHandler(io.Discard, nil)))
 		handlers := []http.Handler{first, second}
 		names := []string{"Caf\u00e9-Host", "CAFE\u0301-HOST", "caf\u00e9-host", "cafe\u0301-host"}
 		start := make(chan struct{})

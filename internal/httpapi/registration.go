@@ -10,6 +10,7 @@ import (
 
 	"github.com/Bpoe/dsc-registry/internal/database"
 	"github.com/Bpoe/dsc-registry/internal/desired"
+	"github.com/Bpoe/dsc-registry/internal/eventing"
 )
 
 func (a *adminAPI) registrationTokens(w http.ResponseWriter, r *http.Request) {
@@ -81,6 +82,7 @@ func (a *adminAPI) registerMachine(w http.ResponseWriter, r *http.Request) {
 		a.machineCreationError(w, err)
 		return
 	}
+	a.events.Notify(eventing.MachineCreated, eventing.Identifiers{MachineID: machine.ID})
 	w.Header().Set("Location", "/v1/machines/"+machine.ID)
 	writeJSON(w, http.StatusCreated, machine)
 }

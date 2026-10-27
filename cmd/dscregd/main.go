@@ -18,6 +18,7 @@ import (
 
 	"github.com/Bpoe/dsc-registry/internal/config"
 	"github.com/Bpoe/dsc-registry/internal/database"
+	"github.com/Bpoe/dsc-registry/internal/eventing"
 	"github.com/Bpoe/dsc-registry/internal/httpapi"
 	"github.com/Bpoe/dsc-registry/internal/reportstore"
 )
@@ -93,13 +94,19 @@ func runWithReady(ctx context.Context, settings config.Settings, logger *slog.Lo
 	}
 	defer func() { err = errors.Join(err, db.DB.Close()) }()
 	db.Logger = logger
+	var publisher *eventing.AMQP
+	if settings.Eventing != nil {
+		publisher, err = eventing.NewAMQP(*settings.Eventing, logger)
+		if err != nil {
+			return err
+		}
+	}
 	listener, err := (&net.ListenConfig{}).Listen(ctx, "tcp", settings.ListenAddress)
 	if err != nil {
 		logger.Error("HTTP listener startup failed")
 		return fmt.Errorf("listen HTTP: %w", err)
 	}
 	server := &http.Server{
-		Handler:           httpapi.New(db, reports, settings.ProbeTimeout, settings.ReadTimeout, settings.PollMaxAge, settings.MaxRequestBytes, settings.MaxReportBytes, logger),
 		ReadHeaderTimeout: settings.ReadHeaderTimeout,
 		ReadTimeout:       settings.ReadTimeout,
 		WriteTimeout:      settings.WriteTimeout,
@@ -108,6 +115,18 @@ func runWithReady(ctx context.Context, settings config.Settings, logger *slog.Lo
 		ErrorLog:          log.New(&serverErrorLog{logger: logger}, "", 0),
 		TLSConfig:         tlsConfig,
 	}
+	var dispatcher eventing.Dispatcher = eventing.Noop{}
+	var worker *eventing.Worker
+	if publisher != nil {
+		var startErr error
+		worker, startErr = eventing.Start(publisher, settings.Eventing.QueueCapacity, settings.Eventing.PublishTimeout, logger)
+		if startErr != nil {
+			_ = listener.Close()
+			return startErr
+		}
+		dispatcher = worker
+	}
+	server.Handler = httpapi.New(db, reports, dispatcher, settings.ProbeTimeout, settings.ReadTimeout, settings.PollMaxAge, settings.MaxRequestBytes, settings.MaxReportBytes, logger)
 	if settings.TLS == nil {
 		logger.Warn("HTTP transport is unencrypted; API keys and registration tokens may be exposed in transit")
 	}
@@ -115,7 +134,15 @@ func runWithReady(ctx context.Context, settings config.Settings, logger *slog.Lo
 	if ready != nil {
 		ready()
 	}
-	return serve(ctx, server, listener, settings, logger)
+	err = serve(ctx, server, listener, settings, logger)
+	if worker != nil {
+		shutdown, cancel := context.WithTimeout(context.Background(), settings.Eventing.ShutdownTimeout)
+		defer cancel()
+		if shutdownErr := worker.Shutdown(shutdown); shutdownErr != nil {
+			logger.Warn("event worker shutdown incomplete", "reason", "best_effort_event_loss")
+		}
+	}
+	return err
 }
 
 func bootstrap(ctx context.Context, args []string, output io.Writer) error {
