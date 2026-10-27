@@ -23,7 +23,7 @@ var pageNames = []string{"Machines", "Machine", "Configuration", "Latest report"
 type browser struct {
 	app                                                      *tview.Application
 	pages                                                    *tview.Pages
-	footer                                                   *tview.TextView
+	header, footer                                           *tview.TextView
 	summary                                                  *tview.TextView
 	machines, configurations                                 *tview.Table
 	configuration, report                                    *tview.TextView
@@ -92,11 +92,11 @@ func view() *tview.TextView {
 func table() *tview.Table { return tview.NewTable().SetSelectable(true, false).SetFixed(1, 0) }
 func newBrowser(ctx context.Context, c *client.Client, label string) *browser {
 	ctx, cancel := context.WithCancel(ctx)
-	b := &browser{app: tview.NewApplication(), pages: tview.NewPages(), footer: view(), summary: view(), machines: table(), configurations: table(), configuration: view(), report: view(), ctx: ctx, cancel: cancel, client: c, results: make(chan func(), 16), wake: func() {}}
+	b := &browser{app: tview.NewApplication(), pages: tview.NewPages(), header: view(), footer: view(), summary: view(), machines: table(), configurations: table(), configuration: view(), report: view(), ctx: ctx, cancel: cancel, client: c, results: make(chan func(), 16), wake: func() {}}
 	machine := tview.NewFlex().SetDirection(tview.FlexRow).AddItem(b.summary, 7, 0, false).AddItem(b.configurations, 0, 1, true)
 	b.pages.AddPage(pageNames[0], b.machines, true, true).AddPage(pageNames[1], machine, true, false).AddPage(pageNames[2], b.configuration, true, false).AddPage(pageNames[3], b.report, true, false)
-	title := view().SetText(safe("DSC Registry | Context: " + label + " | read-only"))
-	root := tview.NewFlex().SetDirection(tview.FlexRow).AddItem(title, 1, 0, false).AddItem(b.pages, 0, 1, true).AddItem(b.footer, 2, 0, false)
+	title := b.header.SetText(safe("DSC Registry | Context: " + label + " | read-only\nServer: " + c.ServerURL()))
+	root := tview.NewFlex().SetDirection(tview.FlexRow).AddItem(title, 2, 0, false).AddItem(b.pages, 0, 1, true).AddItem(b.footer, 2, 0, false)
 	b.app.SetRoot(root, true)
 	b.machines.SetSelectedFunc(func(row, col int) {
 		if b.loading || row < 1 || row > len(b.visibleMachines) {

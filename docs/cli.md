@@ -78,7 +78,9 @@ The browser uses the same connection resolution as other commands: selected
 context or `--context`, `--server`, saved administrator login, environment
 credentials, `--api-key-file`, TLS CA/certificate verification options, and
 per-request timeout. See connection setup and authentication above. Redirected
-input/output is unsupported; use `get` or `describe` for scripts.
+input/output is unsupported; use `get` or `describe` for scripts. The header shows
+both the selected context and the effective server URL, including overrides from
+`--server` or `DSCREG_SERVER` and any reverse-proxy path prefix.
 
 Navigate **Machines → Machine → Configuration → Latest report**. Enter opens
 the selected machine or assigned configuration; `r` opens the retained report

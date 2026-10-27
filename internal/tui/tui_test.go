@@ -25,6 +25,27 @@ func testClient(t *testing.T, handler http.HandlerFunc) *client.Client {
 	}
 	return c
 }
+func offlineClient(t *testing.T) *client.Client {
+	t.Helper()
+	c, err := client.New("https://staging.example.com/registry", "sensitive-key", time.Second, "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return c
+}
+
+func TestHeaderShowsEffectiveServerAlongsideContext(t *testing.T) {
+	b := newBrowser(t.Context(), offlineClient(t), "production")
+	defer b.cancel()
+	header := b.header.GetText(false)
+	if !strings.Contains(header, "Context: production") || !strings.Contains(header, "Server: https://staging.example.com/registry") {
+		t.Fatalf("ambiguous connection header: %q", header)
+	}
+	if strings.Contains(header, "sensitive-key") {
+		t.Fatal("header exposed credentials")
+	}
+}
+
 func waitResult(t *testing.T, b *browser) func() {
 	t.Helper()
 	select {
@@ -170,7 +191,7 @@ func TestPaginationFilteringAndEmpty(t *testing.T) {
 	}
 }
 func TestBackPreservesWidgetsAndSelection(t *testing.T) {
-	b := newBrowser(t.Context(), nil, "test")
+	b := newBrowser(t.Context(), offlineClient(t), "test")
 	defer b.cancel()
 	for i := 0; i < 100; i++ {
 		b.machineRows = append(b.machineRows, object{"id": fmt.Sprint(i), "name": fmt.Sprint(i)})
@@ -226,7 +247,7 @@ func TestFailureAndOutdatedResults(t *testing.T) {
 			}
 		})
 	}
-	b := newBrowser(t.Context(), nil, "test")
+	b := newBrowser(t.Context(), offlineClient(t), "test")
 	defer b.cancel()
 	applied := false
 	b.load(func(context.Context) (func(), error) { return func() { applied = true }, nil })
