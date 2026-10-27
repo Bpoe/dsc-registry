@@ -80,6 +80,10 @@ func New(baseURL, key string, timeout time.Duration, tlsCA string, insecure bool
 	}}, nil
 }
 
+// ServerURL returns the effective server URL, including any reverse-proxy prefix.
+// Client construction rejects URL credentials, queries, and fragments.
+func (c *Client) ServerURL() string { return c.base.String() }
+
 // Request accepts a route whose individual variable segments are already escaped.
 // A server URL's path is a reverse-proxy prefix, not a route to resolve against.
 func (c *Client) Request(ctx context.Context, method, path string, query url.Values, body any) (json.RawMessage, int, error) {

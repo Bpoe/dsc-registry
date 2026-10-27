@@ -64,6 +64,63 @@ built-in defaults. There is no default server. Flags include `--server`,
 An explicit key-file flag takes precedence over `DSCREG_API_KEY`; at environment
 priority the inline key takes precedence over the environment key-file setting.
 
+## Interactive browser
+
+Launch the read-only TUI in an interactive terminal after configuring a server
+and administrator credentials:
+
+```sh
+dscreg tui
+dscreg tui --context homelab --timeout 30s
+```
+
+The browser uses the same connection resolution as other commands: selected
+context or `--context`, `--server`, saved administrator login, environment
+credentials, `--api-key-file`, TLS CA/certificate verification options, and
+per-request timeout. See connection setup and authentication above. Redirected
+input/output is unsupported; use `get` or `describe` for scripts. The header shows
+both the selected context and the effective server URL, including overrides from
+`--server` or `DSCREG_SERVER` and any reverse-proxy path prefix.
+
+Navigate **Machines → Machine → Configuration → Latest report**. Enter opens
+the selected machine or assigned configuration; `r` opens the retained report
+from configuration detail. Escape goes back while preserving the previous
+screen's selection and scroll position.
+
+| Key | Action |
+| --- | --- |
+| Up / Down | Select a table row or scroll content |
+| Enter | Open the selected machine/configuration; accept a filter |
+| Escape | Return to the previous screen or dismiss a dialog/filter |
+| `/` | Filter the current machine/configuration table by a case-insensitive name substring |
+| `r` | Refresh a list; open the latest report on configuration detail |
+| Ctrl+R | Refresh the current screen |
+| `?` | Show help for the current screen |
+| `q` | Quit from the machine list |
+| Ctrl+C | Quit from any screen |
+
+Machine listing follows all API pages before presenting the complete searchable
+collection. Refresh is explicit; there is no automatic polling. Machine detail
+uses aggregate status and excludes removed configurations. Stale and unreported
+revision states take precedence over old execution outcomes. Successful execution
+(including `test`) does not establish DSC compliance or machine online health.
+Report timestamps labeled “received” are Registry receipt times, not execution
+times. A stale retained report can still be opened by its report ID. Report
+refresh checks the latest retained receipt again; concurrent deletion or
+replacement can require another refresh.
+
+Configuration detail shows the complete desired template and parameters as YAML;
+the report screen shows the full original execution result as formatted JSON.
+The existing client's 32 MiB response limit and document formatting limits produce
+explicit errors instead of silently truncating content. These screens can expose
+secrets in templates, parameters, and results; they display content only in the
+terminal without creating viewing files or logging payloads. Control characters
+are shown visibly and returned markup is treated as text.
+
+The TUI cannot edit/apply configurations, create/delete machines, manage keys,
+execute DSC, browse removed configurations, or interpret resource compliance.
+It is part of the existing `dscreg` executable and its release packages.
+
 ## Machine management
 
 ```sh
