@@ -136,6 +136,7 @@ func New(in io.Reader, out, errOut io.Writer) *cobra.Command {
 	}})
 	a.addContexts(root)
 	a.addResources(root)
+	a.addTUI(root)
 	root.AddCommand(completionCommand(root))
 	// A resource help topic supplements the verb-oriented command tree.
 	root.AddCommand(&cobra.Command{Use: "configuration", Hidden: true, Short: "Machine-scoped desired configurations",

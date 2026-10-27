@@ -55,7 +55,17 @@ dscreg auth login --api-key-stdin
 dscreg get machines
 dscreg apply -f registry.yaml
 dscreg describe machine apphost01
+dscreg tui
 ```
+
+`dscreg tui` launches a read-only terminal browser using the same configured
+server, context, administrator credentials, TLS settings, and timeout. In an
+interactive terminal, follow Machines → Machine → Configuration → Latest report.
+Enter opens selections, Escape returns without losing selection, `/` filters
+lists, `r` refreshes lists or opens a configuration's report, Ctrl+R refreshes,
+`?` shows help, and `q` quits from the machine list (Ctrl+C quits anywhere).
+It shows desired templates/parameters and retained reports, including stale
+revisions, without editing state or executing DSC.
 
 See the [CLI guide](docs/cli.md) for installation, manifests, authentication,
 contexts, output formats, and shell completion.
