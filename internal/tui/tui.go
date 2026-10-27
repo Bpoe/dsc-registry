@@ -93,10 +93,17 @@ func table() *tview.Table { return tview.NewTable().SetSelectable(true, false).S
 func newBrowser(ctx context.Context, c *client.Client, label string) *browser {
 	ctx, cancel := context.WithCancel(ctx)
 	b := &browser{app: tview.NewApplication(), pages: tview.NewPages(), header: view(), footer: view(), summary: view(), machines: table(), configurations: table(), configuration: view(), report: view(), ctx: ctx, cancel: cancel, client: c, results: make(chan func(), 16), wake: func() {}}
-	machine := tview.NewFlex().SetDirection(tview.FlexRow).AddItem(b.summary, 7, 0, false).AddItem(b.configurations, 0, 1, true)
+	b.header.SetBorder(true).SetTitle(" Connection ")
+	b.footer.SetBorder(true).SetTitle(" Status & shortcuts ")
+	b.summary.SetBorder(true).SetTitle(" Machine summary ")
+	b.machines.SetBorder(true).SetTitle(" Machines ")
+	b.configurations.SetBorder(true).SetTitle(" Assigned configurations ")
+	b.configuration.SetBorder(true).SetTitle(" Configuration | Template & parameters ")
+	b.report.SetBorder(true).SetTitle(" Latest retained report ")
+	machine := tview.NewFlex().SetDirection(tview.FlexRow).AddItem(b.summary, 9, 0, false).AddItem(b.configurations, 0, 1, true)
 	b.pages.AddPage(pageNames[0], b.machines, true, true).AddPage(pageNames[1], machine, true, false).AddPage(pageNames[2], b.configuration, true, false).AddPage(pageNames[3], b.report, true, false)
 	title := b.header.SetText(safe("DSC Registry | Context: " + label + " | read-only\nServer: " + c.ServerURL()))
-	root := tview.NewFlex().SetDirection(tview.FlexRow).AddItem(title, 2, 0, false).AddItem(b.pages, 0, 1, true).AddItem(b.footer, 2, 0, false)
+	root := tview.NewFlex().SetDirection(tview.FlexRow).AddItem(title, 4, 0, false).AddItem(b.pages, 0, 1, true).AddItem(b.footer, 4, 0, false)
 	b.app.SetRoot(root, true)
 	b.machines.SetSelectedFunc(func(row, col int) {
 		if b.loading || row < 1 || row > len(b.visibleMachines) {
