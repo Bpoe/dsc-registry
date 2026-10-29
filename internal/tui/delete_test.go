@@ -279,7 +279,7 @@ func TestDeleteFailuresPreserveView(t *testing.T) {
 }
 
 func TestDeleteDuplicateCancellationAndStaleResult(t *testing.T) {
-	for _, action := range []string{"complete", "navigate", "shutdown", "stale"} {
+	for _, action := range []string{"complete", "shutdown", "stale"} {
 		t.Run(action, func(t *testing.T) {
 			started := make(chan struct{})
 			release := make(chan struct{})
@@ -314,8 +314,6 @@ func TestDeleteDuplicateCancellationAndStaleResult(t *testing.T) {
 				t.Fatal("duplicate input interrupted DELETE")
 			}
 			switch action {
-			case "navigate":
-				press(b, tcell.KeyEscape, 0)
 			case "shutdown":
 				press(b, tcell.KeyCtrlC, 0)
 			case "complete", "stale":
@@ -343,10 +341,109 @@ func TestDeleteDuplicateCancellationAndStaleResult(t *testing.T) {
 			if calls.Load() != 1 || b.deletePending.Load() {
 				t.Fatal("duplicate request or stuck guard")
 			}
-			if action == "navigate" && (b.page != machinePage || b.cfg == nil) {
-				t.Fatal("canceled result changed view")
-			}
 		})
+	}
+}
+
+func TestDeleteBlocksInputUntilResponseProcessed(t *testing.T) {
+	for _, page := range []int{machinesPage, machinePage, configurationPage} {
+		for _, code := range []int{http.StatusNoContent, http.StatusServiceUnavailable} {
+			t.Run(fmt.Sprintf("%d/%d", page, code), func(t *testing.T) {
+				started := make(chan struct{})
+				release := make(chan struct{})
+				var calls atomic.Int32
+				b := deletionBrowser(t, page, func(w http.ResponseWriter, r *http.Request) {
+					if r.Method != http.MethodDelete {
+						if page == machinesPage {
+							fmt.Fprint(w, `{"machines":[]}`)
+						} else {
+							fmt.Fprint(w, `{"configurations":[]}`)
+						}
+						return
+					}
+					calls.Add(1)
+					close(started)
+					select {
+					case <-release:
+						w.WriteHeader(code)
+					case <-r.Context().Done():
+					}
+				})
+				confirmDeletion(t, b)
+				select {
+				case <-started:
+				case <-time.After(time.Second):
+					t.Fatal("DELETE did not start")
+				}
+				generation := b.generation
+				assertBlocked := func() {
+					t.Helper()
+					for _, event := range []*tcell.EventKey{
+						tcell.NewEventKey(tcell.KeyEscape, 0, 0),
+						tcell.NewEventKey(tcell.KeyCtrlR, 0, 0),
+						tcell.NewEventKey(tcell.KeyEnter, 0, 0),
+						tcell.NewEventKey(tcell.KeyDown, 0, 0),
+						tcell.NewEventKey(tcell.KeyTab, 0, 0),
+						tcell.NewEventKey(tcell.KeyRune, 'q', 0),
+						tcell.NewEventKey(tcell.KeyRune, 'r', 0),
+						tcell.NewEventKey(tcell.KeyRune, '/', 0),
+						tcell.NewEventKey(tcell.KeyRune, '?', 0),
+						tcell.NewEventKey(tcell.KeyRune, 'd', 0),
+					} {
+						if b.keys(event) != nil {
+							t.Fatalf("input passed to widget during deletion: %v", event)
+						}
+					}
+					if b.page != page || b.generation != generation || !b.loading || !b.deleting || b.dialog || b.ctx.Err() != nil || calls.Load() != 1 {
+						t.Fatal("input navigated, canceled, or interrupted DELETE")
+					}
+				}
+				assertBlocked()
+				close(release)
+				apply := waitResult(t, b)
+				b.workers.Wait()
+				if b.deletePending.Load() {
+					t.Fatal("HTTP worker did not finish")
+				}
+				// The HTTP response is queued; input must remain blocked until applied.
+				assertBlocked()
+				apply()
+				if b.deleting {
+					t.Fatal("input guard retained after response processed")
+				}
+				if code == http.StatusNoContent {
+					waitResult(t, b)()
+					b.workers.Wait()
+					wantPage := machinesPage
+					if page != machinesPage {
+						wantPage = machinePage
+					}
+					if b.page != wantPage || b.loading || b.cfg != nil || b.state != nil {
+						t.Fatal("success did not clean up and refresh")
+					}
+				} else {
+					if b.page != page || !b.dialog || b.loading || b.machine == nil || (page != machinesPage && b.cfg == nil) {
+						t.Fatal("failure did not preserve view and show error")
+					}
+					press(b, tcell.KeyEnter, 0) // Dismiss the existing error modal.
+				}
+				if b.page == machinesPage {
+					press(b, tcell.KeyRune, '/')
+					if !b.dialog {
+						t.Fatal("filter keyboard behavior not restored")
+					}
+				} else {
+					previous := b.page
+					press(b, tcell.KeyEscape, 0)
+					if b.page != previous-1 {
+						t.Fatal("Escape navigation not restored")
+					}
+				}
+				if calls.Load() != 1 {
+					t.Fatal("duplicate DELETE")
+				}
+			})
+		}
 	}
 }
 

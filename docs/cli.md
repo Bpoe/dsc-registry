@@ -122,11 +122,13 @@ Deletion uses a confirmation dialog with **Cancel** selected by default; Escape
 cancels without making a request. Machine deletion permanently removes associated
 desired configurations, reports, and API keys. Configuration deletion removes the
 configuration and its reports. Neither operation undoes changes already applied
-on the machine. Deletion is unavailable while loading; refresh is unavailable
-while deletion is in progress. Successful deletion refreshes the machines list or
-the machine's configuration status. Escape can leave a pending request's screen
-and cancel the request; a request already accepted by the server may still have
-taken effect, so refresh to check its status.
+on the machine. Deletion is unavailable while loading. Once deletion starts,
+Escape navigation and other interactive operations (including refresh, filtering,
+opening resources, additional deletion, and `q`) are disabled until the response
+is processed. Ctrl+C still exits the application and cancels outstanding work.
+Successful deletion refreshes the machines list or the machine's configuration
+status; failure preserves the current view and displays an error. Normal keyboard
+behavior resumes after the response is processed.
 
 The TUI cannot edit/apply configurations, create machines, manage keys,
 execute DSC, browse removed configurations, or interpret resource compliance.

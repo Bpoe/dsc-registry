@@ -192,7 +192,9 @@ func (b *browser) keys(e *tcell.EventKey) *tcell.EventKey {
 	if b.dialog {
 		return e
 	}
-	if b.deleting && e.Key() != tcell.KeyEscape && !(e.Rune() == 'q' && b.page == machinesPage) {
+	// Keep input blocked until the event loop processes the DELETE result,
+	// even if the HTTP worker has already cleared deletePending.
+	if b.deleting {
 		return nil
 	}
 	if e.Key() == tcell.KeyEscape {
