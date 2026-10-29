@@ -1,4 +1,4 @@
-// Package tui provides the read-only Registry browser using standard tview widgets.
+// Package tui provides the Registry administration browser using standard tview widgets.
 package tui
 
 import (

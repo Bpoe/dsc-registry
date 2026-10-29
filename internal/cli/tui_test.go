@@ -16,7 +16,7 @@ func TestTUIRequiresTerminal(t *testing.T) {
 		t.Fatalf("%d %s", code, diagnostic)
 	}
 	code, out, diagnostic := runLocal(t, "", "tui", "--help")
-	if code != 0 || !strings.Contains(out, "read-only") {
+	if code != 0 || !strings.Contains(out, "delete machines and configurations") {
 		t.Fatalf("%d %s %s", code, out, diagnostic)
 	}
 }

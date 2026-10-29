@@ -66,7 +66,7 @@ priority the inline key takes precedence over the environment key-file setting.
 
 ## Interactive browser
 
-Launch the read-only TUI in an interactive terminal after configuring a server
+Launch the TUI in an interactive terminal after configuring a server
 and administrator credentials:
 
 ```sh
@@ -95,6 +95,7 @@ screen's selection and scroll position.
 | `/` | Filter the current machine/configuration table by a case-insensitive name substring |
 | `r` | Refresh a list; open the latest report on configuration detail |
 | Ctrl+R | Refresh the current screen |
+| `d` | Confirm deletion of the selected machine or configuration (also available on configuration detail; unavailable on reports) |
 | `?` | Show help for the current screen |
 | `q` | Quit from the machine list |
 | Ctrl+C | Quit from any screen |
@@ -117,7 +118,19 @@ secrets in templates, parameters, and results; they display content only in the
 terminal without creating viewing files or logging payloads. Control characters
 are shown visibly and returned markup is treated as text.
 
-The TUI cannot edit/apply configurations, create/delete machines, manage keys,
+Deletion uses a confirmation dialog with **Cancel** selected by default; Escape
+cancels without making a request. Machine deletion permanently removes associated
+desired configurations, reports, and API keys. Configuration deletion removes the
+configuration and its reports. Neither operation undoes changes already applied
+on the machine. Deletion is unavailable while loading. Once deletion starts,
+Escape navigation and other interactive operations (including refresh, filtering,
+opening resources, additional deletion, and `q`) are disabled until the response
+is processed. Ctrl+C still exits the application and cancels outstanding work.
+Successful deletion refreshes the machines list or the machine's configuration
+status; failure preserves the current view and displays an error. Normal keyboard
+behavior resumes after the response is processed.
+
+The TUI cannot edit/apply configurations, create machines, manage keys,
 execute DSC, browse removed configurations, or interpret resource compliance.
 It is part of the existing `dscreg` executable and its release packages.
 

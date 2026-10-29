@@ -58,14 +58,16 @@ dscreg describe machine apphost01
 dscreg tui
 ```
 
-`dscreg tui` launches a read-only terminal browser using the same configured
-server, context, administrator credentials, TLS settings, and timeout. In an
+`dscreg tui` launches a terminal browser with confirmed deletion using the same
+configured server, context, administrator credentials, TLS settings, and timeout. In an
 interactive terminal, follow Machines → Machine → Configuration → Latest report.
 Enter opens selections, Escape returns without losing selection, `/` filters
 lists, `r` refreshes lists or opens a configuration's report, Ctrl+R refreshes,
 `?` shows help, and `q` quits from the machine list (Ctrl+C quits anywhere).
 It shows desired templates/parameters and retained reports, including stale
-revisions, without editing state or executing DSC.
+revisions. Press `d` on a machine or configuration to confirm deletion; Cancel is
+the default and Escape cancels. Reports have no delete shortcut. It does not
+edit configurations or execute DSC.
 
 See the [CLI guide](docs/cli.md) for installation, manifests, authentication,
 contexts, output formats, and shell completion.

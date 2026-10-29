@@ -9,7 +9,7 @@ import (
 )
 
 func (a *app) addTUI(root *cobra.Command) {
-	root.AddCommand(&cobra.Command{Use: "tui", Short: "Browse machines, desired configurations, and latest reports (read-only)", Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, _ []string) error {
+	root.AddCommand(&cobra.Command{Use: "tui", Short: "Browse machines, configurations, and reports; delete machines and configurations", Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, _ []string) error {
 		in, inOK := a.in.(*os.File)
 		out, outOK := a.out.(*os.File)
 		if !inOK || !outOK || !term.IsTerminal(int(in.Fd())) || !term.IsTerminal(int(out.Fd())) {
