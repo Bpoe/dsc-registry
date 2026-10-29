@@ -3,8 +3,10 @@ package tui
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"net/url"
 	"sync"
+	"sync/atomic"
 
 	"github.com/Bpoe/dsc-registry/internal/client"
 	"github.com/gdamore/tcell/v2"
@@ -21,15 +23,17 @@ const (
 var pageNames = []string{"Machines", "Machine", "Configuration", "Latest report"}
 
 type browser struct {
-	app                                                      *tview.Application
-	pages                                                    *tview.Pages
-	header, footer                                           *tview.TextView
-	summary                                                  *tview.TextView
-	machines, configurations                                 *tview.Table
-	configuration, report                                    *tview.TextView
-	page                                                     int
-	dialog                                                   bool
-	loading                                                  bool
+	app                      *tview.Application
+	pages                    *tview.Pages
+	header, footer           *tview.TextView
+	summary                  *tview.TextView
+	machines, configurations *tview.Table
+	configuration, report    *tview.TextView
+	page                     int
+	dialog                   bool
+	loading, deleting        bool
+	// Keep the duplicate guard until the worker exits, even after navigation cancels it.
+	deletePending                                            atomic.Bool
 	generation                                               uint64
 	ctx                                                      context.Context
 	cancel                                                   context.CancelFunc
@@ -102,11 +106,11 @@ func newBrowser(ctx context.Context, c *client.Client, label string) *browser {
 	b.report.SetBorder(true).SetTitle(" Latest retained report ")
 	machine := tview.NewFlex().SetDirection(tview.FlexRow).AddItem(b.summary, 9, 0, false).AddItem(b.configurations, 0, 1, true)
 	b.pages.AddPage(pageNames[0], b.machines, true, true).AddPage(pageNames[1], machine, true, false).AddPage(pageNames[2], b.configuration, true, false).AddPage(pageNames[3], b.report, true, false)
-	title := b.header.SetText(safe("DSC Registry | Context: " + label + " | read-only\nServer: " + c.ServerURL()))
+	title := b.header.SetText(safe("DSC Registry | Context: " + label + " | browse & delete\nServer: " + c.ServerURL()))
 	root := tview.NewFlex().SetDirection(tview.FlexRow).AddItem(title, 4, 0, false).AddItem(b.pages, 0, 1, true).AddItem(b.footer, 4, 0, false)
 	b.app.SetRoot(root, true)
 	b.machines.SetSelectedFunc(func(row, col int) {
-		if b.loading || row < 1 || row > len(b.visibleMachines) {
+		if b.loading || b.deletePending.Load() || row < 1 || row > len(b.visibleMachines) {
 			return
 		}
 		b.machine = b.visibleMachines[row-1]
@@ -117,7 +121,7 @@ func newBrowser(ctx context.Context, c *client.Client, label string) *browser {
 		b.refresh()
 	})
 	b.configurations.SetSelectedFunc(func(row, col int) {
-		if b.loading || row < 1 || row > len(b.visibleConfigs) {
+		if b.loading || b.deletePending.Load() || row < 1 || row > len(b.visibleConfigs) {
 			return
 		}
 		b.state = b.visibleConfigs[row-1]
@@ -146,11 +150,11 @@ func (b *browser) hint(message string) {
 	shortcuts := "↑/↓ scroll | Esc back | Ctrl+R refresh | ? help | Ctrl+C quit"
 	switch b.page {
 	case machinesPage:
-		shortcuts = "↑/↓ select | Enter machine | / filter | r/Ctrl+R refresh | ? help | q quit"
+		shortcuts = "↑/↓ select | Enter machine | d delete | / filter | r/Ctrl+R refresh | ? help | q quit"
 	case machinePage:
-		shortcuts = "↑/↓ select | Enter configuration | / filter | r/Ctrl+R refresh | Esc back | ? help"
+		shortcuts = "↑/↓ select | Enter configuration | d delete | / filter | r/Ctrl+R refresh | Esc back | ? help"
 	case configurationPage:
-		shortcuts += " | r latest report"
+		shortcuts += " | r latest report | d delete"
 	}
 	b.footer.SetText(safe(message + "\n" + shortcuts))
 }
@@ -159,7 +163,7 @@ func (b *browser) invalidate() {
 	if b.requestCancel != nil {
 		b.requestCancel()
 	}
-	b.loading = false
+	b.loading, b.deleting = false, false
 }
 func (b *browser) show(page int) {
 	b.invalidate()
@@ -188,6 +192,9 @@ func (b *browser) keys(e *tcell.EventKey) *tcell.EventKey {
 	if b.dialog {
 		return e
 	}
+	if b.deleting && e.Key() != tcell.KeyEscape && !(e.Rune() == 'q' && b.page == machinesPage) {
+		return nil
+	}
 	if e.Key() == tcell.KeyEscape {
 		if b.page > machinesPage {
 			b.show(b.page - 1)
@@ -205,8 +212,17 @@ func (b *browser) keys(e *tcell.EventKey) *tcell.EventKey {
 			b.app.Stop()
 			return nil
 		}
+	case 'd':
+		if b.page != reportPage {
+			b.confirmDelete()
+			return nil
+		}
 	case '?':
-		b.message("Machines → Machine → Configuration → Latest report\n\n" + b.footer.GetText(false) + "\n\nRead-only. Report receipt time is not execution time. Execution success is not DSC compliance or machine online health.")
+		help := "Machines → Machine → Configuration → Latest report\n\n" + b.footer.GetText(false)
+		if b.page != reportPage {
+			help += "\n\nPress d to delete the selected machine or configuration. Deletion requires confirmation (Cancel is the default; Escape cancels)."
+		}
+		b.message(help + "\n\nReport receipt time is not execution time. Execution success is not DSC compliance or machine online health.")
 		return nil
 	case '/':
 		if b.page <= machinePage {
@@ -233,6 +249,85 @@ func (b *browser) keys(e *tcell.EventKey) *tcell.EventKey {
 	}
 	return e
 }
+
+// Capture the target before showing the dialog. Names are display labels for
+// machines; only their immutable IDs are used in requests.
+func (b *browser) confirmDelete() {
+	if b.loading || b.dialog || b.deletePending.Load() || b.ctx.Err() != nil {
+		return
+	}
+	machine := b.machine
+	var cfg object
+	switch b.page {
+	case machinesPage:
+		row, _ := b.machines.GetSelection()
+		if row < 1 || row > len(b.visibleMachines) {
+			return
+		}
+		machine = b.visibleMachines[row-1]
+	case machinePage:
+		row, _ := b.configurations.GetSelection()
+		if row < 1 || row > len(b.visibleConfigs) {
+			return
+		}
+		cfg = b.visibleConfigs[row-1]
+	case configurationPage:
+		if b.cfg == nil {
+			return
+		}
+		cfg = b.cfg
+	default:
+		return
+	}
+	path := machinePath(machine)
+	warning := fmt.Sprintf("Delete machine %q?\n\nAssociated desired configurations, reports, and API keys will be permanently removed. Changes already applied on the machine are not undone.", text(machine, "name"))
+	if cfg != nil {
+		path += "/configurations/" + url.PathEscape(text(cfg, "name"))
+		warning = fmt.Sprintf("Delete configuration %q on machine %q?\n\nThe configuration and its reports will be permanently removed. Changes already applied on the machine are not undone.", text(cfg, "name"), text(machine, "name"))
+	}
+	generation := b.generation
+	b.dialog = true
+	modal := tview.NewModal().SetText(tview.Escape(safe(warning))).AddButtons([]string{"Cancel", "Delete"}).SetFocus(0)
+	modal.SetDoneFunc(func(index int, _ string) {
+		b.dismiss()
+		if index != 1 || generation != b.generation || b.loading || b.ctx.Err() != nil || !b.deletePending.CompareAndSwap(false, true) {
+			return
+		}
+		b.request(func(ctx context.Context) (func(), error) {
+			defer b.deletePending.Store(false)
+			_, _, err := b.client.Request(ctx, http.MethodDelete, path, nil, nil)
+			return func() {
+				b.cfg, b.state = nil, nil
+				b.configuration.SetText("")
+				b.report.SetText("")
+				if cfg == nil {
+					b.machine = nil
+					b.configRows, b.visibleConfigs = nil, nil
+					b.configurations.Clear()
+					b.summary.SetText("")
+					b.machineRows = without(b.machineRows, "id", text(machine, "id"))
+				} else {
+					b.configRows = without(b.configRows, "name", text(cfg, "name"))
+					b.show(machinePage)
+				}
+				b.renderTable()
+				b.refresh()
+			}, err
+		}, "Deletion failed; the current view has been preserved.")
+		b.deleting = true
+		b.hint("Deleting…")
+	})
+	modal.SetInputCapture(func(e *tcell.EventKey) *tcell.EventKey {
+		if e.Key() == tcell.KeyEscape {
+			b.dismiss()
+			return nil
+		}
+		return e
+	})
+	b.pages.AddPage("dialog", modal, true, true)
+	b.app.SetFocus(modal)
+}
+
 func (b *browser) dismiss() {
 	b.pages.RemovePage("dialog")
 	b.dialog = false
@@ -278,6 +373,9 @@ func (b *browser) filter() {
 // One active request chain per screen; generation prevents canceled/outdated
 // responses from overwriting a new selection, including after navigating back.
 func (b *browser) load(work func(context.Context) (func(), error)) {
+	b.request(work, "Refresh failed; previously loaded data may be outdated.")
+}
+func (b *browser) request(work func(context.Context) (func(), error), failure string) {
 	b.invalidate()
 	generation := b.generation
 	ctx, cancel := context.WithCancel(b.ctx)
@@ -291,12 +389,12 @@ func (b *browser) load(work func(context.Context) (func(), error)) {
 			return
 		}
 		update := func() {
-			if generation != b.generation {
+			if generation != b.generation || b.ctx.Err() != nil {
 				return
 			}
-			b.loading = false
+			b.loading, b.deleting = false, false
 			if err != nil {
-				b.hint("Refresh failed; previously loaded data may be outdated.")
+				b.hint(failure)
 				b.message(errorMessage(err))
 				return
 			}
@@ -321,6 +419,9 @@ func errorMessage(err error) string {
 	return err.Error()
 }
 func (b *browser) refresh() {
+	if b.deleting || b.deletePending.Load() {
+		return
+	}
 	switch b.page {
 	case machinesPage:
 		b.load(func(ctx context.Context) (func(), error) {
@@ -453,4 +554,16 @@ func (b *browser) renderTable() {
 		}
 	}
 	b.hint(message)
+}
+
+// Remove a deleted resource locally too, so a failed follow-up refresh cannot
+// leave it selectable. renderTable retains the filter and clamps the selection.
+func without(rows []object, key, value string) []object {
+	remaining := make([]object, 0, len(rows))
+	for _, row := range rows {
+		if text(row, key) != value {
+			remaining = append(remaining, row)
+		}
+	}
+	return remaining
 }
