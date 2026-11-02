@@ -6,6 +6,8 @@ import (
 	"errors"
 	"log/slog"
 	"time"
+
+	"github.com/Bpoe/dsc-registry/internal/diagnostics"
 )
 
 type transaction struct {
@@ -21,7 +23,7 @@ func (s *Store) begin(ctx context.Context, operation string) (*transaction, erro
 	tx, err := s.DB.BeginTx(ctx, nil)
 	if err != nil {
 		s.logTransaction(operation, start, "begin_error")
-		return nil, err
+		return nil, diagnostics.At("begin", err)
 	}
 	return &transaction{Tx: tx, store: s, operation: operation, start: start}, nil
 }
@@ -33,7 +35,7 @@ func (tx *transaction) Commit() error {
 		outcome = "commit_error"
 	}
 	tx.finish(outcome)
-	return err
+	return diagnostics.At("commit", err)
 }
 
 func (tx *transaction) Rollback() error {
@@ -41,6 +43,11 @@ func (tx *transaction) Rollback() error {
 	outcome := "rolled_back"
 	if err != nil && !errors.Is(err, sql.ErrTxDone) {
 		outcome = "rollback_error"
+		// Rollback errors are usually ignored by deferred callers, so diagnose
+		// this distinct failure here rather than losing it during propagation.
+		if tx.store.Logger != nil {
+			tx.store.Logger.Warn("database rollback failed", "dependency", "database", "operation", "transaction", "duration", time.Since(tx.start), "error", diagnostics.Details(diagnostics.At("rollback", err)))
+		}
 	}
 	tx.finish(outcome)
 	return err
@@ -57,12 +64,9 @@ func (s *Store) logTransaction(operation string, start time.Time, outcome string
 	if s.Logger == nil {
 		return
 	}
-	level := slog.LevelInfo
-	if outcome == "begin_error" || outcome == "commit_error" || outcome == "rollback_error" {
-		level = slog.LevelError
-	}
+	// Keep outcome/timing telemetry; application boundaries log failure details.
 	stats := s.DB.Stats()
-	s.Logger.Log(context.Background(), level, "database transaction",
+	s.Logger.Log(context.Background(), slog.LevelInfo, "database transaction",
 		"engine", s.Engine, "operation", operation, "outcome", outcome,
 		"duration", time.Since(start), "pool_in_use", stats.InUse,
 		"pool_wait_count", stats.WaitCount, "pool_wait_duration", stats.WaitDuration)

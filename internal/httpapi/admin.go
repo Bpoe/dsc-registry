@@ -39,7 +39,7 @@ func (a *adminAPI) createMachine(w http.ResponseWriter, r *http.Request) {
 	}
 	machine, err := a.store.CreateMachine(r.Context(), name)
 	if err != nil {
-		a.machineCreationError(w, err)
+		a.machineCreationError(w, r, err)
 		return
 	}
 	a.events.Notify(eventing.MachineCreated, eventing.Identifiers{MachineID: machine.ID})
@@ -64,7 +64,7 @@ func (a *adminAPI) listMachines(w http.ResponseWriter, r *http.Request) {
 		}
 		machine, err := a.store.GetMachineByName(r.Context(), names[0])
 		if err != nil {
-			a.resourceError(w, err, apikey.Machine)
+			a.resourceError(w, r, err, apikey.Machine)
 			return
 		}
 		writeJSON(w, http.StatusOK, machine)
@@ -76,7 +76,7 @@ func (a *adminAPI) listMachines(w http.ResponseWriter, r *http.Request) {
 	}
 	machines, err := a.store.ListMachines(r.Context(), cursor, limit+1)
 	if err != nil {
-		a.failure(w, err)
+		a.failure(w, r, err)
 		return
 	}
 	next := ""
@@ -93,7 +93,7 @@ func (a *adminAPI) listMachines(w http.ResponseWriter, r *http.Request) {
 func (a *adminAPI) getMachine(w http.ResponseWriter, r *http.Request) {
 	machine, err := a.store.GetMachine(r.Context(), r.PathValue("id"))
 	if err != nil {
-		a.resourceError(w, err, apikey.Machine)
+		a.resourceError(w, r, err, apikey.Machine)
 		return
 	}
 	writeJSON(w, http.StatusOK, machine)
@@ -102,7 +102,7 @@ func (a *adminAPI) getMachine(w http.ResponseWriter, r *http.Request) {
 func (a *adminAPI) deleteMachine(w http.ResponseWriter, r *http.Request) {
 	paths, err := a.store.DeleteMachine(r.Context(), r.PathValue("id"))
 	if err != nil {
-		a.resourceError(w, err, apikey.Machine)
+		a.resourceError(w, r, err, apikey.Machine)
 		return
 	}
 	a.events.Notify(eventing.MachineDeleted, eventing.Identifiers{MachineID: r.PathValue("id")})
@@ -122,7 +122,7 @@ func (a *adminAPI) issueKey(w http.ResponseWriter, r *http.Request, role string)
 	}
 	key, err := a.store.IssueKey(r.Context(), role, r.PathValue("id"), description)
 	if err != nil {
-		a.resourceError(w, err, role)
+		a.resourceError(w, r, err, role)
 		return
 	}
 	writeJSON(w, http.StatusCreated, key)
@@ -135,7 +135,7 @@ func (a *adminAPI) listKeys(w http.ResponseWriter, r *http.Request, role string)
 	}
 	keys, err := a.store.ListKeys(r.Context(), role, r.PathValue("id"), cursor, limit+1)
 	if err != nil {
-		a.resourceError(w, err, role)
+		a.resourceError(w, r, err, role)
 		return
 	}
 	next := ""
@@ -151,7 +151,7 @@ func (a *adminAPI) listKeys(w http.ResponseWriter, r *http.Request, role string)
 
 func (a *adminAPI) revokeKey(w http.ResponseWriter, r *http.Request, role string) {
 	if err := a.store.RevokeKey(r.Context(), role, r.PathValue("id"), r.PathValue("keyId")); err != nil {
-		a.resourceError(w, err, role)
+		a.resourceError(w, r, err, role)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -211,12 +211,12 @@ func (a *adminAPI) decodeMachineName(w http.ResponseWriter, r *http.Request) (st
 	return name, true
 }
 
-func (a *adminAPI) machineCreationError(w http.ResponseWriter, err error) {
+func (a *adminAPI) machineCreationError(w http.ResponseWriter, r *http.Request, err error) {
 	if errors.Is(err, database.ErrMachineNameConflict) {
 		writeError(w, http.StatusConflict, "machine_name_conflict", "A machine with this name already exists")
 		return
 	}
-	a.failure(w, err)
+	a.failure(w, r, err)
 }
 
 func (a *adminAPI) readJSONBody(w http.ResponseWriter, r *http.Request) ([]byte, bool) {
@@ -281,16 +281,16 @@ func (a *adminAPI) unauthorized(w http.ResponseWriter) {
 	writeError(w, http.StatusUnauthorized, "unauthorized", "Valid API key required")
 }
 
-func (a *adminAPI) resourceError(w http.ResponseWriter, err error, role string) {
+func (a *adminAPI) resourceError(w http.ResponseWriter, r *http.Request, err error, role string) {
 	if errors.Is(err, database.ErrNotFound) {
 		// The same response covers missing owners and keys not owned by the URL owner.
 		writeError(w, http.StatusNotFound, role+"_not_found", "Owner or key not found")
 		return
 	}
-	a.failure(w, err)
+	a.failure(w, r, err)
 }
 
-func (a *adminAPI) failure(w http.ResponseWriter, err error) {
-	a.logger.Error("administration database operation failed")
+func (a *adminAPI) failure(w http.ResponseWriter, r *http.Request, err error) {
+	a.logDependencyFailure(r, "database", "query", err)
 	writeError(w, http.StatusServiceUnavailable, "database_unavailable", "Database operation unavailable")
 }

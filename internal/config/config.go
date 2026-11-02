@@ -67,7 +67,7 @@ func Parse(args []string, help io.Writer) (Settings, error) {
 	f.DurationVar(&s.WriteTimeout, "write-timeout", s.WriteTimeout, "HTTP response write timeout")
 	f.DurationVar(&s.IdleTimeout, "idle-timeout", s.IdleTimeout, "HTTP keep-alive idle timeout")
 	f.DurationVar(&s.ShutdownTimeout, "shutdown-timeout", s.ShutdownTimeout, "graceful shutdown timeout")
-	f.DurationVar(&s.ProbeTimeout, "probe-timeout", s.ProbeTimeout, "readiness response timeout")
+	f.DurationVar(&s.ProbeTimeout, "probe-timeout", s.ProbeTimeout, "legacy probe timeout (accepted for configuration compatibility; health checks perform no I/O)")
 	if err := f.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			f.SetOutput(help)

@@ -5,15 +5,12 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
-	"errors"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
-	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -36,7 +33,7 @@ func testHandler(t *testing.T) (http.Handler, *sql.DB, *reportstore.Store, *byte
 	t.Cleanup(func() { db.Close() })
 	logs := &bytes.Buffer{}
 	logger := slog.New(slog.NewJSONHandler(logs, nil))
-	return New(&database.Store{DB: db, Engine: "sqlite"}, reports, nil, 100*time.Millisecond, time.Second, 5*time.Minute, 1<<20, 16<<20, logger), db, reports, logs
+	return New(&database.Store{DB: db, Engine: "sqlite"}, reports, nil, time.Second, 5*time.Minute, 1<<20, 16<<20, logger), db, reports, logs
 }
 
 func request(handler http.Handler, method, path string) *httptest.ResponseRecorder {
@@ -80,210 +77,25 @@ func TestHealthRoutes(t *testing.T) {
 	}
 }
 
-func TestDependencyFailuresDoNotAffectLiveness(t *testing.T) {
-	for _, dependency := range []string{"database", "reports"} {
-		t.Run(dependency, func(t *testing.T) {
-			handler, db, reports, _ := testHandler(t)
-			if dependency == "database" {
-				if err := db.Close(); err != nil {
-					t.Fatal(err)
-				}
-			} else if err := reports.Close(); err != nil {
-				t.Fatal(err)
-			}
-			response := request(handler, "GET", "/health/ready")
-			if response.Code != http.StatusServiceUnavailable || response.Body.String() != unavailable {
-				t.Fatalf("readiness: %d %s", response.Code, response.Body)
-			}
-			if response := request(handler, "GET", "/health/live"); response.Code != http.StatusOK {
-				t.Fatalf("liveness: %d %s", response.Code, response.Body)
-			}
-		})
-	}
-}
-
-func TestReadinessTimeout(t *testing.T) {
-	// Hold the only database connection so Ping must wait for the probe deadline.
-	handler, db, _, _ := testHandler(t)
-	connection, err := db.Conn(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer connection.Close()
-	start := time.Now()
-	response := request(handler, "GET", "/health/ready")
-	if elapsed := time.Since(start); elapsed > time.Second {
-		t.Fatalf("readiness response exceeded its bound: %v", elapsed)
-	}
-	if response.Code != http.StatusServiceUnavailable || response.Body.String() != unavailable {
-		t.Fatalf("readiness timeout: %d %s", response.Code, response.Body)
-	}
-	if response.Header().Get("Content-Type") != "application/json" {
-		t.Fatalf("timeout Content-Type = %q", response.Header().Get("Content-Type"))
-	}
-}
-
-func await[T any](t *testing.T, results <-chan T) T {
-	t.Helper()
-	select {
-	case result := <-results:
-		return result
-	case <-time.After(3 * time.Second):
-		t.Fatal("timed out waiting for readiness check")
-		var zero T
-		return zero
-	}
-}
-
-func TestConcurrentReadinessRequestsAreHealthy(t *testing.T) {
-	_, db, reports, _ := testHandler(t)
-	handler := New(&database.Store{DB: db, Engine: "sqlite"}, reports, nil, 2*time.Second, time.Second, 5*time.Minute, 1<<20, 16<<20, slog.New(slog.NewJSONHandler(io.Discard, nil)))
-	connection, err := db.Conn(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer connection.Close()
-	results := make(chan *httptest.ResponseRecorder, 2)
-	go func() { results <- request(handler, "GET", "/health/ready") }()
-	deadline := time.Now().Add(time.Second)
-	for db.Stats().WaitCount == 0 {
-		if time.Now().After(deadline) {
-			t.Fatal("readiness did not start checking the database")
-		}
-		time.Sleep(time.Millisecond)
-	}
-	go func() { results <- request(handler, "GET", "/health/ready") }()
-	select {
-	case response := <-results:
-		t.Fatalf("probe returned before dependency check finished: %d %s", response.Code, response.Body)
-	case <-time.After(20 * time.Millisecond):
-	}
-	if err := connection.Close(); err != nil {
-		t.Fatal(err)
-	}
-	for range 2 {
-		response := await(t, results)
-		if response.Code != http.StatusOK || response.Body.String() != "{\"status\":\"ready\"}\n" {
-			t.Fatalf("concurrent readiness: %d %s", response.Code, response.Body)
+func TestHealthIgnoresDependencies(t *testing.T) {
+	// Nil dependencies prove that neither route even accesses the stores.
+	handler := New(nil, nil, nil, time.Second, time.Minute, 1024, 1024,
+		slog.New(slog.NewJSONHandler(io.Discard, nil)))
+	for _, path := range []string{"/health/live", "/health/ready"} {
+		if response := request(handler, "GET", path); response.Code != http.StatusOK {
+			t.Fatalf("%s: %d %s", path, response.Code, response.Body)
 		}
 	}
-}
-
-func TestReadinessSharesSuccessAndFailure(t *testing.T) {
-	for _, test := range []struct {
-		name    string
-		failure error
-	}{{"success", nil}, {"failure", errors.New("dependency unavailable")}} {
-		t.Run(test.name, func(t *testing.T) {
-			release := make(chan struct{})
-			unblock := sync.OnceFunc(func() { close(release) })
-			defer unblock()
-			started := make(chan struct{}, 16)
-			var calls atomic.Int32
-			probe := &readinessProbe{timeout: time.Second, check: func(context.Context) error {
-				calls.Add(1)
-				started <- struct{}{}
-				<-release
-				return test.failure
-			}}
-			results := make(chan *probeResult, 16)
-			for range 16 {
-				go func() { results <- probe.start() }()
-			}
-			first := await(t, results)
-			for range 15 {
-				if result := await(t, results); result != first {
-					t.Fatal("concurrent callers did not share the same dependency check")
-				}
-			}
-			await(t, started)
-			if calls.Load() != 1 {
-				t.Fatalf("dependency checks = %d, want 1", calls.Load())
-			}
-			unblock()
-			await(t, first.done)
-			if !errors.Is(first.err, test.failure) {
-				t.Fatalf("shared result = %v, want %v", first.err, test.failure)
-			}
-			next := probe.start()
-			if next == first {
-				t.Fatal("completed result was reused for a new probe")
-			}
-			await(t, started)
-			await(t, next.done)
-			if calls.Load() != 2 {
-				t.Fatalf("dependency checks = %d, want 2", calls.Load())
-			}
-		})
-	}
-}
-
-func TestReadinessCallerCancellationIsIsolated(t *testing.T) {
-	release := make(chan struct{})
-	unblock := sync.OnceFunc(func() { close(release) })
-	defer unblock()
-	started := make(chan struct{}, 1)
-	probe := &readinessProbe{timeout: time.Second, check: func(ctx context.Context) error {
-		started <- struct{}{}
-		<-release
-		return ctx.Err()
-	}}
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	results := make(chan *httptest.ResponseRecorder, 1)
-	go func() {
-		response := httptest.NewRecorder()
-		probe.ServeHTTP(response, httptest.NewRequest("GET", "/health/ready", nil).WithContext(ctx))
-		results <- response
-	}()
-	await(t, started)
-	shared := probe.start()
-	cancel()
-	if response := await(t, results); response.Code != http.StatusServiceUnavailable {
-		t.Fatalf("canceled request: %d %s", response.Code, response.Body)
-	}
-	if probe.start() != shared {
-		t.Fatal("canceling the initiating caller ended the shared check")
-	}
-	unblock()
-	await(t, shared.done)
-	if shared.err != nil {
-		t.Fatalf("caller canceled the shared check: %v", shared.err)
-	}
-}
-
-func TestStalledReadinessCheckIsBounded(t *testing.T) {
-	release := make(chan struct{})
-	unblock := sync.OnceFunc(func() { close(release) })
-	defer unblock()
-	var calls atomic.Int32
-	probe := &readinessProbe{timeout: 20 * time.Millisecond, check: func(context.Context) error {
-		calls.Add(1)
-		<-release
-		return nil
-	}}
-	for range 2 {
-		start := time.Now()
-		response := request(probe, "GET", "/health/ready")
-		if elapsed := time.Since(start); elapsed > time.Second {
-			t.Fatalf("stalled probe exceeded its response deadline: %v", elapsed)
-		}
-		if response.Code != http.StatusServiceUnavailable || response.Body.String() != unavailable {
-			t.Fatalf("stalled readiness: %d %s", response.Code, response.Body)
+	handler, db, reports, logs := testHandler(t)
+	db.Close()
+	reports.Close()
+	for _, path := range []string{"/health/live", "/health/ready"} {
+		if response := request(handler, "GET", path); response.Code != http.StatusOK {
+			t.Fatalf("%s with failed dependencies: %d %s", path, response.Code, response.Body)
 		}
 	}
-	if calls.Load() != 1 {
-		t.Fatalf("stalled checks accumulated: %d", calls.Load())
-	}
-	shared := probe.start()
-	unblock()
-	await(t, shared.done)
-	if !errors.Is(shared.err, context.DeadlineExceeded) {
-		t.Fatalf("late completion reported success: %v", shared.err)
-	}
-	// The old check has actually ended, so a new request may check again.
-	if response := request(probe, "GET", "/health/ready"); response.Code != http.StatusOK {
-		t.Fatalf("readiness did not recover: %d %s", response.Code, response.Body)
+	if strings.Contains(logs.String(), `"dependency"`) {
+		t.Fatal("health logged a dependency failure")
 	}
 }
 

@@ -311,8 +311,8 @@ func TestAMQPConnectTimeoutAndBackoff(t *testing.T) {
 		t.Fatal("connection timeout failed", err)
 	}
 	waitFor(t, peerDone)
-	if publisher.backoff != 500*time.Millisecond || !strings.Contains(logs.String(), `"outcome":"connect_failed"`) {
-		t.Fatal("missing connection failure backoff/signal")
+	if publisher.backoff != 500*time.Millisecond {
+		t.Fatal("missing connection failure backoff")
 	}
 	attempt := publisher.nextAttempt
 	canceled, stop := context.WithCancel(context.Background())

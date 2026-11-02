@@ -14,6 +14,7 @@ import (
 
 	"github.com/Azure/go-amqp"
 	"github.com/Bpoe/dsc-registry/internal/config"
+	"github.com/Bpoe/dsc-registry/internal/diagnostics"
 )
 
 const contentType = "application/cloudevents+json"
@@ -95,7 +96,7 @@ func (p *AMQP) Publish(ctx context.Context, event Event) (err error) {
 		defer timer.Stop()
 		select {
 		case <-ctx.Done():
-			return ctx.Err()
+			return diagnostics.At("backoff", ctx.Err())
 		case <-timer.C:
 		}
 	}
@@ -105,12 +106,8 @@ func (p *AMQP) Publish(ctx context.Context, event Event) (err error) {
 			p.nextAttempt = time.Time{}
 			return
 		}
-		var connectionError *amqp.ConnError
-		if errors.As(err, &connectionError) {
-			p.logger.Warn("AMQP connection", "outcome", "connection_failed")
-		}
 		if closeErr := p.Close(); closeErr != nil {
-			p.logger.Warn("AMQP connection cleanup failed")
+			p.logger.Warn("AMQP connection cleanup failed", "dependency", "eventing", "operation", "connection_close", "error", diagnostics.Details(closeErr))
 		}
 		p.backoff = nextBackoff(p.backoff)
 		p.nextAttempt = time.Now().Add(p.backoff)
@@ -120,7 +117,6 @@ func (p *AMQP) Publish(ctx context.Context, event Event) (err error) {
 		err = p.connect(connect)
 		cancel()
 		if err != nil {
-			p.logger.Warn("AMQP connection", "outcome", "connect_failed")
 			return err
 		}
 		outcome := "connected"
@@ -136,13 +132,13 @@ func (p *AMQP) Publish(ctx context.Context, event Event) (err error) {
 	}
 	receipt, err := p.sender.SendWithReceipt(ctx, message, nil)
 	if err != nil {
-		return err
+		return diagnostics.At("send", err)
 	}
 	state, err := receipt.Wait(ctx)
 	if err != nil {
-		return err
+		return diagnostics.At("settlement", err)
 	}
-	return accepted(state)
+	return diagnostics.At("settlement", accepted(state))
 }
 
 func nextBackoff(previous time.Duration) time.Duration {
@@ -165,9 +161,12 @@ func eventMessage(event Event) (*amqp.Message, error) {
 func ptr[T any](value T) *T { return &value }
 
 func accepted(state amqp.DeliveryState) error {
+	if rejected, ok := state.(*amqp.StateRejected); ok && rejected.Error != nil {
+		return publishError{diagnostics.At("delivery_rejected", rejected.Error)}
+	}
 	if _, ok := state.(*amqp.StateAccepted); !ok {
 		// Broker descriptions are untrusted and may contain credentials/data.
-		return errors.New("AMQP delivery was not accepted")
+		return diagnostics.At("delivery_not_accepted", errors.New("AMQP delivery was not accepted"))
 	}
 	return nil
 }
@@ -189,7 +188,7 @@ func (p *AMQP) connect(ctx context.Context) error {
 		p.network, err = (&net.Dialer{}).DialContext(ctx, "tcp", address)
 	}
 	if err != nil {
-		return errors.New("AMQP network connection failed")
+		return publishError{diagnostics.At("connect", err)}
 	}
 	// Interrupt handshake I/O even when cancellation precedes its deadline.
 	network := p.network
@@ -197,17 +196,17 @@ func (p *AMQP) connect(ctx context.Context) error {
 	defer stop()
 	p.conn, err = amqp.NewConn(ctx, p.network, &p.options)
 	if err != nil {
-		return errors.New("AMQP negotiation failed")
+		return publishError{diagnostics.At("negotiate", err)}
 	}
 	session, err := p.conn.NewSession(ctx, nil)
 	if err != nil {
-		return errors.New("AMQP session failed")
+		return publishError{diagnostics.At("session", err)}
 	}
 	p.sender, err = session.NewSender(ctx, p.settings.Address, &amqp.SenderOptions{
 		SettlementMode: ptr(amqp.SenderSettleModeUnsettled),
 	})
 	if err != nil {
-		return errors.New("AMQP destination link failed")
+		return publishError{diagnostics.At("link", err)}
 	}
 	return nil
 }
@@ -229,3 +228,9 @@ func (p *AMQP) Close() error {
 	p.network, p.conn, p.sender = nil, nil, nil
 	return err
 }
+
+// Keep public error text redacted while preserving transport classifications.
+type publishError struct{ error }
+
+func (e publishError) Error() string { return "AMQP operation failed" }
+func (e publishError) Unwrap() error { return e.error }

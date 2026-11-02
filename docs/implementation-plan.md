@@ -246,3 +246,12 @@ Do not add agent code inside the DSC Registry server repository. A separate desi
 ## First PR Copilot prompt
 
 See [COPILOT_KICKOFF.md](../COPILOT_KICKOFF.md). Require Copilot to **plan and implement PR 1 only**, summarize changed files, list validations it ran, and raise any unavoidable API/schema ambiguity rather than silently inventing a new product surface.
+
+### Lightweight health and operational dependency diagnostics
+
+Liveness and readiness now check only the initialized HTTP process; neither
+performs dependency I/O. Startup validation and graceful HTTP drain are retained.
+Shared dependency failures are logged at normal operation boundaries with safe
+OS/driver classifications and failure stages. Use actual request failures,
+latency, report freshness and existing transaction/write telemetry to monitor
+dependencies. No synthetic dependency endpoint or periodic probe is added.

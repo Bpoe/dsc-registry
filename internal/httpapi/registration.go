@@ -40,7 +40,7 @@ func (a *adminAPI) registrationTokens(w http.ResponseWriter, r *http.Request) {
 	}
 	token, err := a.store.CreateRegistrationToken(r.Context(), ttl)
 	if err != nil {
-		a.failure(w, err)
+		a.failure(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusCreated, token)
@@ -64,7 +64,7 @@ func (a *adminAPI) authorizeRegistration(next http.HandlerFunc) http.HandlerFunc
 			if errors.Is(err, database.ErrInvalidRegistrationToken) {
 				registrationUnauthorized(w)
 			} else {
-				a.failure(w, err)
+				a.failure(w, r.WithContext(ctx), err)
 			}
 			return
 		}
@@ -79,7 +79,7 @@ func (a *adminAPI) registerMachine(w http.ResponseWriter, r *http.Request) {
 	}
 	machine, err := a.store.CreateMachineWithKey(r.Context(), name)
 	if err != nil {
-		a.machineCreationError(w, err)
+		a.machineCreationError(w, r, err)
 		return
 	}
 	a.events.Notify(eventing.MachineCreated, eventing.Identifiers{MachineID: machine.ID})

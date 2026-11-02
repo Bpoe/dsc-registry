@@ -75,7 +75,7 @@ func (a *adminAPI) authorize(role string, next http.HandlerFunc) http.HandlerFun
 			return
 		}
 		if err != nil {
-			a.failure(w, err)
+			a.failure(w, r.WithContext(ctx), err)
 			return
 		}
 		if principal.Role != role {

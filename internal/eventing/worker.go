@@ -6,6 +6,8 @@ import (
 	"log/slog"
 	"sync"
 	"time"
+
+	"github.com/Bpoe/dsc-registry/internal/diagnostics"
 )
 
 type Publisher interface {
@@ -83,7 +85,7 @@ func (w *Worker) run(ctx context.Context, publisher Publisher, timeout time.Dura
 	defer func() {
 		w.closeErr = publisher.Close()
 		if w.closeErr != nil {
-			w.logger.Warn("event publisher close failed")
+			w.logger.Warn("event publisher close failed", "dependency", "eventing", "operation", "publisher_close", "error", diagnostics.Details(w.closeErr))
 		}
 	}()
 	for {
@@ -98,10 +100,13 @@ func (w *Worker) run(ctx context.Context, publisher Publisher, timeout time.Dura
 				return
 			}
 			attempt, cancel := context.WithTimeout(ctx, timeout)
+			start := time.Now()
 			err := publisher.Publish(attempt, event)
 			cancel()
 			if err != nil {
-				w.log(slog.LevelWarn, "publish_failed", event)
+				if ctx.Err() == nil || !errors.Is(err, context.Canceled) {
+					w.logger.Warn("event delivery", "outcome", "publish_failed", "dependency", "eventing", "operation", "event_publish", "event_type", event.Type, "event_id", event.ID, "duration", time.Since(start), "error", diagnostics.Details(err))
+				}
 			} else {
 				w.log(slog.LevelInfo, "published", event)
 			}

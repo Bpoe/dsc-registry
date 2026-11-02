@@ -110,21 +110,21 @@ curl.exe --fail http://127.0.0.1:8080/health/live
 curl.exe --fail http://127.0.0.1:8080/health/ready
 ```
 
-Both probes return JSON and `Cache-Control: no-store`. Liveness checks only the
-HTTP process. Readiness checks database connectivity and creates, writes,
-closes, reads, and removes a uniquely named private file in the report root.
-An unavailable dependency returns `503` with a stable JSON error, without
-revealing storage paths or connection details. Readiness responses have a
-deadline; concurrent probes share one in-flight dependency check instead of
-failing because another probe is running. Each caller has its own deadline, and
-cancelling one caller does not cancel the shared check. At most one check runs
-at once, even after timeout, because portable filesystem calls cannot be forcibly
-interrupted.
+Both probes return JSON and `Cache-Control: no-store`. Liveness confirms the
+HTTP process can respond. Readiness confirms that initialization completed and
+the HTTP service can accept requests. Startup dependency validation remains
+unchanged; the listener is opened afterward. During graceful shutdown,
+`net/http` stops accepting new connections and drains in-flight requests.
+Neither endpoint performs database, network or filesystem I/O. Temporary
+PostgreSQL, report storage or eventing outages leave both endpoints at `200`.
+Failures are observed through real operations, structured dependency logs and
+existing request/transaction/write timings. Monitor request failures, latency
+and report freshness rather than continuously probing shared dependencies.
 
 The report root is resolved to a canonical path at startup, allowing trusted
 symlinked roots and parents. File operations are confined to the opened
-directory using `os.Root`; replacement of the canonical root invalidates
-readiness. Changing the original symlink does not redirect active storage;
+directory using `os.Root`. Changing or replacing the root is not detected by
+health endpoints. Changing the original symlink does not redirect active storage;
 restart to select a new target. Keep the canonical root and its parents under
 trusted operator control; filesystem protection is not a substitute for
 ownership and ACLs.
@@ -225,7 +225,7 @@ settings without printing their values or file contents.
 | `-idle-timeout` | `1m` | HTTP keep-alive idle deadline |
 | `-startup-timeout` | `10s` | Startup context deadline |
 | `-shutdown-timeout` | `15s` | Graceful shutdown deadline |
-| `-probe-timeout` | `2s` | Readiness deadline, less than the write timeout |
+| `-probe-timeout` | `2s` | Legacy setting retained for configuration compatibility; health endpoints perform no I/O. Existing validation still requires less than the write timeout |
 | `-sqlite-busy-timeout` | `5s` | Per-connection lock wait, whole milliseconds up to `1m` |
 
 ### Optional events

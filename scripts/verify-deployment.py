@@ -188,18 +188,23 @@ def main():
             compose("stop", "-t", "10", "postgres")
             for backend in backends:
                 expect(backend, "/health/live", 200)
-                expect(backend, "/health/ready", 503)
+                expect(backend, "/health/ready", 200)
             expect(base, upload_path, 503, key=key, method="POST", body=upload)
             compose("start", "postgres")
-            for name, backend in zip(("api1", "api2"), backends):
-                ready(backend, name)
+            # Process readiness does not test PostgreSQL recovery. Observe a
+            # normal authenticated operation before checking persisted state.
+            for backend in backends:
+                deadline = time.monotonic() + 60
+                while request(backend, "/v1/machines", key=admin)[0] != 200:
+                    require(time.monotonic() < deadline, "database recovery deadline exceeded")
+                    time.sleep(1)
             unchanged()
             print("Checking unwritable report storage", flush=True)
             try:
                 storage("chmod 0500 /reports")
                 for backend in backends:
                     expect(backend, "/health/live", 200)
-                    expect(backend, "/health/ready", 503)
+                    expect(backend, "/health/ready", 200)
                 failed_upload = dict(upload, uploadId=str(uuid.uuid4()))
                 expect(base, upload_path, 503, key=key, method="POST", body=failed_upload)
                 unchanged()

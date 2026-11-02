@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"github.com/Bpoe/dsc-registry/internal/diagnostics"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -157,6 +158,19 @@ func TestDirectWriteFaults(t *testing.T) {
 			})
 			if err == nil || key != "" || file == nil || !file.closeCalled {
 				t.Fatal("failed file exposed for publication or not closed", key, err)
+			}
+			wantStage := stage
+			if stage == "short" {
+				wantStage = "write"
+			}
+			found := false
+			for _, detail := range diagnostics.Details(err) {
+				if detail["stage"] == wantStage || stage == "cancel" && detail["kind"] == "canceled" {
+					found = true
+				}
+			}
+			if !found {
+				t.Fatal("failure stage lost", diagnostics.Details(err))
 			}
 			files, err := os.ReadDir(root)
 			if err != nil || len(files) != 0 {

@@ -758,7 +758,7 @@ queue never changes mutation responses or readiness.
 
 ## 4. Health
 
-`GET /health/live` confirms the HTTP process is alive. `GET /health/ready` confirms database connectivity and availability of configured active report storage. Health responses must not reveal secrets or internal connection strings. Rate-limit as appropriate; probes are unauthenticated only to the extent necessary for infrastructure health checks.
+`GET /health/live` confirms the HTTP process is alive and returns `200` with `{"status":"live"}`. `GET /health/ready` returns `200` with `{"status":"ready"}` once initialization has completed and the HTTP service accepts requests. Startup dependency validation completes before the listener opens; graceful shutdown stops accepting connections and drains requests. Neither health endpoint performs network, database or filesystem I/O, and shared dependency outages do not change their responses. Dependency failures are diagnosed through actual operations, structured logs and existing telemetry. Health responses must not reveal secrets or internal connection strings. Rate-limit as appropriate; probes are unauthenticated only to the extent necessary for infrastructure health checks.
 
 ## 5. API integration test scenarios
 

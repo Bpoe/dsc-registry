@@ -9,6 +9,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/Bpoe/dsc-registry/internal/diagnostics"
 	"github.com/google/uuid"
 )
 
@@ -44,17 +45,17 @@ func (s *Store) write(ctx context.Context, content []byte, create func(string) (
 	name := uuid.NewString() + ".json"
 	file, err := create(name)
 	if err != nil {
-		return "", err
+		return "", diagnostics.At("create", err)
 	}
 	n, writeErr := file.Write(content)
 	if writeErr == nil && n != len(content) {
 		writeErr = io.ErrShortWrite
 	}
-	err = errors.Join(writeErr, ctx.Err())
+	err = errors.Join(diagnostics.At("write", writeErr), ctx.Err())
 	if err == nil {
-		err = file.Sync()
+		err = diagnostics.At("sync", file.Sync())
 	}
-	err = errors.Join(err, file.Close(), ctx.Err())
+	err = errors.Join(err, diagnostics.At("close", file.Close()), ctx.Err())
 	if err != nil {
 		if cleanupErr := s.Remove(name); cleanupErr != nil {
 			err = errors.Join(err, &CleanupError{Path: name, Err: cleanupErr})
@@ -72,18 +73,23 @@ func validPath(name string) bool {
 
 func (s *Store) Read(ctx context.Context, name string, limit int64) ([]byte, error) {
 	if !validPath(name) {
-		return nil, errors.New("invalid report storage key")
+		return nil, diagnostics.At("validate_key", errors.New("invalid report storage key"))
 	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
 	file, err := s.root.Open(name)
 	if err != nil {
-		return nil, err
+		return nil, diagnostics.At("open", err)
 	}
 	info, statErr := file.Stat()
-	if statErr == nil && (!info.Mode().IsRegular() || info.Size() > limit) {
-		statErr = errors.New("invalid stored report")
+	if statErr == nil {
+		switch {
+		case !info.Mode().IsRegular():
+			statErr = diagnostics.At("validate_file_type", errors.New("invalid stored report"))
+		case info.Size() > limit:
+			statErr = diagnostics.At("validate_size", errors.New("invalid stored report"))
+		}
 	}
 	var content []byte
 	if statErr == nil {
@@ -93,21 +99,21 @@ func (s *Store) Read(ctx context.Context, name string, limit int64) ([]byte, err
 		}
 		content, err = io.ReadAll(io.LimitReader(file, readLimit))
 		if int64(len(content)) > limit {
-			err = errors.New("stored report exceeds limit")
+			err = errors.Join(err, diagnostics.At("validate_size", errors.New("stored report exceeds limit")))
 		}
 	}
-	return content, errors.Join(statErr, err, file.Close(), ctx.Err())
+	return content, errors.Join(diagnostics.At("stat", statErr), diagnostics.At("read", err), diagnostics.At("close", file.Close()), ctx.Err())
 }
 
 // Remove reclaims an unpublished file or a key retired by a successful commit.
 // Keys are never reused; another replica may already have removed the file.
 func (s *Store) Remove(name string) error {
 	if !validPath(name) {
-		return errors.New("invalid report storage key")
+		return diagnostics.At("validate_key", errors.New("invalid report storage key"))
 	}
 	err := s.root.Remove(name)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
 	}
-	return err
+	return diagnostics.At("remove", err)
 }
