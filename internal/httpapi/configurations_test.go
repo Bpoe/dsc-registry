@@ -54,7 +54,7 @@ func configurationAPIWithEvents(t testing.TB, engine, dsn string, logs io.Writer
 	if err != nil {
 		t.Fatal(err)
 	}
-	handler := New(store, reports, events, 5*time.Second, 37*time.Second, 2048, 16<<20, slog.New(slog.NewJSONHandler(logs, nil)))
+	handler := New(store, reports, events, time.Second, 5*time.Second, 37*time.Second, 2048, 16<<20, slog.New(slog.NewJSONHandler(logs, nil)))
 	return handler, store, admin, machine, key
 }
 
@@ -307,7 +307,7 @@ func TestConcurrentHTTPConfigurationPollingBothEngines(t *testing.T) {
 		}
 		defer otherStore.DB.Close()
 		// Poll another API replica/connection pool while this one mutates.
-		pollHandler := New(otherStore, nil, nil, 5*time.Second, 37*time.Second, 2048, 16<<20,
+		pollHandler := New(otherStore, nil, nil, time.Second, 5*time.Second, 37*time.Second, 2048, 16<<20,
 			slog.New(slog.NewJSONHandler(io.Discard, nil)))
 		path := "/v1/machines/" + machine.ID + "/configurations/current"
 		start := make(chan struct{})

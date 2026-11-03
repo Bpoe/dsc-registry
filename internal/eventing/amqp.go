@@ -105,8 +105,12 @@ func (p *AMQP) Publish(ctx context.Context, event Event) (err error) {
 			p.nextAttempt = time.Time{}
 			return
 		}
+		var connectionError *amqp.ConnError
+		if errors.As(err, &connectionError) {
+			p.logger.Warn("AMQP connection", "outcome", "connection_failed")
+		}
 		if closeErr := p.Close(); closeErr != nil {
-			p.logger.Warn("AMQP connection cleanup failed", "operation", "connection_close")
+			p.logger.Warn("AMQP connection cleanup failed")
 		}
 		p.backoff = nextBackoff(p.backoff)
 		p.nextAttempt = time.Now().Add(p.backoff)
@@ -116,6 +120,8 @@ func (p *AMQP) Publish(ctx context.Context, event Event) (err error) {
 		err = p.connect(connect)
 		cancel()
 		if err != nil {
+			// connect returns fixed redacted messages, never broker/OS text.
+			p.logger.Warn("AMQP connection", "outcome", "connect_failed", "reason", err.Error())
 			return err
 		}
 		outcome := "connected"

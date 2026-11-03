@@ -177,7 +177,7 @@ func TestRejectedMutationsDoNotEmitEventsBothEngines(t *testing.T) {
 		if err := files.Close(); err != nil {
 			t.Fatal(err)
 		}
-		brokenStorage := New(store, files, recorder, 5*time.Second, time.Minute, 2048, 4096,
+		brokenStorage := New(store, files, recorder, time.Second, 5*time.Second, time.Minute, 2048, 4096,
 			slog.New(slog.NewTextHandler(io.Discard, nil)))
 		apiRequest(t, brokenStorage, key.Key, "POST", "/v1/agent/reports",
 			historyBody("one", uuid.NewString(), uuid.NewString(), rawSuccessReport), 503)
@@ -240,7 +240,7 @@ func TestFailedMutationsDoNotEmitEventsBothEngines(t *testing.T) {
 							t.Fatal(err)
 						}
 						t.Cleanup(func() { files.Close() })
-						handler = New(lost, files, recorder, 5*time.Second, time.Minute, 2048, 4096,
+						handler = New(lost, files, recorder, time.Second, 5*time.Second, time.Minute, 2048, 4096,
 							slog.New(slog.NewTextHandler(io.Discard, nil)))
 					} else if engine == "sqlite" {
 						exec("CREATE TRIGGER mutation_fail AFTER " + mutation + " ON " + table + " BEGIN " + body + " END")

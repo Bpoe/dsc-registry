@@ -65,7 +65,7 @@ func testReportFileCleanup(t *testing.T, engine, dsn, operation, state string) {
 	}
 	defer files.Close()
 	recorder := &recordingEvents{}
-	handler := New(db, files, recorder, 5*time.Second, time.Second, 2048, 4096,
+	handler := New(db, files, recorder, time.Second, 5*time.Second, time.Second, 2048, 4096,
 		slog.New(slog.NewJSONHandler(&logs, nil)))
 	base := "/v1/machines/" + machine.ID
 	configPath := base + "/configurations/docker"
@@ -142,9 +142,8 @@ func testReportFileCleanup(t *testing.T, engine, dsn, operation, state string) {
 	if warned != (state == "blocked") {
 		t.Fatal("cleanup warning missing or emitted for a missing file", logs.String())
 	}
-	if warned && (!strings.Contains(logs.String(), `"dependency":"report_storage"`) ||
-		!strings.Contains(logs.String(), `"operation":"delete"`)) {
-		t.Fatal("cleanup warning omitted dependency or error")
+	if strings.Contains(logs.String(), paths[0]) {
+		t.Fatal("cleanup warning exposed path")
 	}
 	if strings.Contains(logs.String(), "private-dsc-result") {
 		t.Fatal("cleanup logs disclosed report contents")
@@ -166,7 +165,7 @@ func TestReportCleanupRollbackBothEngines(t *testing.T) {
 
 					defer files.Close()
 					recorder := &recordingEvents{}
-					handler := New(db, files, recorder, 5*time.Second, time.Second, 2048, 4096,
+					handler := New(db, files, recorder, time.Second, 5*time.Second, time.Second, 2048, 4096,
 						slog.New(slog.NewJSONHandler(&logs, nil)))
 					base := "/v1/machines/" + machine.ID
 					configPath := base + "/configurations/docker"
@@ -277,10 +276,8 @@ func TestFailedPersistenceCleanupWarningPreservesErrorBothEngines(t *testing.T) 
 			!errors.Is(persistenceErr, injected) {
 			t.Fatal("cleanup failure masked original database failure", response.Body)
 		}
-		if !strings.Contains(logs.String(), `"msg":"report file cleanup failed"`) ||
-			!strings.Contains(logs.String(), `"dependency":"report_storage"`) ||
-			!strings.Contains(logs.String(), `"operation":"delete"`) {
-			t.Fatal("cleanup failure not logged with dependency and error")
+		if !strings.Contains(logs.String(), `"msg":"report file cleanup failed"`) || strings.Contains(logs.String(), result.CleanupPaths[0]) {
+			t.Fatal("cleanup failure missing warning or exposed path")
 		}
 	})
 }

@@ -1,8 +1,6 @@
 package httpapi
 
 import (
-	"context"
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"io"
@@ -21,7 +19,6 @@ import (
 	"github.com/Bpoe/dsc-registry/internal/eventing"
 	"github.com/Bpoe/dsc-registry/internal/reportstore"
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5/pgconn"
 )
 
 type adminAPI struct {
@@ -294,19 +291,6 @@ func (a *adminAPI) resourceError(w http.ResponseWriter, err error, role string) 
 }
 
 func (a *adminAPI) failure(w http.ResponseWriter, err error) {
-	a.logDatabaseError("query", err)
+	a.logger.Error("administration database operation failed")
 	writeError(w, http.StatusServiceUnavailable, "database_unavailable", "Database operation unavailable")
-}
-
-func (a *adminAPI) logDatabaseError(operation string, err error) {
-	// A canceled request can cause database/sql to finish its transaction first.
-	if errors.Is(err, context.Canceled) || errors.Is(err, sql.ErrTxDone) {
-		return
-	}
-	var pg *pgconn.PgError
-	code := ""
-	if errors.As(err, &pg) {
-		code = pg.Code
-	}
-	a.logger.Error("database operation failed", "dependency", "database", "operation", operation, "sqlstate", code, "timeout", errors.Is(err, context.DeadlineExceeded))
 }

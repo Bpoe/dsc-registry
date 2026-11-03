@@ -16,16 +16,17 @@ type transaction struct {
 	operation string
 	start     time.Time
 	done      bool
+	ctx       context.Context
 }
 
 func (s *Store) begin(ctx context.Context, operation string) (*transaction, error) {
 	start := time.Now()
 	tx, err := s.DB.BeginTx(ctx, nil)
 	if err != nil {
-		s.logTransaction(operation, start, "begin_error")
+		s.logTransaction(ctx, operation, start, "begin_error", err)
 		return nil, err
 	}
-	return &transaction{Tx: tx, store: s, operation: operation, start: start}, nil
+	return &transaction{Tx: tx, store: s, operation: operation, start: start, ctx: ctx}, nil
 }
 
 func (tx *transaction) Commit() error {
@@ -34,7 +35,7 @@ func (tx *transaction) Commit() error {
 	if err != nil {
 		outcome = "commit_error"
 	}
-	tx.finish(outcome)
+	tx.finish(outcome, err)
 	return err
 }
 
@@ -43,36 +44,37 @@ func (tx *transaction) Rollback() error {
 	outcome := "rolled_back"
 	if err != nil && !errors.Is(err, sql.ErrTxDone) {
 		outcome = "rollback_error"
-		// Rollback errors are usually ignored by deferred callers, so diagnose
-		// this distinct failure here rather than losing it during propagation.
-		if tx.store.Logger != nil {
-			var pg *pgconn.PgError
-			code := ""
-			if errors.As(err, &pg) {
-				code = pg.Code
-			}
-			tx.store.Logger.Warn("database rollback failed", "dependency", "database", "operation", tx.operation, "sqlstate", code)
-		}
 	}
-	tx.finish(outcome)
+	tx.finish(outcome, err)
 	return err
 }
 
-func (tx *transaction) finish(outcome string) {
+func (tx *transaction) finish(outcome string, err error) {
 	if !tx.done {
 		tx.done = true
-		tx.store.logTransaction(tx.operation, tx.start, outcome)
+		tx.store.logTransaction(tx.ctx, tx.operation, tx.start, outcome, err)
 	}
 }
 
-func (s *Store) logTransaction(operation string, start time.Time, outcome string) {
+func (s *Store) logTransaction(ctx context.Context, operation string, start time.Time, outcome string, err error) {
 	if s.Logger == nil {
 		return
 	}
-	// Keep outcome/timing telemetry; application boundaries log failure details.
+	level := slog.LevelInfo
+	if outcome == "begin_error" || outcome == "commit_error" || outcome == "rollback_error" {
+		// Only a canceled operation makes cancellation/ErrTxDone expected.
+		if ctx.Err() != context.Canceled || (!errors.Is(err, context.Canceled) && !errors.Is(err, sql.ErrTxDone)) {
+			level = slog.LevelError
+		}
+	}
+	var pg *pgconn.PgError
+	code := ""
+	if errors.As(err, &pg) {
+		code = pg.Code
+	}
 	stats := s.DB.Stats()
-	s.Logger.Log(context.Background(), slog.LevelInfo, "database transaction",
-		"engine", s.Engine, "operation", operation, "outcome", outcome,
+	s.Logger.Log(context.Background(), level, "database transaction",
+		"engine", s.Engine, "operation", operation, "outcome", outcome, "sqlstate", code,
 		"duration", time.Since(start), "pool_in_use", stats.InUse,
 		"pool_wait_count", stats.WaitCount, "pool_wait_duration", stats.WaitDuration)
 }

@@ -11,7 +11,9 @@ import (
 	"github.com/Bpoe/dsc-registry/internal/reportstore"
 )
 
-func New(db *database.Store, reports *reportstore.Store, events eventing.Dispatcher, requestTimeout, pollMaxAge time.Duration, maxRequestBytes, maxReportBytes int64, logger *slog.Logger) http.Handler {
+// The legacy probe timeout argument is retained for caller compatibility.
+// Health endpoints perform no dependency I/O and need no timeout.
+func New(db *database.Store, reports *reportstore.Store, events eventing.Dispatcher, _, requestTimeout, pollMaxAge time.Duration, maxRequestBytes, maxReportBytes int64, logger *slog.Logger) http.Handler {
 	if events == nil {
 		events = eventing.Noop{}
 	}

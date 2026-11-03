@@ -1,13 +1,8 @@
 package httpapi
 
 import (
-	"context"
 	"errors"
-	"io"
-	"log/slog"
 	"net/http"
-	"os"
-	"syscall"
 	"time"
 
 	"github.com/Bpoe/dsc-registry/internal/database"
@@ -31,17 +26,15 @@ func (a *adminAPI) uploadReport(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_report", "Expected a valid wrapped dscd v1 report")
 		return
 	}
-	var storageFailure error
-	storageOperation := "read"
+	storageFailure := false
 	publication, err := a.store.PublishReport(r.Context(), id, upload.Name, upload, func() (string, error) {
 		start := time.Now()
-		storageOperation = "write"
 		path, err := a.reports.Write(r.Context(), upload.Result)
-		storageFailure = err
 		var cleanupErr *reportstore.CleanupError
 		if errors.As(err, &cleanupErr) {
-			a.logReportStorageError(slog.LevelWarn, "delete", cleanupErr.Err)
+			a.logger.Warn("report file cleanup failed")
 		}
+		storageFailure = err != nil
 		outcome := "written"
 		if err != nil {
 			outcome = "write_error"
@@ -49,15 +42,14 @@ func (a *adminAPI) uploadReport(w http.ResponseWriter, r *http.Request) {
 		a.logger.Info("report write", "outcome", outcome, "duration", time.Since(start))
 		return path, err
 	}, func(path string) ([]byte, error) {
-		storageOperation = "read"
 		content, err := a.reports.Read(r.Context(), path, a.maxReportBytes)
-		storageFailure = err
+		storageFailure = err != nil
 		return content, err
 	})
 	if err != nil {
 		a.removeReportFiles(publication.CleanupPaths)
-		if storageFailure != nil && !reportResourceMissing(err) {
-			a.reportStorageError(w, storageOperation, err, storageFailure)
+		if storageFailure && !reportResourceMissing(err) {
+			a.reportStorageError(w)
 		} else {
 			a.reportError(w, err)
 		}
@@ -82,7 +74,7 @@ func (a *adminAPI) uploadReport(w http.ResponseWriter, r *http.Request) {
 func (a *adminAPI) removeReportFiles(paths []string) {
 	for _, path := range paths {
 		if err := a.reports.Remove(path); err != nil {
-			a.logReportStorageError(slog.LevelWarn, "delete", err)
+			a.logger.Warn("report file cleanup failed")
 		}
 	}
 }
@@ -114,19 +106,19 @@ func (a *adminAPI) machineReport(w http.ResponseWriter, r *http.Request, full bo
 	}
 	var content []byte
 	var read func(string) error
-	var storageFailure error
+	storageFailure := false
 	if full {
 		read = func(path string) error {
 			var err error
 			content, err = a.reports.Read(r.Context(), path, a.maxReportBytes)
-			storageFailure = err
+			storageFailure = err != nil
 			return err
 		}
 	}
 	item, err := a.store.GetReport(r.Context(), r.PathValue("id"), r.PathValue("reportId"), read)
 	if err != nil {
-		if storageFailure != nil && !reportResourceMissing(err) {
-			a.reportStorageError(w, "read", err, storageFailure)
+		if storageFailure && !reportResourceMissing(err) {
+			a.reportStorageError(w)
 		} else {
 			a.reportError(w, err)
 		}
@@ -170,16 +162,16 @@ func (a *adminAPI) configurationReport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var content []byte
-	var storageFailure error
+	storageFailure := false
 	err := a.store.ReadReport(r.Context(), r.PathValue("id"), r.PathValue("name"), func(path string) error {
 		var err error
 		content, err = a.reports.Read(r.Context(), path, a.maxReportBytes)
-		storageFailure = err
+		storageFailure = err != nil
 		return err
 	})
 	if err != nil {
-		if storageFailure != nil && !reportResourceMissing(err) {
-			a.reportStorageError(w, "read", err, storageFailure)
+		if storageFailure && !reportResourceMissing(err) {
+			a.reportStorageError(w)
 		} else {
 			a.reportError(w, err)
 		}
@@ -216,47 +208,7 @@ func (a *adminAPI) reportError(w http.ResponseWriter, err error) {
 	}
 }
 
-func (a *adminAPI) reportStorageError(w http.ResponseWriter, operation string, err, storageErr error) {
-	// Reselecting metadata after a missing file can itself fail. Diagnose the
-	// final cause while retaining the existing storage-path HTTP response.
-	if errors.Is(err, storageErr) {
-		a.logReportStorageError(slog.LevelError, operation, err)
-	} else {
-		a.logDatabaseError("report_query", err)
-	}
-
+func (a *adminAPI) reportStorageError(w http.ResponseWriter) {
+	a.logger.Error("report storage operation failed")
 	writeError(w, http.StatusServiceUnavailable, "report_storage_unavailable", "Report storage operation unavailable")
-}
-
-// Report paths and OS error messages can contain sensitive information. Log
-// only the operation and known OS codes, using the same helper for cleanup.
-func (a *adminAPI) logReportStorageError(level slog.Level, operation string, err error) {
-	var errno syscall.Errno
-	hasErrno := errors.As(err, &errno)
-	if errors.Is(err, context.Canceled) && !hasErrno && !errors.Is(err, io.ErrShortWrite) {
-		return
-	}
-	var pathErr *os.PathError
-	if errors.As(err, &pathErr) {
-		switch pathErr.Op {
-		case "open", "openat":
-			if operation == "write" {
-				operation = "create"
-			}
-		case "write", "sync", "close", "read":
-			operation = pathErr.Op
-		}
-	}
-	attrs := []any{"dependency", "report_storage", "operation", operation}
-	if hasErrno {
-		attrs = append(attrs, "errno", uint64(errno))
-	}
-	if errors.Is(err, context.DeadlineExceeded) {
-		attrs = append(attrs, "timeout", true)
-	}
-	message := "report " + operation + " failed"
-	if operation == "delete" {
-		message = "report file cleanup failed"
-	}
-	a.logger.Log(context.Background(), level, message, attrs...)
 }
