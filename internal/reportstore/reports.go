@@ -44,25 +44,17 @@ func (s *Store) write(ctx context.Context, content []byte, create func(string) (
 	name := uuid.NewString() + ".json"
 	file, err := create(name)
 	if err != nil {
-		return "", fmt.Errorf("create report: %w", err)
+		return "", err
 	}
 	n, writeErr := file.Write(content)
 	if writeErr == nil && n != len(content) {
 		writeErr = io.ErrShortWrite
 	}
-	if writeErr != nil {
-		writeErr = fmt.Errorf("write report: %w", writeErr)
-	}
 	err = errors.Join(writeErr, ctx.Err())
 	if err == nil {
-		if syncErr := file.Sync(); syncErr != nil {
-			err = fmt.Errorf("sync report: %w", syncErr)
-		}
+		err = file.Sync()
 	}
-	if closeErr := file.Close(); closeErr != nil {
-		err = errors.Join(err, fmt.Errorf("close report: %w", closeErr))
-	}
-	err = errors.Join(err, ctx.Err())
+	err = errors.Join(err, file.Close(), ctx.Err())
 	if err != nil {
 		if cleanupErr := s.Remove(name); cleanupErr != nil {
 			err = errors.Join(err, &CleanupError{Path: name, Err: cleanupErr})
@@ -87,7 +79,7 @@ func (s *Store) Read(ctx context.Context, name string, limit int64) ([]byte, err
 	}
 	file, err := s.root.Open(name)
 	if err != nil {
-		return nil, fmt.Errorf("open report: %w", err)
+		return nil, err
 	}
 	info, statErr := file.Stat()
 	if statErr == nil && (!info.Mode().IsRegular() || info.Size() > limit) {
@@ -101,20 +93,10 @@ func (s *Store) Read(ctx context.Context, name string, limit int64) ([]byte, err
 		}
 		content, err = io.ReadAll(io.LimitReader(file, readLimit))
 		if int64(len(content)) > limit {
-			err = errors.Join(err, errors.New("stored report exceeds limit"))
+			err = errors.New("stored report exceeds limit")
 		}
 	}
-	if statErr != nil {
-		statErr = fmt.Errorf("stat report: %w", statErr)
-	}
-	if err != nil {
-		err = fmt.Errorf("read report: %w", err)
-	}
-	closeErr := file.Close()
-	if closeErr != nil {
-		closeErr = fmt.Errorf("close report: %w", closeErr)
-	}
-	return content, errors.Join(statErr, err, closeErr, ctx.Err())
+	return content, errors.Join(statErr, err, file.Close(), ctx.Err())
 }
 
 // Remove reclaims an unpublished file or a key retired by a successful commit.
@@ -127,8 +109,5 @@ func (s *Store) Remove(name string) error {
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
 	}
-	if err != nil {
-		return fmt.Errorf("delete report: %w", err)
-	}
-	return nil
+	return err
 }

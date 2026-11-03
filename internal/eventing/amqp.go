@@ -120,8 +120,7 @@ func (p *AMQP) Publish(ctx context.Context, event Event) (err error) {
 		err = p.connect(connect)
 		cancel()
 		if err != nil {
-			// connect returns fixed redacted messages, never broker/OS text.
-			p.logger.Warn("AMQP connection", "outcome", "connect_failed", "reason", err.Error())
+			p.logger.Warn("AMQP connection", "outcome", "connect_failed")
 			return err
 		}
 		outcome := "connected"

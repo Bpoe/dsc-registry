@@ -142,8 +142,9 @@ func testReportFileCleanup(t *testing.T, engine, dsn, operation, state string) {
 	if warned != (state == "blocked") {
 		t.Fatal("cleanup warning missing or emitted for a missing file", logs.String())
 	}
-	if strings.Contains(logs.String(), paths[0]) {
-		t.Fatal("cleanup warning exposed path")
+	if warned && (!strings.Contains(logs.String(), `"path":"`+paths[0]+`"`) ||
+		!strings.Contains(logs.String(), `"error":`)) {
+		t.Fatal("cleanup warning omitted relative path or error")
 	}
 	if strings.Contains(logs.String(), "private-dsc-result") {
 		t.Fatal("cleanup logs disclosed report contents")
@@ -276,8 +277,10 @@ func TestFailedPersistenceCleanupWarningPreservesErrorBothEngines(t *testing.T) 
 			!errors.Is(persistenceErr, injected) {
 			t.Fatal("cleanup failure masked original database failure", response.Body)
 		}
-		if !strings.Contains(logs.String(), `"msg":"report file cleanup failed"`) || strings.Contains(logs.String(), result.CleanupPaths[0]) {
-			t.Fatal("cleanup failure missing warning or exposed path")
+		if !strings.Contains(logs.String(), `"msg":"report file cleanup failed"`) ||
+			!strings.Contains(logs.String(), `"path":"`+result.CleanupPaths[0]+`"`) ||
+			!strings.Contains(logs.String(), `"error":`) {
+			t.Fatal("cleanup failure not logged with path and error")
 		}
 	})
 }

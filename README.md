@@ -117,8 +117,8 @@ unchanged; the listener is opened afterward. During graceful shutdown,
 `net/http` stops accepting new connections and drains in-flight requests.
 Neither endpoint performs database, network or filesystem I/O. Temporary
 PostgreSQL, report storage or eventing outages leave both endpoints at `200`.
-Failures are observed through real operations, structured dependency logs and
-existing request/transaction/write timings. Monitor request failures, latency
+Operational failures remain visible through existing request logs and
+request/transaction/write telemetry. Monitor request failures, latency
 and report freshness rather than continuously probing shared dependencies.
 
 The report root is resolved to a canonical path at startup, allowing trusted

@@ -32,7 +32,7 @@ func (a *adminAPI) uploadReport(w http.ResponseWriter, r *http.Request) {
 		path, err := a.reports.Write(r.Context(), upload.Result)
 		var cleanupErr *reportstore.CleanupError
 		if errors.As(err, &cleanupErr) {
-			a.logger.Warn("report file cleanup failed")
+			a.logger.Warn("report file cleanup failed", "path", cleanupErr.Path, "error", cleanupErr.Err)
 		}
 		storageFailure = err != nil
 		outcome := "written"
@@ -74,7 +74,7 @@ func (a *adminAPI) uploadReport(w http.ResponseWriter, r *http.Request) {
 func (a *adminAPI) removeReportFiles(paths []string) {
 	for _, path := range paths {
 		if err := a.reports.Remove(path); err != nil {
-			a.logger.Warn("report file cleanup failed")
+			a.logger.Warn("report file cleanup failed", "path", path, "error", err)
 		}
 	}
 }

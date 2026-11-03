@@ -86,16 +86,32 @@ func TestHealthIgnoresDependencies(t *testing.T) {
 			t.Fatalf("%s: %d %s", path, response.Code, response.Body)
 		}
 	}
-	handler, db, reports, logs := testHandler(t)
-	db.Close()
-	reports.Close()
-	for _, path := range []string{"/health/live", "/health/ready"} {
-		if response := request(handler, "GET", path); response.Code != http.StatusOK {
-			t.Fatalf("%s with failed dependencies: %d %s", path, response.Code, response.Body)
-		}
-	}
-	if strings.Contains(logs.String(), `"dependency"`) {
-		t.Fatal("health logged a dependency failure")
+}
+
+func TestDependencyFailuresDoNotAffectHealth(t *testing.T) {
+	for _, dependency := range []string{"database", "report_storage"} {
+		t.Run(dependency, func(t *testing.T) {
+			handler, db, reports, _ := testHandler(t)
+			if dependency == "database" {
+				if err := db.Close(); err != nil {
+					t.Fatal(err)
+				}
+			} else if err := reports.Close(); err != nil {
+				t.Fatal(err)
+			}
+			for _, endpoint := range []struct{ path, body string }{
+				{"/health/live", "{\"status\":\"live\"}\n"},
+				{"/health/ready", "{\"status\":\"ready\"}\n"},
+			} {
+				response := request(handler, "GET", endpoint.path)
+				if response.Code != http.StatusOK || response.Body.String() != endpoint.body {
+					t.Fatalf("%s with failed %s: %d %s", endpoint.path, dependency, response.Code, response.Body)
+				}
+				if response.Header().Get("Content-Type") != "application/json" || response.Header().Get("Cache-Control") != "no-store" {
+					t.Fatal("health headers changed", response.Header())
+				}
+			}
+		})
 	}
 }
 

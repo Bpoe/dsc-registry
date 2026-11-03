@@ -753,10 +753,10 @@ collector. Durations are numeric **nanoseconds** (`slog` JSON duration encoding)
 | --- | --- |
 | `http request` | Bounded method and route template (never IDs/names), actual first final status, duration. Count per interval for rate; group 4xx/5xx for client/dependency errors; compute p50/p95/p99 from duration. Separate health traffic and distinguish expected 304, 401 and upload-identity 409 from faults. |
 | `report write` | `written`/`write_error`, duration including direct create/write/sync/close. A retry bypassing the file creates no write event. No path, body, byte-content label or identity. |
-| `database transaction` | Fixed operation and engine, `committed`/`rolled_back`/`begin_error`/`commit_error`/`rollback_error`, duration, pool in-use and cumulative wait count/duration. One event per attempt, with SQLSTATE on PostgreSQL failures when available. Canceled operations do not log dependency outages. Rollback can be an expected missing resource, conflicting upload identity or file failure, not necessarily a database outage. Commit error can be ambiguous; retry stable upload ID. Pool counters reset on restart; take per-replica deltas, not sums of cumulative samples. |
-| Dependency errors | Existing transaction and AMQP connection events carry safe SQLSTATE or fixed redacted connection reasons. HTTP database/storage failures remain generic; request status and report-write outcomes expose actual failures. Report errors preserve operation context and underlying filesystem errors for callers. Cleanup warnings omit paths and raw errors. |
+| `database transaction` | Fixed operation and engine, `committed`/`rolled_back`/`begin_error`/`commit_error`/`rollback_error`, duration, pool in-use and cumulative wait count/duration. One event per attempt. Rollback can be an expected missing resource, conflicting upload identity or file failure, not necessarily a database outage. Commit error can be ambiguous; retry stable upload ID. Pool counters reset on restart; take per-replica deltas, not sums of cumulative samples. |
+| Dependency errors | Health endpoints do not test dependencies; HTTP database/storage failures are redacted. Startup logs identify failed dependency without OS/driver text. |
 
-Database non-transaction query/auth failures are surfaced by structured HTTP
+Database non-transaction query/auth failures are surfaced by redacted HTTP
 dependency-error logs and `503` request events, not transaction events.
 Bootstrapping is a local one-time CLI and does not emit transaction telemetry.
 No raw URL/query/headers, supplied method token, machine/configuration name,
@@ -764,7 +764,7 @@ API key, DSN, template, parameters, report/error payload or storage filename is
 logged. Standard `net/http` diagnostics are replaced by a generic transport/
 handler error. Restrict log access/retention anyway.
 
-Alert on sustained non-health 5xx, process/lifecycle failures, commit/begin errors,
+Alert on sustained non-health 5xx, unready replicas, commit/begin errors,
 report-write errors or increased durations/pool waits; investigate underlying
 DB locks/disk and NFS health out of band. Monitor retained report growth and plan
 bounded **offline** cleanup, not deletion on a live fleet. Logs do not measure
