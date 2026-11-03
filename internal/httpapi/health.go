@@ -1,11 +1,9 @@
 package httpapi
 
 import (
-	"context"
 	"encoding/json"
 	"log/slog"
 	"net/http"
-	"sync"
 	"time"
 
 	"github.com/Bpoe/dsc-registry/internal/database"
@@ -13,24 +11,12 @@ import (
 	"github.com/Bpoe/dsc-registry/internal/reportstore"
 )
 
-const unavailable = `{"error":{"code":"not_ready","message":"Service dependencies are unavailable"}}` + "\n"
-
-func New(db *database.Store, reports *reportstore.Store, events eventing.Dispatcher, timeout, requestTimeout, pollMaxAge time.Duration, maxRequestBytes, maxReportBytes int64, logger *slog.Logger) http.Handler {
+// The legacy probe timeout argument is retained for caller compatibility.
+// Health endpoints perform no dependency I/O and need no timeout.
+func New(db *database.Store, reports *reportstore.Store, events eventing.Dispatcher, _, requestTimeout, pollMaxAge time.Duration, maxRequestBytes, maxReportBytes int64, logger *slog.Logger) http.Handler {
 	if events == nil {
 		events = eventing.Noop{}
 	}
-	ready := &readinessProbe{timeout: timeout, check: func(ctx context.Context) error {
-		dependency := "database"
-		err := db.DB.PingContext(ctx)
-		if err == nil {
-			dependency = "report_storage"
-			err = reports.Check(ctx)
-		}
-		if err != nil {
-			logger.Warn("readiness check failed", "dependency", dependency)
-		}
-		return err
-	}}
 
 	admin := &adminAPI{store: db, reports: reports, events: events, maxRequestBytes: maxRequestBytes, maxReportBytes: maxReportBytes,
 		timeout: requestTimeout, pollMaxAge: pollMaxAge, logger: logger}
@@ -38,7 +24,11 @@ func New(db *database.Store, reports *reportstore.Store, events eventing.Dispatc
 	mux.HandleFunc("GET /health/live", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "live"})
 	})
-	mux.Handle("GET /health/ready", ready)
+	// New is called only after startup validation; net/http owns admission
+	// and graceful shutdown. Shared dependencies do not determine readiness.
+	mux.HandleFunc("GET /health/ready", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, map[string]string{"status": "ready"})
+	})
 	admin.registerRoutes(mux)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
@@ -48,60 +38,6 @@ func New(db *database.Store, reports *reportstore.Store, events eventing.Dispatc
 		logger.Info("http request", "method", methodLabel(r.Method), "route", routeLabel(r.Pattern),
 			"status", response.status, "duration", time.Since(start))
 	})
-}
-
-type probeResult struct {
-	done chan struct{}
-	err  error
-}
-
-type readinessProbe struct {
-	timeout time.Duration
-	check   func(context.Context) error
-	mu      sync.Mutex
-	active  *probeResult
-}
-
-func (p *readinessProbe) start() *probeResult {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	if p.active != nil {
-		return p.active
-	}
-	result := &probeResult{done: make(chan struct{})}
-	p.active = result
-	// A caller's cancellation must not cancel other callers' shared check.
-	ctx, cancel := context.WithTimeout(context.Background(), p.timeout)
-	go func() {
-		defer cancel()
-		err := p.check(ctx)
-		if err == nil {
-			err = ctx.Err()
-		}
-		p.mu.Lock()
-		defer p.mu.Unlock()
-		result.err = err
-		close(result.done)
-		p.active = nil
-	}()
-	return result
-}
-
-func (p *readinessProbe) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	ctx, cancel := context.WithTimeout(r.Context(), p.timeout)
-	defer cancel()
-	result := p.start()
-	select {
-	case <-result.done:
-		if result.err == nil && ctx.Err() == nil {
-			writeJSON(w, http.StatusOK, map[string]string{"status": "ready"})
-			return
-		}
-	case <-ctx.Done():
-	}
-	// Keep the shared check active until it actually finishes: portable
-	// filesystem calls may remain blocked after their context expires.
-	writeError(w, http.StatusServiceUnavailable, "not_ready", "Service dependencies are unavailable")
 }
 
 func writeJSON(w http.ResponseWriter, status int, value any) {

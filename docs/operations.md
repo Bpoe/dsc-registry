@@ -400,7 +400,7 @@ not mix keys produced under different rules. Do not write machine names or
 derived keys independently through ad hoc SQL.
 
 Each PostgreSQL API instance can open ten pooled connections; budget database
-connections for all replicas, probes, migrations and maintenance. Observe
+connections for all replicas, migrations and maintenance. Observe
 pool waits and server-side locks, transaction durations, deadlocks, WAL/disk
 pressure, replication lag and autovacuum using PostgreSQL's supported
 monitoring. Application transaction timing includes lock waits and, for report
@@ -437,13 +437,13 @@ this path/source in routine service logs. Container bind mounts must originate
 on that verified host mount. Match platform SELinux/AppArmor labels without
 disabling confinement globally.
 
-Readiness checks database access and creates/writes/closes/reads/removes a
-private file. It is not a mount identity or free-space guarantee. A replacement
-of the canonical root invalidates readiness; changing an original symlink does
-not redirect an active instance. Mounts and all canonical parents are trusted
-operator-controlled paths. Stop all replicas before changing the root/mount.
-Hard NFS I/O can block beyond an HTTP deadline: the bounded shared probe
-prevents unbounded probe goroutines, but cannot forcibly cancel a kernel call.
+Startup validation checks database access and creates/writes/closes/reads/removes
+a private report file. Health endpoints perform no dependency I/O and cannot
+confirm mount identity, free space or detect replacement of the root.
+Changing an original symlink does not redirect an active instance. Mounts and
+all canonical parents are trusted operator-controlled paths. Stop all replicas
+before changing the root/mount. Hard NFS operation I/O can block beyond an HTTP
+deadline; portable filesystem calls cannot forcibly cancel a kernel call.
 Do not use `soft` mounts to hide storage errors. Successful write/sync/close
 and SQL acknowledgements must be honored by the storage/server; the application
 does not provide a distributed DB/filesystem transaction or certify power-loss
@@ -642,9 +642,13 @@ their upload ID when retrying an ambiguous acknowledgement.
 Probe `/health/live` for process liveness and `/health/ready` for traffic
 admission. For native TLS, probes use HTTPS with certificate trust and SAN
 verification just like other clients; configure the probe's hostname/trust
-accordingly. Database or report storage outage makes readiness `503` while
-liveness remains `200`; restarting every healthy process during a shared
-dependency outage is counterproductive. Drain a replica before SIGTERM.
+accordingly. Both endpoints return `200` after initialization, including during
+database, report storage or eventing outages. Startup validation remains unchanged and
+finishes before the listener opens. Graceful shutdown stops connection admission
+and drains requests through `net/http`. Observe dependency availability through
+real request failures, latency, report freshness and existing telemetry; do not
+remove healthy replicas or restart them because a shared dependency is down.
+Drain a replica before SIGTERM.
 Unauthenticated health routes belong on trusted probe networks. The demo's
 Nginx has passive upstream failure handling, not an active readiness-aware
 production control plane; configure your actual load balancer to remove
@@ -750,7 +754,7 @@ collector. Durations are numeric **nanoseconds** (`slog` JSON duration encoding)
 | `http request` | Bounded method and route template (never IDs/names), actual first final status, duration. Count per interval for rate; group 4xx/5xx for client/dependency errors; compute p50/p95/p99 from duration. Separate health traffic and distinguish expected 304, 401 and upload-identity 409 from faults. |
 | `report write` | `written`/`write_error`, duration including direct create/write/sync/close. A retry bypassing the file creates no write event. No path, body, byte-content label or identity. |
 | `database transaction` | Fixed operation and engine, `committed`/`rolled_back`/`begin_error`/`commit_error`/`rollback_error`, duration, pool in-use and cumulative wait count/duration. One event per attempt. Rollback can be an expected missing resource, conflicting upload identity or file failure, not necessarily a database outage. Commit error can be ambiguous; retry stable upload ID. Pool counters reset on restart; take per-replica deltas, not sums of cumulative samples. |
-| Dependency errors | Readiness identifies only `database`/`report_storage`; HTTP database/storage failures are redacted. Startup logs identify failed dependency without OS/driver text. |
+| Dependency errors | Health endpoints do not test dependencies; HTTP database/storage failures are redacted. Startup logs identify failed dependency without OS/driver text. |
 
 Database non-transaction query/auth failures are surfaced by redacted HTTP
 dependency-error logs and `503` request events, not transaction events.
@@ -787,7 +791,7 @@ self-signed certificate and verifies that specific certificate (no insecure TLS
 bypass). All HTTP/process operations have deadlines; CI bounds the complete job.
 It checks two distinct upstreams, authorization, ETag/304, unchanged
 report/status on cross-replica retry, one-replica loss, stopped PostgreSQL,
-readiness/liveness separation, unwritable report storage, restart, cold paired
+dependency-independent readiness/liveness, unwritable report storage, restart, cold paired
 dump/archive restore after desired-state mutation, machine-key overlap/
 revocation, and observability canaries. Fixtures never execute DSC.
 
