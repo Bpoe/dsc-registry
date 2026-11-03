@@ -209,17 +209,17 @@ for a peer close handshake. No channel can be closed concurrently with a sender.
 Event drain timeouts and publisher-close failures are warnings, not process
 failures; a broker outage does not fail an otherwise clean Registry shutdown.
 Timeout warnings include the discarded pending count. Shutdown cancellation
-is not logged as a dependency outage; actual delivery failures are diagnosed. HTTP shutdown timeouts and other server or
+is not logged as a dependency outage; actual delivery failures are diagnosed.
+HTTP shutdown timeouts and other server or
 storage failures retain their unsuccessful exit status. Requests forced closed
 at the HTTP deadline are not guaranteed to finish or enqueue.
 
 Structured `slog` records provide log-derived counts: `event delivery` with
 `outcome=queued`, `queue_full`, `published`, or `publish_failed`, plus event type,
 UUID and, for existing queue/success signals, subject. Publish failures are
-logged once by the worker with `dependency=eventing`, `operation=event_publish`,
-duration, failure stage and safe transport/AMQP classifications. Connection
-attempts report stages such as connect, negotiate, session and link; broker
-descriptions are omitted. `AMQP connection` records `connected` and `reconnected`.
+logged once by the worker with `operation=event_publish`, duration, a safe
+failure reason and selected AMQP conditions. Broker descriptions and payloads
+are omitted. `AMQP connection` records `connected` and `reconnected`.
 Shutdown timeouts include the pending count.
 Broker error strings and payloads are never logged. No new metrics dependency
 or health requirement is introduced.

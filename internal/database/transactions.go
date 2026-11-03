@@ -7,7 +7,7 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/Bpoe/dsc-registry/internal/diagnostics"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 type transaction struct {
@@ -23,7 +23,7 @@ func (s *Store) begin(ctx context.Context, operation string) (*transaction, erro
 	tx, err := s.DB.BeginTx(ctx, nil)
 	if err != nil {
 		s.logTransaction(operation, start, "begin_error")
-		return nil, diagnostics.At("begin", err)
+		return nil, err
 	}
 	return &transaction{Tx: tx, store: s, operation: operation, start: start}, nil
 }
@@ -35,7 +35,7 @@ func (tx *transaction) Commit() error {
 		outcome = "commit_error"
 	}
 	tx.finish(outcome)
-	return diagnostics.At("commit", err)
+	return err
 }
 
 func (tx *transaction) Rollback() error {
@@ -46,7 +46,12 @@ func (tx *transaction) Rollback() error {
 		// Rollback errors are usually ignored by deferred callers, so diagnose
 		// this distinct failure here rather than losing it during propagation.
 		if tx.store.Logger != nil {
-			tx.store.Logger.Warn("database rollback failed", "dependency", "database", "operation", "transaction", "duration", time.Since(tx.start), "error", diagnostics.Details(diagnostics.At("rollback", err)))
+			var pg *pgconn.PgError
+			code := ""
+			if errors.As(err, &pg) {
+				code = pg.Code
+			}
+			tx.store.Logger.Warn("database rollback failed", "dependency", "database", "operation", tx.operation, "sqlstate", code)
 		}
 	}
 	tx.finish(outcome)

@@ -643,8 +643,7 @@ Probe `/health/live` for process liveness and `/health/ready` for traffic
 admission. For native TLS, probes use HTTPS with certificate trust and SAN
 verification just like other clients; configure the probe's hostname/trust
 accordingly. Both endpoints return `200` after initialization, including during
-database,
-report storage or eventing outages. Startup validation remains unchanged and
+database, report storage or eventing outages. Startup validation remains unchanged and
 finishes before the listener opens. Graceful shutdown stops connection admission
 and drains requests through `net/http`. Observe dependency availability through
 real request failures, latency, report freshness and existing telemetry; do not
@@ -755,7 +754,7 @@ collector. Durations are numeric **nanoseconds** (`slog` JSON duration encoding)
 | `http request` | Bounded method and route template (never IDs/names), actual first final status, duration. Count per interval for rate; group 4xx/5xx for client/dependency errors; compute p50/p95/p99 from duration. Separate health traffic and distinguish expected 304, 401 and upload-identity 409 from faults. |
 | `report write` | `written`/`write_error`, duration including direct create/write/sync/close. A retry bypassing the file creates no write event. No path, body, byte-content label or identity. |
 | `database transaction` | Fixed operation and engine, `committed`/`rolled_back`/`begin_error`/`commit_error`/`rollback_error`, duration, pool in-use and cumulative wait count/duration. One INFO telemetry event per attempt; failure details are logged once at the application boundary. Rollback can be an expected missing resource, conflicting upload identity or file failure, not necessarily a database outage. Commit error can be ambiguous; retry stable upload ID. Pool counters reset on restart; take per-replica deltas, not sums of cumulative samples. |
-| Dependency errors | `dependency` (`database`, `report_storage`, `eventing`), logical `operation`, safe error classifications and failure stages. Filesystem diagnostics retain numeric OS codes/reasons; PostgreSQL retains SQLSTATE; known AMQP conditions are retained without broker descriptions. Request failures include bounded route/method and elapsed request duration; event publish failures include event ID/type and duration. Cleanup failures warn without changing committed responses. Client cancellations and expected missing resources/conflicts are not outages. Startup diagnostics remain redacted. |
+| Dependency errors | Database failures include the operation and SQLSTATE when available, without driver messages. Report failures identify the filesystem operation and OS error number when available, without paths. The event worker logs publishing failures with event type/ID, duration, a safe reason and selected AMQP conditions. Cleanup failures warn without changing committed responses. Expected conflicts, missing resources and client cancellations are not dependency outages. Request status, route and duration remain in `http request` logs. |
 
 Database non-transaction query/auth failures are surfaced by structured HTTP
 dependency-error logs and `503` request events, not transaction events.

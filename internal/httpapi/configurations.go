@@ -19,7 +19,7 @@ func (a *adminAPI) configurations(w http.ResponseWriter, r *http.Request) {
 	}
 	items, err := a.store.ListConfigurations(r.Context(), r.PathValue("id"), cursor, limit+1)
 	if err != nil {
-		a.configurationError(w, r, err)
+		a.configurationError(w, err)
 		return
 	}
 	next := ""
@@ -46,7 +46,7 @@ func (a *adminAPI) putConfiguration(w http.ResponseWriter, r *http.Request) {
 	id, name := r.PathValue("id"), r.PathValue("name")
 	result, outcome, err := a.store.PutConfiguration(r.Context(), id, name, content)
 	if err != nil {
-		a.configurationError(w, r, err)
+		a.configurationError(w, err)
 		return
 	}
 	status := http.StatusOK
@@ -69,7 +69,7 @@ func (a *adminAPI) putConfiguration(w http.ResponseWriter, r *http.Request) {
 func (a *adminAPI) getConfiguration(w http.ResponseWriter, r *http.Request) {
 	result, err := a.store.GetConfiguration(r.Context(), r.PathValue("id"), r.PathValue("name"))
 	if err != nil {
-		a.configurationError(w, r, err)
+		a.configurationError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, result)
@@ -79,7 +79,7 @@ func (a *adminAPI) deleteConfiguration(w http.ResponseWriter, r *http.Request) {
 	id, name := r.PathValue("id"), r.PathValue("name")
 	paths, err := a.store.DeleteConfiguration(r.Context(), id, name)
 	if err != nil {
-		a.configurationError(w, r, err)
+		a.configurationError(w, err)
 		return
 	}
 	a.events.Notify(eventing.ConfigurationDeleted, eventing.Identifiers{MachineID: id, ConfigurationName: name})
@@ -89,14 +89,14 @@ func (a *adminAPI) deleteConfiguration(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func (a *adminAPI) configurationError(w http.ResponseWriter, r *http.Request, err error) {
+func (a *adminAPI) configurationError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, database.ErrNotFound):
 		writeError(w, http.StatusNotFound, "machine_not_found", "Machine not found")
 	case errors.Is(err, database.ErrConfigurationNotFound):
 		writeError(w, http.StatusNotFound, "configuration_not_found", "Configuration not found")
 	default:
-		a.failure(w, r, err)
+		a.failure(w, err)
 	}
 }
 
@@ -109,7 +109,7 @@ func (a *adminAPI) agentConfigurations(w http.ResponseWriter, r *http.Request) {
 	if validators := r.Header.Values("If-None-Match"); len(validators) > 0 {
 		revision, err := a.store.ConfigurationRevision(r.Context(), id)
 		if err != nil {
-			a.configurationError(w, r, err)
+			a.configurationError(w, err)
 			return
 		}
 		etag := fmt.Sprintf(`"machine-%s-config-%d"`, id, revision)
@@ -122,7 +122,7 @@ func (a *adminAPI) agentConfigurations(w http.ResponseWriter, r *http.Request) {
 	}
 	snapshot, err := a.store.ConfigurationSnapshot(r.Context(), id)
 	if err != nil {
-		a.configurationError(w, r, err)
+		a.configurationError(w, err)
 		return
 	}
 	// A conditional miss may race with a mutation; only the snapshot's

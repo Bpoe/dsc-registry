@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/Bpoe/dsc-registry/internal/diagnostics"
+	"github.com/Azure/go-amqp"
 )
 
 type Publisher interface {
@@ -85,7 +85,7 @@ func (w *Worker) run(ctx context.Context, publisher Publisher, timeout time.Dura
 	defer func() {
 		w.closeErr = publisher.Close()
 		if w.closeErr != nil {
-			w.logger.Warn("event publisher close failed", "dependency", "eventing", "operation", "publisher_close", "error", diagnostics.Details(w.closeErr))
+			w.logger.Warn("event publisher close failed", "dependency", "eventing", "operation", "publisher_close", "reason", "close_failed")
 		}
 	}()
 	for {
@@ -102,10 +102,28 @@ func (w *Worker) run(ctx context.Context, publisher Publisher, timeout time.Dura
 			attempt, cancel := context.WithTimeout(ctx, timeout)
 			start := time.Now()
 			err := publisher.Publish(attempt, event)
+			timedOut := attempt.Err() == context.DeadlineExceeded
 			cancel()
 			if err != nil {
 				if ctx.Err() == nil || !errors.Is(err, context.Canceled) {
-					w.logger.Warn("event delivery", "outcome", "publish_failed", "dependency", "eventing", "operation", "event_publish", "event_type", event.Type, "event_id", event.ID, "duration", time.Since(start), "error", diagnostics.Details(err))
+					reason := "publish_failed"
+					if errors.Is(err, context.DeadlineExceeded) || timedOut {
+						reason = "timeout"
+					}
+					var connection *amqp.ConnError
+					if errors.As(err, &connection) {
+						reason = "connection_failed"
+					}
+					// Broker descriptions and arbitrary condition symbols are untrusted.
+					condition := ""
+					var broker *amqp.Error
+					if errors.As(err, &broker) {
+						switch broker.Condition {
+						case amqp.ErrCondUnauthorizedAccess, amqp.ErrCondNotFound, amqp.ErrCondResourceLimitExceeded, amqp.ErrCondConnectionForced:
+							condition = string(broker.Condition)
+						}
+					}
+					w.logger.Warn("event delivery", "outcome", "publish_failed", "operation", "event_publish", "event_type", event.Type, "event_id", event.ID, "duration", time.Since(start), "reason", reason, "amqp_condition", condition)
 				}
 			} else {
 				w.log(slog.LevelInfo, "published", event)

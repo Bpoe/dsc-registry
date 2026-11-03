@@ -1,7 +1,6 @@
 package httpapi
 
 import (
-	"context"
 	"encoding/json"
 	"log/slog"
 	"net/http"
@@ -31,7 +30,6 @@ func New(db *database.Store, reports *reportstore.Store, events eventing.Dispatc
 	admin.registerRoutes(mux)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
-		r = r.WithContext(context.WithValue(r.Context(), requestStartKey{}, start))
 		response := &responseWriter{ResponseWriter: w, status: http.StatusOK}
 		w.Header().Set("Cache-Control", "no-store")
 		mux.ServeHTTP(response, r)

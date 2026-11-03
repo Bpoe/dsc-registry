@@ -14,7 +14,6 @@ import (
 	"time"
 
 	"github.com/Azure/go-amqp"
-	"github.com/Bpoe/dsc-registry/internal/diagnostics"
 	"github.com/google/uuid"
 )
 
@@ -140,7 +139,7 @@ func TestNonblockingQueueDropsNewestAndDrains(t *testing.T) {
 
 func TestWorkerContinuesAfterFailure(t *testing.T) {
 	p := &fakePublisher{entered: make(chan Event, 2), fail: true,
-		failure: diagnostics.At("send", &amqp.LinkError{RemoteErr: &amqp.Error{Condition: amqp.ErrCondUnauthorizedAccess, Description: "private broker diagnostic"}})}
+		failure: &amqp.LinkError{RemoteErr: &amqp.Error{Condition: amqp.ErrCondUnauthorizedAccess, Description: "private broker diagnostic"}}}
 	var logs bytes.Buffer
 	w := startTestWorker(t, p, 2, &logs)
 	w.Notify(MachineCreated, Identifiers{MachineID: "one"})
@@ -158,7 +157,7 @@ func TestWorkerContinuesAfterFailure(t *testing.T) {
 			t.Fatal(err)
 		}
 		if entry["outcome"] == "publish_failed" {
-			if entry["dependency"] != "eventing" || entry["operation"] != "event_publish" || entry["duration"] == nil || entry["event_id"] == nil || !strings.Contains(line, `"amqp_condition":"amqp:unauthorized-access"`) || !strings.Contains(line, `"stage":"send"`) {
+			if entry["operation"] != "event_publish" || entry["duration"] == nil || entry["event_id"] == nil || !strings.Contains(line, `"amqp_condition":"amqp:unauthorized-access"`) {
 				t.Fatal("missing publish diagnostics", line)
 			}
 		}

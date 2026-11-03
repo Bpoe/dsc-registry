@@ -252,6 +252,6 @@ See [COPILOT_KICKOFF.md](../COPILOT_KICKOFF.md). Require Copilot to **plan and i
 Liveness and readiness now check only the initialized HTTP process; neither
 performs dependency I/O. Startup validation and graceful HTTP drain are retained.
 Shared dependency failures are logged at normal operation boundaries with safe
-OS/driver classifications and failure stages. Use actual request failures,
+OS error codes and SQLSTATE when available. Use actual request failures,
 latency, report freshness and existing transaction/write telemetry to monitor
 dependencies. No synthetic dependency endpoint or periodic probe is added.

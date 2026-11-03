@@ -6,7 +6,6 @@ import (
 	"database/sql"
 	"database/sql/driver"
 	"encoding/json"
-	"errors"
 	"log/slog"
 	"net/http/httptest"
 	"os"
@@ -17,7 +16,6 @@ import (
 	"time"
 
 	"github.com/Bpoe/dsc-registry/internal/database"
-	"github.com/Bpoe/dsc-registry/internal/diagnostics"
 	"github.com/Bpoe/dsc-registry/internal/reportstore"
 	"github.com/Bpoe/dsc-registry/internal/testdb"
 	"github.com/google/uuid"
@@ -55,7 +53,7 @@ func TestDatabaseFailureDiagnostics(t *testing.T) {
 		response := apiRequest(t, handler, admin.Key, "GET", "/v1/machines", "", 503)
 		entries := dependencyEntries(t, &logs)
 		if len(entries) != 1 || entries[0]["dependency"] != "database" || entries[0]["operation"] != "query" ||
-			entries[0]["route"] != "/v1/machines" || entries[0]["duration"] == nil || !strings.Contains(logs.String(), `"sqlstate":"08006"`) {
+			!strings.Contains(logs.String(), `"sqlstate":"08006"`) {
 			t.Fatal("missing or duplicate database diagnostics", logs.String())
 		}
 		for _, secret := range []string{"private-driver-message", "private-parameters", admin.Key, dsn} {
@@ -69,20 +67,18 @@ func TestDatabaseFailureDiagnostics(t *testing.T) {
 func TestExpectedErrorsAndCancellationDoNotLogOutages(t *testing.T) {
 	var logs bytes.Buffer
 	api := &adminAPI{logger: slog.New(slog.NewJSONHandler(&logs, nil))}
-	r := httptest.NewRequest("GET", "/v1/machines", nil)
 	for _, err := range []error{database.ErrNotFound, database.ErrConfigurationNotFound, database.ErrReportNotFound, database.ErrUploadConflict, database.ErrReportCursor} {
-		api.reportError(httptest.NewRecorder(), r, err)
+		api.reportError(httptest.NewRecorder(), err)
 	}
-	api.machineCreationError(httptest.NewRecorder(), r, database.ErrMachineNameConflict)
-	ctx, cancel := context.WithCancel(r.Context())
-	cancel()
-	api.failure(httptest.NewRecorder(), r.WithContext(ctx), diagnostics.At("begin", context.Canceled))
-	api.failure(httptest.NewRecorder(), r.WithContext(ctx), diagnostics.At("commit", sql.ErrTxDone))
+	api.machineCreationError(httptest.NewRecorder(), database.ErrMachineNameConflict)
+	api.failure(httptest.NewRecorder(), context.Canceled)
+	api.failure(httptest.NewRecorder(), sql.ErrTxDone)
+	api.reportStorageError(httptest.NewRecorder(), "write", context.Canceled, context.Canceled)
 	if len(dependencyEntries(t, &logs)) != 0 {
 		t.Fatal("expected errors logged as outages", logs.String())
 	}
-	api.failure(httptest.NewRecorder(), r, context.DeadlineExceeded)
-	if entries := dependencyEntries(t, &logs); len(entries) != 1 || !strings.Contains(logs.String(), `"kind":"timeout"`) {
+	api.failure(httptest.NewRecorder(), context.DeadlineExceeded)
+	if entries := dependencyEntries(t, &logs); len(entries) != 1 || !strings.Contains(logs.String(), `"timeout":true`) {
 		t.Fatal("deadline not diagnosed", logs.String())
 	}
 }
@@ -113,7 +109,7 @@ func TestMissingStoredReportRecoversWithoutAffectingHealth(t *testing.T) {
 		logs.Reset()
 		response := apiRequest(t, handler, admin.Key, "GET", path+"/report", "", 503)
 		entries := dependencyEntries(t, &logs)
-		if len(entries) != 1 || entries[0]["operation"] != "report_read" || !strings.Contains(logs.String(), `"kind":"not_exist"`) || !strings.Contains(logs.String(), `"stage":"open"`) {
+		if len(entries) != 1 || entries[0]["operation"] != "read" || entries[0]["errno"] != float64(syscall.ENOENT) {
 			t.Fatal("missing storage diagnostics", logs.String())
 		}
 		for _, secret := range []string{root, stored, "private-dsc-result", key.Key} {
@@ -132,18 +128,14 @@ func TestMissingStoredReportRecoversWithoutAffectingHealth(t *testing.T) {
 	})
 }
 
-func TestStorageDiagnosticsPreserveJoinedFailures(t *testing.T) {
+func TestReportSyncFailureLogging(t *testing.T) {
 	var logs bytes.Buffer
 	api := &adminAPI{logger: slog.New(slog.NewJSONHandler(&logs, nil))}
-	err := errors.Join(diagnostics.At("write", &os.PathError{Op: "write", Path: "/private/report", Err: syscall.EIO}), diagnostics.At("close", syscall.EACCES))
-	api.reportStorageError(httptest.NewRecorder(), httptest.NewRequest("POST", "/v1/agent/reports", nil), "report_write", err, err)
-	if len(dependencyEntries(t, &logs)) != 1 {
-		t.Fatal("duplicate diagnostics")
-	}
-	for _, want := range []string{`"stage":"write"`, `"stage":"close"`, `"errno":`, `"kind":"permission"`} {
-		if !strings.Contains(logs.String(), want) {
-			t.Fatal("missing detail", want, logs.String())
-		}
+	err := &os.PathError{Op: "sync", Path: "/private/report", Err: syscall.EIO}
+	api.reportStorageError(httptest.NewRecorder(), "write", err, err)
+	entries := dependencyEntries(t, &logs)
+	if len(entries) != 1 || entries[0]["operation"] != "sync" || entries[0]["errno"] != float64(syscall.EIO) {
+		t.Fatal("missing or duplicate filesystem failure", logs.String())
 	}
 	if strings.Contains(logs.String(), "/private/report") {
 		t.Fatal("path leaked")
@@ -154,7 +146,7 @@ func TestDatabaseReselectFailurePreservesStorageResponse(t *testing.T) {
 	var logs bytes.Buffer
 	api := &adminAPI{logger: slog.New(slog.NewJSONHandler(&logs, nil))}
 	response := httptest.NewRecorder()
-	api.reportStorageError(response, httptest.NewRequest("GET", "/v1/machines", nil), "report_read", &pgconn.PgError{Code: "08006"}, os.ErrNotExist)
+	api.reportStorageError(response, "read", &pgconn.PgError{Code: "08006"}, os.ErrNotExist)
 	entries := dependencyEntries(t, &logs)
 	if response.Code != 503 || !strings.Contains(response.Body.String(), `"code":"report_storage_unavailable"`) || len(entries) != 1 || entries[0]["dependency"] != "database" {
 		t.Fatal("storage response or final failure classification changed", response.Body, logs.String())

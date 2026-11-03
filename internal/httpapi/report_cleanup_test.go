@@ -143,7 +143,7 @@ func testReportFileCleanup(t *testing.T, engine, dsn, operation, state string) {
 		t.Fatal("cleanup warning missing or emitted for a missing file", logs.String())
 	}
 	if warned && (!strings.Contains(logs.String(), `"dependency":"report_storage"`) ||
-		!strings.Contains(logs.String(), `"error":`)) {
+		!strings.Contains(logs.String(), `"operation":"delete"`)) {
 		t.Fatal("cleanup warning omitted dependency or error")
 	}
 	if strings.Contains(logs.String(), "private-dsc-result") {
@@ -272,14 +272,14 @@ func TestFailedPersistenceCleanupWarningPreservesErrorBothEngines(t *testing.T) 
 		api := &adminAPI{reports: files, logger: slog.New(slog.NewJSONHandler(&logs, nil))}
 		api.removeReportFiles(result.CleanupPaths)
 		response := httptest.NewRecorder()
-		api.reportError(response, httptest.NewRequest("POST", "/v1/agent/reports", nil), persistenceErr)
+		api.reportError(response, persistenceErr)
 		if response.Code != 503 || !strings.Contains(response.Body.String(), `"code":"database_unavailable"`) ||
 			!errors.Is(persistenceErr, injected) {
 			t.Fatal("cleanup failure masked original database failure", response.Body)
 		}
 		if !strings.Contains(logs.String(), `"msg":"report file cleanup failed"`) ||
 			!strings.Contains(logs.String(), `"dependency":"report_storage"`) ||
-			!strings.Contains(logs.String(), `"error":`) {
+			!strings.Contains(logs.String(), `"operation":"delete"`) {
 			t.Fatal("cleanup failure not logged with dependency and error")
 		}
 	})
