@@ -21,6 +21,7 @@ import (
 	"github.com/Bpoe/dsc-registry/internal/eventing"
 	"github.com/Bpoe/dsc-registry/internal/httpapi"
 	"github.com/Bpoe/dsc-registry/internal/reportstore"
+	"github.com/Bpoe/dsc-registry/internal/service"
 )
 
 func main() {
@@ -126,7 +127,8 @@ func runWithReady(ctx context.Context, settings config.Settings, logger *slog.Lo
 		}
 		dispatcher = worker
 	}
-	server.Handler = httpapi.New(db, reports, dispatcher, settings.ProbeTimeout, settings.ReadTimeout, settings.PollMaxAge, settings.MaxRequestBytes, settings.MaxReportBytes, logger)
+	app := service.New(db, reports, dispatcher, settings.MaxReportBytes, logger)
+	server.Handler = httpapi.New(app, settings.ReadTimeout, settings.PollMaxAge, settings.MaxRequestBytes, settings.MaxReportBytes, logger)
 	if settings.TLS == nil {
 		logger.Warn("HTTP transport is unencrypted; API keys and registration tokens may be exposed in transit")
 	}

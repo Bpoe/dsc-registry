@@ -15,8 +15,8 @@ import (
 
 	"github.com/Bpoe/dsc-registry/internal/database"
 	"github.com/Bpoe/dsc-registry/internal/eventing"
-	"github.com/Bpoe/dsc-registry/internal/report"
 	"github.com/Bpoe/dsc-registry/internal/reportstore"
+	"github.com/Bpoe/dsc-registry/internal/service"
 	"github.com/Bpoe/dsc-registry/internal/testdb"
 	"github.com/google/uuid"
 )
@@ -65,8 +65,7 @@ func testReportFileCleanup(t *testing.T, engine, dsn, operation, state string) {
 	}
 	defer files.Close()
 	recorder := &recordingEvents{}
-	handler := New(db, files, recorder, time.Second, 5*time.Second, time.Second, 2048, 4096,
-		slog.New(slog.NewJSONHandler(&logs, nil)))
+	handler := New(service.New(db, files, recorder, 4096, slog.New(slog.NewJSONHandler(&logs, nil))), 5*time.Second, time.Second, 2048, 4096, slog.New(slog.NewJSONHandler(&logs, nil)))
 	base := "/v1/machines/" + machine.ID
 	configPath := base + "/configurations/docker"
 	config := decodeResponse[database.ConfigurationResult](t,
@@ -166,8 +165,7 @@ func TestReportCleanupRollbackBothEngines(t *testing.T) {
 
 					defer files.Close()
 					recorder := &recordingEvents{}
-					handler := New(db, files, recorder, time.Second, 5*time.Second, time.Second, 2048, 4096,
-						slog.New(slog.NewJSONHandler(&logs, nil)))
+					handler := New(service.New(db, files, recorder, 4096, slog.New(slog.NewJSONHandler(&logs, nil))), 5*time.Second, time.Second, 2048, 4096, slog.New(slog.NewJSONHandler(&logs, nil)))
 					base := "/v1/machines/" + machine.ID
 					configPath := base + "/configurations/docker"
 					config := decodeResponse[database.ConfigurationResult](t,
@@ -251,26 +249,17 @@ func TestFailedPersistenceCleanupWarningPreservesErrorBothEngines(t *testing.T) 
 		failed := &database.Store{Engine: engine, DB: testdb.ObserveQueries(t, store.DB, dsn,
 			func(_ context.Context, query string, _ []driver.NamedValue) error {
 				if strings.Contains(query, "COALESCE(MAX(sequence)") {
+					_ = files.Close()
 					return injected
 				}
 				return nil
 			})}
-		upload, err := report.Parse([]byte(historyBody("docker", uuid.NewString(), uuid.NewString(), rawSuccessReport)))
-		if err != nil {
-			t.Fatal(err)
-		}
-		ctx := context.Background()
-		result, persistenceErr := failed.PublishReport(ctx, machine.ID, "docker", upload,
-			func() (string, error) { return files.Write(ctx, upload.Result) },
-			func(path string) ([]byte, error) { return files.Read(ctx, path, 4096) })
+
+		result, persistenceErr := service.New(failed, files, nil, 4096, slog.New(slog.NewJSONHandler(&logs, nil))).PublishReport(context.Background(), machine.ID, []byte(historyBody("docker", uuid.NewString(), uuid.NewString(), rawSuccessReport)))
 		if !errors.Is(persistenceErr, injected) || len(result.CleanupPaths) != 1 {
 			t.Fatal("original persistence error lost", result, persistenceErr)
 		}
-		if err := files.Close(); err != nil {
-			t.Fatal(err)
-		}
-		api := &adminAPI{reports: files, logger: slog.New(slog.NewJSONHandler(&logs, nil))}
-		api.removeReportFiles(result.CleanupPaths)
+		api := &adminAPI{logger: slog.New(slog.NewJSONHandler(&logs, nil))}
 		response := httptest.NewRecorder()
 		api.reportError(response, persistenceErr)
 		if response.Code != 503 || !strings.Contains(response.Body.String(), `"code":"database_unavailable"`) ||

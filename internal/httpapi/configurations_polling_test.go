@@ -20,6 +20,7 @@ import (
 	"github.com/Bpoe/dsc-registry/internal/apikey"
 	"github.com/Bpoe/dsc-registry/internal/database"
 	"github.com/Bpoe/dsc-registry/internal/desired"
+	"github.com/Bpoe/dsc-registry/internal/service"
 	"github.com/Bpoe/dsc-registry/internal/testdb"
 )
 
@@ -35,8 +36,7 @@ func observedPollingAPI(t *testing.T, store *database.Store, dsn string, before 
 		func(ctx context.Context, query string, _ []driver.NamedValue) error {
 			return before(ctx, strings.Join(strings.Fields(query), " "))
 		})}
-	return New(reader, nil, nil, time.Second, 5*time.Second, 37*time.Second, 2048, 16<<20,
-		slog.New(slog.NewJSONHandler(io.Discard, nil)))
+	return New(service.New(reader, nil, nil, 16<<20, slog.New(slog.NewJSONHandler(io.Discard, nil))), 5*time.Second, 37*time.Second, 2048, 16<<20, slog.New(slog.NewJSONHandler(io.Discard, nil)))
 }
 
 func TestAgentConfigurationQueryPathsBothEngines(t *testing.T) {

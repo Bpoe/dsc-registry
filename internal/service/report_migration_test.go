@@ -1,4 +1,4 @@
-package database
+package service
 
 import (
 	"context"
@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	. "github.com/Bpoe/dsc-registry/internal/database"
 	"github.com/Bpoe/dsc-registry/internal/reportstore"
 	"github.com/Bpoe/dsc-registry/internal/testdb"
 	"github.com/Bpoe/dsc-registry/migrations"
@@ -64,7 +65,7 @@ func testReportHistoryUpgrade(t *testing.T, engine, dsn string, machineNames boo
 		if _, err := tx.ExecContext(ctx, script); err != nil {
 			t.Fatal(err)
 		}
-		if err := backfillMachineNames(ctx, tx); err != nil {
+		if err := backfillHostName(ctx, tx); err != nil {
 			t.Fatal(err)
 		}
 		if engine == "postgres" {

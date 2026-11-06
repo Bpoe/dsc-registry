@@ -46,6 +46,39 @@ administrator ── admin API ──┐
 | Results | Preserve the latest accepted original `dscd` JSON result envelope per name; derive machine and configuration status from retained reports |
 | Scaling | Stateless API scale-out + vertically scaled PostgreSQL + provisioned report shares; defer multi-stamp routing and distributed database systems |
 
+### Server responsibility boundaries
+
+`cmd/dscregd` constructs the database, confined report store, event dispatcher,
+application service and HTTP handler explicitly. Dependencies flow from
+`httpapi` to `service`, then to `database`, `reportstore` and `eventing`;
+infrastructure never imports HTTP or services.
+
+HTTP handles request bounds/binding, authentication and authorization, routes,
+status/error envelopes, pagination, ETags and caching. The cohesive service owns
+machine/credential/configuration operations, domain input validation, execution
+status derivation, report publication/retrieval, cleanup and post-commit event
+selection. Simple reads reuse concrete persistence results without a parallel
+model/repository hierarchy. SQL owns queries, constraints, transactions, machine
+locks and atomic mutation outcomes. Report storage owns confined file I/O;
+eventing owns event formatting, admission, transport and shutdown.
+
+Report publication first inspects the retained upload, verifies any legacy
+payload digest outside SQL transactions, and writes/syncs/closes a unique
+candidate if needed. The database commit operation rechecks under the machine
+lock, returning whether the candidate must be retained and which old references
+were retired. The service retries changed references, removes unused candidates
+on ordinary failures, retains both files on uncertain commits, and notifies and
+cleans retired files only after success. Retrieval reselects a missing named
+reference after concurrent retirement, without filesystem I/O under SQL locks.
+Storage failures carry a service sentinel and retain their wrapped cause;
+persistence not-found/conflict errors remain stable sentinels. HTTP never
+inspects SQL driver errors or filesystem errors.
+
+Status derives from a machine-locked SQL snapshot of desired revisions and
+retained receipts. The service classifies current/stale/removed/unreported names
+and aggregates execution outcomes after the read transaction ends. There is no
+separately persisted status projection.
+
 ### Explicit non-goals for v1
 
 No web UI, general-purpose event history, report analytics, groups/tags/policy inheritance, template catalog, rollout orchestrator, API-key OAuth exchange, SSH/mTLS/Entra API identities, per-tenant RBAC, required message broker, persistent event queues, Kubernetes dependency, database partitioning, automatic NFS provisioning, or support for generic remote report/object storage providers. Do not implement speculative hooks for these. Optional best-effort event publishing is described below; broker certificate authentication does not change Registry API authentication.
@@ -198,17 +231,17 @@ Expose lightweight process/lifecycle liveness/readiness endpoints without depend
 ### Optional event publishing
 
 The [eventing contract and operator guide](eventing.md) defines an optional,
-disabled-by-default AMQP 1.0 producer. HTTP handlers notify a no-op dispatcher or
+disabled-by-default AMQP 1.0 producer. Application services notify a no-op dispatcher or
 non-blocking bounded channel after machine/configuration/report persistence
 succeeds. One in-process worker owns transport-independent `Publisher.Publish/Close`,
 connection reuse, delivery outcomes and bounded reconnect backoff. No outbox,
 event SQL records, new daemon or HTTP API changes are introduced.
 
 The database has no eventing dependency: it returns committed mutation outcomes,
-and the handlers choose notifications without extra classification queries.
-`cmd/dscregd` injects the dispatcher into the HTTP API and owns worker startup and
-shutdown. Direct persistence calls are silent; there is no service layer,
-transaction hook or database callback for eventing.
+and services choose notifications without extra classification queries.
+`cmd/dscregd` injects the dispatcher into the application service and owns worker
+startup and shutdown. Direct persistence calls remain silent; notifications are
+not transaction hooks or database callbacks.
 
 Events are CloudEvents 1.0 structured JSON with identifiers only, not documents
 or status/compliance. Configuration CRUD is assignment CRUD and also changes

@@ -9,7 +9,6 @@ import (
 
 	"github.com/Bpoe/dsc-registry/internal/database"
 	"github.com/Bpoe/dsc-registry/internal/desired"
-	"github.com/Bpoe/dsc-registry/internal/eventing"
 )
 
 func (a *adminAPI) configurations(w http.ResponseWriter, r *http.Request) {
@@ -17,7 +16,7 @@ func (a *adminAPI) configurations(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	items, err := a.store.ListConfigurations(r.Context(), r.PathValue("id"), cursor, limit+1)
+	items, err := a.service.ListConfigurations(r.Context(), r.PathValue("id"), cursor, limit+1)
 	if err != nil {
 		a.configurationError(w, err)
 		return
@@ -38,13 +37,8 @@ func (a *adminAPI) putConfiguration(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	content, err := desired.Parse(body)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid_configuration", "Expected a JSON-object template and optional JSON-object parameters without duplicate keys or document wrappers")
-		return
-	}
 	id, name := r.PathValue("id"), r.PathValue("name")
-	result, outcome, err := a.store.PutConfiguration(r.Context(), id, name, content)
+	result, outcome, err := a.service.PutConfiguration(r.Context(), id, name, body)
 	if err != nil {
 		a.configurationError(w, err)
 		return
@@ -54,20 +48,11 @@ func (a *adminAPI) putConfiguration(w http.ResponseWriter, r *http.Request) {
 		status = http.StatusCreated
 		w.Header().Set("Location", "/v1/machines/"+id+"/configurations/"+name)
 	}
-	switch outcome {
-	case database.MutationCreated:
-		a.events.Notify(eventing.ConfigurationCreated, eventing.Identifiers{MachineID: id, ConfigurationName: name})
-	case database.MutationUpdated:
-		a.events.Notify(eventing.ConfigurationUpdated, eventing.Identifiers{MachineID: id, ConfigurationName: name})
-	}
-	if outcome != database.MutationUnchanged {
-		a.events.Notify(eventing.MachineUpdated, eventing.Identifiers{MachineID: id})
-	}
 	writeJSON(w, status, result)
 }
 
 func (a *adminAPI) getConfiguration(w http.ResponseWriter, r *http.Request) {
-	result, err := a.store.GetConfiguration(r.Context(), r.PathValue("id"), r.PathValue("name"))
+	result, err := a.service.GetConfiguration(r.Context(), r.PathValue("id"), r.PathValue("name"))
 	if err != nil {
 		a.configurationError(w, err)
 		return
@@ -77,20 +62,19 @@ func (a *adminAPI) getConfiguration(w http.ResponseWriter, r *http.Request) {
 
 func (a *adminAPI) deleteConfiguration(w http.ResponseWriter, r *http.Request) {
 	id, name := r.PathValue("id"), r.PathValue("name")
-	paths, err := a.store.DeleteConfiguration(r.Context(), id, name)
+	err := a.service.DeleteConfiguration(r.Context(), id, name)
 	if err != nil {
 		a.configurationError(w, err)
 		return
 	}
-	a.events.Notify(eventing.ConfigurationDeleted, eventing.Identifiers{MachineID: id, ConfigurationName: name})
-	a.events.Notify(eventing.MachineUpdated, eventing.Identifiers{MachineID: id})
-	a.removeReportFiles(paths)
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusNoContent)
 }
 
 func (a *adminAPI) configurationError(w http.ResponseWriter, err error) {
 	switch {
+	case errors.Is(err, desired.ErrInvalid):
+		writeError(w, http.StatusBadRequest, "invalid_configuration", "Expected a JSON-object template and optional JSON-object parameters without duplicate keys or document wrappers")
 	case errors.Is(err, database.ErrNotFound):
 		writeError(w, http.StatusNotFound, "machine_not_found", "Machine not found")
 	case errors.Is(err, database.ErrConfigurationNotFound):
@@ -107,7 +91,7 @@ func (a *adminAPI) agentConfigurations(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if validators := r.Header.Values("If-None-Match"); len(validators) > 0 {
-		revision, err := a.store.ConfigurationRevision(r.Context(), id)
+		revision, err := a.service.ConfigurationRevision(r.Context(), id)
 		if err != nil {
 			a.configurationError(w, err)
 			return
@@ -120,7 +104,7 @@ func (a *adminAPI) agentConfigurations(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	snapshot, err := a.store.ConfigurationSnapshot(r.Context(), id)
+	snapshot, err := a.service.ConfigurationSnapshot(r.Context(), id)
 	if err != nil {
 		a.configurationError(w, err)
 		return

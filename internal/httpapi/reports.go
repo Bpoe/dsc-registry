@@ -3,12 +3,10 @@ package httpapi
 import (
 	"errors"
 	"net/http"
-	"time"
 
 	"github.com/Bpoe/dsc-registry/internal/database"
-	"github.com/Bpoe/dsc-registry/internal/eventing"
 	"github.com/Bpoe/dsc-registry/internal/report"
-	"github.com/Bpoe/dsc-registry/internal/reportstore"
+	"github.com/Bpoe/dsc-registry/internal/service"
 )
 
 func (a *adminAPI) uploadReport(w http.ResponseWriter, r *http.Request) {
@@ -21,48 +19,11 @@ func (a *adminAPI) uploadReport(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	upload, err := report.Parse(body)
+	publication, err := a.service.PublishReport(r.Context(), id, body)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid_report", "Expected a valid wrapped dscd v1 report")
+		a.reportError(w, err)
 		return
 	}
-	storageFailure := false
-	publication, err := a.store.PublishReport(r.Context(), id, upload.Name, upload, func() (string, error) {
-		start := time.Now()
-		path, err := a.reports.Write(r.Context(), upload.Result)
-		var cleanupErr *reportstore.CleanupError
-		if errors.As(err, &cleanupErr) {
-			a.logger.Warn("report file cleanup failed", "path", cleanupErr.Path, "error", cleanupErr.Err)
-		}
-		storageFailure = err != nil
-		outcome := "written"
-		if err != nil {
-			outcome = "write_error"
-		}
-		a.logger.Info("report write", "outcome", outcome, "duration", time.Since(start))
-		return path, err
-	}, func(path string) ([]byte, error) {
-		content, err := a.reports.Read(r.Context(), path, a.maxReportBytes)
-		storageFailure = err != nil
-		return content, err
-	})
-	if err != nil {
-		a.removeReportFiles(publication.CleanupPaths)
-		if storageFailure && !reportResourceMissing(err) {
-			a.reportStorageError(w)
-		} else {
-			a.reportError(w, err)
-		}
-		return
-	}
-	data := eventing.Identifiers{MachineID: id, ConfigurationName: upload.Name, ReportID: publication.Report.ID}
-	switch publication.Outcome {
-	case database.MutationCreated:
-		a.events.Notify(eventing.ReportCreated, data)
-	case database.MutationUpdated:
-		a.events.Notify(eventing.ReportUpdated, data)
-	}
-	a.removeReportFiles(publication.CleanupPaths)
 	w.Header().Set("Location", "/v1/machines/"+id+"/reports/"+publication.Report.ID)
 	status := http.StatusOK
 	if publication.Outcome != database.MutationUnchanged {
@@ -71,20 +32,12 @@ func (a *adminAPI) uploadReport(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, status, publication.Report)
 }
 
-func (a *adminAPI) removeReportFiles(paths []string) {
-	for _, path := range paths {
-		if err := a.reports.Remove(path); err != nil {
-			a.logger.Warn("report file cleanup failed", "path", path, "error", err)
-		}
-	}
-}
-
 func (a *adminAPI) machineReports(w http.ResponseWriter, r *http.Request) {
 	limit, cursor, ok := pagination(w, r, validUUID)
 	if !ok {
 		return
 	}
-	items, err := a.store.ListReports(r.Context(), r.PathValue("id"), cursor, limit+1)
+	items, err := a.service.ListReports(r.Context(), r.PathValue("id"), cursor, limit+1)
 	if err != nil {
 		a.reportError(w, err)
 		return
@@ -104,24 +57,9 @@ func (a *adminAPI) machineReport(w http.ResponseWriter, r *http.Request, full bo
 	if !reportReadRequest(w, r) {
 		return
 	}
-	var content []byte
-	var read func(string) error
-	storageFailure := false
-	if full {
-		read = func(path string) error {
-			var err error
-			content, err = a.reports.Read(r.Context(), path, a.maxReportBytes)
-			storageFailure = err != nil
-			return err
-		}
-	}
-	item, err := a.store.GetReport(r.Context(), r.PathValue("id"), r.PathValue("reportId"), read)
+	item, content, err := a.service.GetReport(r.Context(), r.PathValue("id"), r.PathValue("reportId"), full)
 	if err != nil {
-		if storageFailure && !reportResourceMissing(err) {
-			a.reportStorageError(w)
-		} else {
-			a.reportError(w, err)
-		}
+		a.reportError(w, err)
 		return
 	}
 	if full {
@@ -137,7 +75,7 @@ func (a *adminAPI) machineStatus(w http.ResponseWriter, r *http.Request) {
 	if !reportReadRequest(w, r) {
 		return
 	}
-	status, err := a.store.GetMachineStatus(r.Context(), r.PathValue("id"))
+	status, err := a.service.GetMachineStatus(r.Context(), r.PathValue("id"))
 	if err != nil {
 		a.reportError(w, err)
 		return
@@ -149,7 +87,7 @@ func (a *adminAPI) configurationStatus(w http.ResponseWriter, r *http.Request) {
 	if !reportReadRequest(w, r) {
 		return
 	}
-	status, err := a.store.GetConfigurationStatus(r.Context(), r.PathValue("id"), r.PathValue("name"))
+	status, err := a.service.GetConfigurationStatus(r.Context(), r.PathValue("id"), r.PathValue("name"))
 	if err != nil {
 		a.reportError(w, err)
 		return
@@ -161,30 +99,14 @@ func (a *adminAPI) configurationReport(w http.ResponseWriter, r *http.Request) {
 	if !reportReadRequest(w, r) {
 		return
 	}
-	var content []byte
-	storageFailure := false
-	err := a.store.ReadReport(r.Context(), r.PathValue("id"), r.PathValue("name"), func(path string) error {
-		var err error
-		content, err = a.reports.Read(r.Context(), path, a.maxReportBytes)
-		storageFailure = err != nil
-		return err
-	})
+	content, err := a.service.ReadReport(r.Context(), r.PathValue("id"), r.PathValue("name"))
 	if err != nil {
-		if storageFailure && !reportResourceMissing(err) {
-			a.reportStorageError(w)
-		} else {
-			a.reportError(w, err)
-		}
+		a.reportError(w, err)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(content)
-}
-
-func reportResourceMissing(err error) bool {
-	return errors.Is(err, database.ErrNotFound) || errors.Is(err, database.ErrConfigurationNotFound) ||
-		errors.Is(err, database.ErrReportNotFound)
 }
 
 func reportReadRequest(w http.ResponseWriter, r *http.Request) bool {
@@ -197,6 +119,10 @@ func reportReadRequest(w http.ResponseWriter, r *http.Request) bool {
 
 func (a *adminAPI) reportError(w http.ResponseWriter, err error) {
 	switch {
+	case errors.Is(err, report.ErrInvalid):
+		writeError(w, http.StatusBadRequest, "invalid_report", "Expected a valid wrapped dscd v1 report")
+	case errors.Is(err, service.ErrReportStorage):
+		a.reportStorageError(w)
 	case errors.Is(err, database.ErrUploadConflict):
 		writeError(w, http.StatusConflict, "upload_id_conflict", "Upload ID already identifies a different report")
 	case errors.Is(err, database.ErrReportCursor):

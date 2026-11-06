@@ -67,3 +67,18 @@ func (s *Store) logTransaction(operation string, start time.Time, outcome string
 		"duration", time.Since(start), "pool_in_use", stats.InUse,
 		"pool_wait_count", stats.WaitCount, "pool_wait_duration", stats.WaitDuration)
 }
+
+func (s *Store) withOwner(ctx context.Context, operation, role, id string, run func(*sql.Tx) error) error {
+	tx, err := s.begin(ctx, operation)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if err := s.lockOwner(ctx, tx.Tx, role, id); err != nil {
+		return err
+	}
+	if err := run(tx.Tx); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
