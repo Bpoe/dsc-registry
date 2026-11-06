@@ -3,10 +3,8 @@ package database
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
 	"database/sql"
 	"errors"
-	"os"
 
 	"github.com/Bpoe/dsc-registry/internal/apikey"
 	"github.com/Bpoe/dsc-registry/internal/report"
@@ -32,12 +30,6 @@ type Publication struct {
 	CleanupPaths []string
 }
 
-type ConfigurationStatus struct {
-	report.Summary
-	HasReport bool   `json:"hasReport"`
-	ReportID  string `json:"reportId"`
-}
-
 const reportColumns = `id,machine_id,name,configuration_revision,received_at,started_at,finished_at,outcome,operation,input_hash,error_kind`
 
 func (m *ReportMetadata) fields() []any {
@@ -45,73 +37,23 @@ func (m *ReportMetadata) fields() []any {
 		&m.ReceivedAt, &m.StartedAt, &m.FinishedAt, &m.Outcome, &m.Operation, &m.InputHash, &m.ErrorKind}
 }
 
-var errReportChanged = errors.New("report changed during publication")
+var ErrReportChanged = errors.New("report changed during publication")
 
-// PublishReport performs file I/O outside transactions. The caller must remove
-// CleanupPaths after return, including on error; an uncertain commit never
-// returns the potentially published file for cleanup.
-func (s *Store) PublishReport(ctx context.Context, id, name string, upload report.Upload,
-	write func() (string, error), read func(string) ([]byte, error)) (publication Publication, err error) {
-	var unused []string
-	defer func() { publication.CleanupPaths = append(publication.CleanupPaths, unused...) }()
-	digest := sha256.Sum256(upload.Result)
-	for {
-		var existingID, revision, existingPath string
-		var storedDigest []byte
-		err := s.DB.QueryRowContext(ctx, `SELECT id,configuration_revision,report_path,result_sha256 FROM reports r
-			WHERE machine_id = $1 AND name = $2 AND upload_id = $3
-			AND sequence = (SELECT MAX(sequence) FROM reports WHERE machine_id = r.machine_id AND name = r.name)`,
-			id, name, upload.ID).Scan(&existingID, &revision, &existingPath, &storedDigest)
-		path := ""
-		switch {
-		case err == nil:
-			if revision != upload.ConfigurationRevision {
-				return Publication{}, ErrUploadConflict
-			}
-			if storedDigest == nil {
-				content, err := read(existingPath)
-				if errors.Is(err, os.ErrNotExist) {
-					var currentID string
-					lookupErr := s.DB.QueryRowContext(ctx, `SELECT id FROM reports
-						WHERE machine_id = $1 AND name = $2 ORDER BY sequence DESC LIMIT 1`, id, name).Scan(&currentID)
-					if lookupErr != nil && !errors.Is(lookupErr, sql.ErrNoRows) {
-						return Publication{}, lookupErr
-					}
-					if currentID != existingID {
-						continue
-					}
-				}
-				if err != nil {
-					return Publication{}, err
-				}
-				oldDigest := sha256.Sum256(content)
-				storedDigest = oldDigest[:]
-			}
-			if !bytes.Equal(storedDigest, digest[:]) {
-				return Publication{}, ErrUploadConflict
-			}
-		case errors.Is(err, sql.ErrNoRows):
-			path, err = write()
-			if err != nil {
-				return Publication{}, err
-			}
-		default:
-			return Publication{}, err
-		}
-		publication, keepFile, err := s.publishReport(ctx, id, name, upload, path, digest[:], existingID)
-		if path != "" && !keepFile {
-			unused = append(unused, path)
-		}
-		if errors.Is(err, errReportChanged) {
-			// A retry's report was replaced after the preliminary lookup.
-			// Recheck it without holding a transaction during file I/O.
-			continue
-		}
-		return publication, err
+// FindReportUpload reads a retained upload without acquiring a transaction.
+func (s *Store) FindReportUpload(ctx context.Context, id, name, uploadID string) (existingID, revision, path string, digest []byte, err error) {
+	err = s.DB.QueryRowContext(ctx, `SELECT id,configuration_revision,report_path,result_sha256 FROM reports r
+ WHERE machine_id = $1 AND name = $2 AND upload_id = $3
+ AND sequence = (SELECT MAX(sequence) FROM reports WHERE machine_id = r.machine_id AND name = r.name)`, id, name, uploadID).Scan(&existingID, &revision, &path, &digest)
+	if errors.Is(err, sql.ErrNoRows) {
+		err = ErrReportNotFound
 	}
+	return
 }
 
-func (s *Store) publishReport(ctx context.Context, id, name string, upload report.Upload,
+// CommitReport atomically verifies a retry or replaces retained metadata under
+// the machine lock. keepFile is true on success or an ambiguous commit outcome;
+// callers must retain the candidate in either case. No file I/O occurs here.
+func (s *Store) CommitReport(ctx context.Context, id, name string, upload report.Upload,
 	path string, digest []byte, verifiedID string) (Publication, bool, error) {
 	tx, err := s.begin(ctx, "publish_report")
 	if err != nil {
@@ -134,7 +76,7 @@ func (s *Store) publishReport(ctx context.Context, id, name string, upload repor
 		backfillDigest := storedDigest == nil
 		if backfillDigest {
 			if existing.ID != verifiedID {
-				return Publication{}, false, errReportChanged
+				return Publication{}, false, ErrReportChanged
 			}
 			storedDigest = digest
 		}
@@ -153,7 +95,7 @@ func (s *Store) publishReport(ctx context.Context, id, name string, upload repor
 		return Publication{}, false, err
 	}
 	if path == "" {
-		return Publication{}, false, errReportChanged
+		return Publication{}, false, ErrReportChanged
 	}
 	var sequence int64
 	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(sequence),0) + 1 FROM reports WHERE machine_id = $1`, id).
@@ -206,24 +148,9 @@ func reportPaths(ctx context.Context, tx *sql.Tx, id, name string) ([]string, er
 	return paths, rows.Err()
 }
 
-func (s *Store) withMachineReports(ctx context.Context, id string, read func(*sql.Tx) error) error {
-	tx, err := s.begin(ctx, "read_report_status")
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-	if err := s.lockOwner(ctx, tx.Tx, apikey.Machine, id); err != nil {
-		return err
-	}
-	if err := read(tx.Tx); err != nil {
-		return err
-	}
-	return tx.Commit()
-}
-
 func (s *Store) ListReports(ctx context.Context, id, cursor string, limit int) ([]ReportMetadata, error) {
 	items := make([]ReportMetadata, 0)
-	err := s.withMachineReports(ctx, id, func(tx *sql.Tx) error {
+	err := s.withOwner(ctx, "read_report_status", apikey.Machine, id, func(tx *sql.Tx) error {
 		var before int64
 		if cursor != "" {
 			err := tx.QueryRowContext(ctx, `SELECT sequence FROM reports r WHERE machine_id = $1 AND id = $2
@@ -255,11 +182,11 @@ func (s *Store) ListReports(ctx context.Context, id, cursor string, limit int) (
 	return items, err
 }
 
-// A nil read callback retrieves metadata without touching the filesystem.
-func (s *Store) GetReport(ctx context.Context, id, reportID string, read func(string) error) (ReportMetadata, error) {
+// GetReport returns a retained reference; callers read content after the transaction.
+func (s *Store) GetReport(ctx context.Context, id, reportID string) (ReportMetadata, string, error) {
 	var item ReportMetadata
 	var path string
-	err := s.withMachineReports(ctx, id, func(tx *sql.Tx) error {
+	err := s.withOwner(ctx, "read_report_status", apikey.Machine, id, func(tx *sql.Tx) error {
 		err := tx.QueryRowContext(ctx, `SELECT `+reportColumns+`,report_path FROM reports r
 			WHERE machine_id = $1 AND id = $2
 			AND sequence = (SELECT MAX(sequence) FROM reports WHERE machine_id = r.machine_id AND name = r.name)`, id, reportID).
@@ -269,74 +196,30 @@ func (s *Store) GetReport(ctx context.Context, id, reportID string, read func(st
 		}
 		return err
 	})
-	if err == nil && read != nil {
-		err = read(path)
-		if errors.Is(err, os.ErrNotExist) {
-			if _, lookupErr := s.GetReport(ctx, id, reportID, nil); lookupErr != nil {
-				return item, lookupErr
-			}
-		}
-	}
-	return item, err
+	return item, path, err
 }
 
-func (s *Store) latestConfigurationReport(ctx context.Context, id, name string, read func(string) error) (ReportMetadata, error) {
-	var missingID string
-	var missingErr error
-	for {
-		var item ReportMetadata
-		var path string
-		err := s.withMachineReports(ctx, id, func(tx *sql.Tx) error {
-			var revision string
-			if err := tx.QueryRowContext(ctx, `SELECT revision FROM configurations WHERE machine_id = $1 AND name = $2`, id, name).
-				Scan(&revision); err != nil {
-				if errors.Is(err, sql.ErrNoRows) {
-					return ErrConfigurationNotFound
-				}
-				return err
+func (s *Store) LatestConfigurationReport(ctx context.Context, id, name string) (ReportMetadata, string, error) {
+	var item ReportMetadata
+	var path string
+	err := s.withOwner(ctx, "read_report_status", apikey.Machine, id, func(tx *sql.Tx) error {
+		var revision string
+		if err := tx.QueryRowContext(ctx, `SELECT revision FROM configurations WHERE machine_id = $1 AND name = $2`, id, name).
+			Scan(&revision); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return ErrConfigurationNotFound
 			}
-			err := tx.QueryRowContext(ctx, `SELECT `+reportColumns+`,report_path FROM reports r
+			return err
+		}
+		err := tx.QueryRowContext(ctx, `SELECT `+reportColumns+`,report_path FROM reports r
 			WHERE machine_id = $1 AND name = $2 AND configuration_revision = $3
 			AND sequence = (SELECT MAX(sequence) FROM reports WHERE machine_id = r.machine_id AND name = r.name)
 			ORDER BY sequence DESC LIMIT 1`, id, name, revision).
-				Scan(append(item.fields(), &path)...)
-			if errors.Is(err, sql.ErrNoRows) {
-				return ErrReportNotFound
-			}
-			return err
-		})
-		if err == nil && read != nil {
-			if item.ID == missingID {
-				return item, missingErr
-			}
-			err = read(path)
-			if errors.Is(err, os.ErrNotExist) {
-				missingID, missingErr = item.ID, err
-				continue
-			}
+			Scan(append(item.fields(), &path)...)
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrReportNotFound
 		}
-		return item, err
-	}
-}
-
-func (s *Store) GetConfigurationStatus(ctx context.Context, id, name string) (ConfigurationStatus, error) {
-	item, err := s.latestConfigurationReport(ctx, id, name, nil)
-	return ConfigurationStatus{Summary: item.Summary, HasReport: err == nil, ReportID: item.ID}, err
-}
-
-func (s *Store) ReadReport(ctx context.Context, id, name string, read func(string) error) error {
-	_, err := s.latestConfigurationReport(ctx, id, name, read)
-	return err
-}
-
-func (s *Store) RetireReport(ctx context.Context, path string, remove func(string) error) error {
-	var referenced bool
-	if err := s.DB.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM reports WHERE report_path = $1)`, path).
-		Scan(&referenced); err != nil {
 		return err
-	}
-	if referenced {
-		return nil
-	}
-	return remove(path)
+	})
+	return item, path, err
 }

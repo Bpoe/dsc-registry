@@ -169,34 +169,31 @@ func (s *Store) ListConfigurations(ctx context.Context, id, after string, limit 
 
 // DeleteConfiguration returns files to remove only after a successful commit.
 func (s *Store) DeleteConfiguration(ctx context.Context, id, name string) ([]string, error) {
-	tx, err := s.begin(ctx, "delete_configuration")
+	var paths []string
+	err := s.withOwner(ctx, "delete_configuration", apikey.Machine, id, func(tx *sql.Tx) error {
+		var err error
+		paths, err = reportPaths(ctx, tx, id, name)
+		if err != nil {
+			return err
+		}
+		result, err := tx.ExecContext(ctx, "DELETE FROM configurations WHERE machine_id = $1 AND name = $2", id, name)
+		if err != nil {
+			return err
+		}
+		if count, err := result.RowsAffected(); err != nil {
+			return err
+		} else if count == 0 {
+			return ErrConfigurationNotFound
+		}
+		if _, err := tx.ExecContext(ctx, "DELETE FROM reports WHERE machine_id = $1 AND name = $2", id, name); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, "UPDATE machines SET configuration_revision = configuration_revision + 1 WHERE id = $1", id); err != nil {
+			return err
+		}
+		return nil
+	})
 	if err != nil {
-		return nil, err
-	}
-	defer tx.Rollback()
-	if err := s.lockOwner(ctx, tx.Tx, apikey.Machine, id); err != nil {
-		return nil, err
-	}
-	paths, err := reportPaths(ctx, tx.Tx, id, name)
-	if err != nil {
-		return nil, err
-	}
-	result, err := tx.ExecContext(ctx, "DELETE FROM configurations WHERE machine_id = $1 AND name = $2", id, name)
-	if err != nil {
-		return nil, err
-	}
-	if count, err := result.RowsAffected(); err != nil {
-		return nil, err
-	} else if count == 0 {
-		return nil, ErrConfigurationNotFound
-	}
-	if _, err := tx.ExecContext(ctx, "DELETE FROM reports WHERE machine_id = $1 AND name = $2", id, name); err != nil {
-		return nil, err
-	}
-	if _, err := tx.ExecContext(ctx, "UPDATE machines SET configuration_revision = configuration_revision + 1 WHERE id = $1", id); err != nil {
-		return nil, err
-	}
-	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
 	return paths, nil

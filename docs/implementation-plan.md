@@ -11,9 +11,10 @@ AGENTS.md
 .github/copilot-instructions.md
 cmd/dscregd/main.go              # bootstrap, flags, graceful shutdown
 internal/config/                # options, defaults, validation
-internal/httpapi/               # routes, authentication middleware, handlers
+internal/httpapi/               # routes, authentication middleware, HTTP binding/responses
+internal/service/               # business operations, report workflows, cleanup, notifications
 internal/database/              # concrete SQL queries and transactions
-internal/reportstore/           # filesystem report publication and retrieval
+internal/reportstore/           # confined filesystem report I/O
 internal/model/                 # only shared domain/JSON data types actually needed
 migrations/sqlite/              # explicit SQL migrations
 migrations/postgres/            # explicit SQL migrations
@@ -215,11 +216,11 @@ persistent connection reuse, accepted-delivery checks and bounded exponential
 reconnect backoff. It does not add an Azure authentication dependency, broker
 provisioning, outbox, event persistence, status/compliance events or a daemon.
 
-Machine/configuration/report notifications originate in HTTP handlers only after
+Machine/configuration/report notifications originate in application services only after
 successful persistence operations. The database has no eventing dependency and
 returns created/updated/unchanged mutation outcomes without extra classification
 queries or public response fields. `cmd/dscregd` injects the dispatcher into the
-HTTP API, retaining worker startup/shutdown ownership. No-op desired PUTs,
+application service, retaining worker startup/shutdown ownership. No-op desired PUTs,
 idempotent report retries and internal report file cleanup are silent.
 Parent removal communicates child removal without redundant notifications;
 no standalone report-delete API is introduced. JSON settings,

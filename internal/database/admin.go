@@ -166,28 +166,25 @@ func (s *Store) ListMachines(ctx context.Context, after string, limit int) ([]Ma
 
 // DeleteMachine returns files to remove only after a successful commit.
 func (s *Store) DeleteMachine(ctx context.Context, id string) ([]string, error) {
-	tx, err := s.begin(ctx, "delete_machine")
+	var paths []string
+	err := s.withOwner(ctx, "delete_machine", apikey.Machine, id, func(tx *sql.Tx) error {
+		var err error
+		paths, err = reportPaths(ctx, tx, id, "")
+		if err != nil {
+			return err
+		}
+		result, err := tx.ExecContext(ctx, "DELETE FROM machines WHERE id = $1", id)
+		if err != nil {
+			return err
+		}
+		if count, err := result.RowsAffected(); err != nil {
+			return err
+		} else if count == 0 {
+			return ErrNotFound
+		}
+		return nil
+	})
 	if err != nil {
-		return nil, err
-	}
-	defer tx.Rollback()
-	if err := s.lockOwner(ctx, tx.Tx, apikey.Machine, id); err != nil {
-		return nil, err
-	}
-	paths, err := reportPaths(ctx, tx.Tx, id, "")
-	if err != nil {
-		return nil, err
-	}
-	result, err := tx.ExecContext(ctx, "DELETE FROM machines WHERE id = $1", id)
-	if err != nil {
-		return nil, err
-	}
-	if count, err := result.RowsAffected(); err != nil {
-		return nil, err
-	} else if count == 0 {
-		return nil, ErrNotFound
-	}
-	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
 	return paths, nil
@@ -213,19 +210,13 @@ func (s *Store) lockOwner(ctx context.Context, tx *sql.Tx, role, id string) erro
 }
 
 func (s *Store) IssueKey(ctx context.Context, role, id, description string) (IssuedKey, error) {
-	tx, err := s.begin(ctx, "issue_key")
+	var key IssuedKey
+	err := s.withOwner(ctx, "issue_key", role, id, func(tx *sql.Tx) error {
+		var err error
+		key, err = insertKey(ctx, tx, role, id, description)
+		return err
+	})
 	if err != nil {
-		return IssuedKey{}, err
-	}
-	defer tx.Rollback()
-	if err := s.lockOwner(ctx, tx.Tx, role, id); err != nil {
-		return IssuedKey{}, err
-	}
-	key, err := insertKey(ctx, tx.Tx, role, id, description)
-	if err != nil {
-		return IssuedKey{}, err
-	}
-	if err := tx.Commit(); err != nil {
 		return IssuedKey{}, err
 	}
 	return key, nil
@@ -245,59 +236,49 @@ func insertKey(ctx context.Context, tx *sql.Tx, role, id, description string) (I
 }
 
 func (s *Store) ListKeys(ctx context.Context, role, id, after string, limit int) ([]Key, error) {
-	tx, err := s.begin(ctx, "list_keys")
-	if err != nil {
-		return nil, err
-	}
-	defer tx.Rollback()
-	if err := s.lockOwner(ctx, tx.Tx, role, id); err != nil {
-		return nil, err
-	}
-	rows, err := tx.QueryContext(ctx, `SELECT key_id, owner_type, owner_id, created_at, revoked_at, COALESCE(description, '')
+	var keys []Key
+	err := s.withOwner(ctx, "list_keys", role, id, func(tx *sql.Tx) error {
+		rows, err := tx.QueryContext(ctx, `SELECT key_id, owner_type, owner_id, created_at, revoked_at, COALESCE(description, '')
 		FROM api_keys WHERE owner_type = $1 AND owner_id = $2 AND key_id > $3 ORDER BY key_id LIMIT $4`,
-		role, id, after, limit)
-	if err != nil {
-		return nil, err
-	}
-	keys := make([]Key, 0)
-	for rows.Next() {
-		var key Key
-		if err := rows.Scan(&key.KeyID, &key.OwnerType, &key.OwnerID, &key.CreatedAt, &key.RevokedAt, &key.Description); err != nil {
-			rows.Close()
-			return nil, err
+			role, id, after, limit)
+		if err != nil {
+			return err
 		}
-		keys = append(keys, key)
-	}
-	err = errors.Join(rows.Err(), rows.Close())
+		keys = make([]Key, 0)
+		for rows.Next() {
+			var key Key
+			if err := rows.Scan(&key.KeyID, &key.OwnerType, &key.OwnerID, &key.CreatedAt, &key.RevokedAt, &key.Description); err != nil {
+				rows.Close()
+				return err
+			}
+			keys = append(keys, key)
+		}
+		err = errors.Join(rows.Err(), rows.Close())
+		if err != nil {
+			return err
+		}
+		return nil
+	})
 	if err != nil {
-		return nil, err
-	}
-	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
 	return keys, nil
 }
 
 func (s *Store) RevokeKey(ctx context.Context, role, id, keyID string) error {
-	tx, err := s.begin(ctx, "revoke_key")
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-	if err := s.lockOwner(ctx, tx.Tx, role, id); err != nil {
-		return err
-	}
-	result, err := tx.ExecContext(ctx, `UPDATE api_keys SET revoked_at = COALESCE(revoked_at, $1)
+	return s.withOwner(ctx, "revoke_key", role, id, func(tx *sql.Tx) error {
+		result, err := tx.ExecContext(ctx, `UPDATE api_keys SET revoked_at = COALESCE(revoked_at, $1)
 		WHERE key_id = $2 AND owner_type = $3 AND owner_id = $4`, timestamp(), keyID, role, id)
-	if err != nil {
-		return err
-	}
-	if count, err := result.RowsAffected(); err != nil {
-		return err
-	} else if count == 0 {
-		return ErrNotFound
-	}
-	return tx.Commit()
+		if err != nil {
+			return err
+		}
+		if count, err := result.RowsAffected(); err != nil {
+			return err
+		} else if count == 0 {
+			return ErrNotFound
+		}
+		return nil
+	})
 }
 
 func timestamp() string {

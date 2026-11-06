@@ -16,6 +16,7 @@ import (
 
 	"github.com/Bpoe/dsc-registry/internal/database"
 	"github.com/Bpoe/dsc-registry/internal/reportstore"
+	"github.com/Bpoe/dsc-registry/internal/service"
 )
 
 func testHandler(t *testing.T) (http.Handler, *sql.DB, *reportstore.Store, *bytes.Buffer) {
@@ -33,7 +34,7 @@ func testHandler(t *testing.T) (http.Handler, *sql.DB, *reportstore.Store, *byte
 	t.Cleanup(func() { db.Close() })
 	logs := &bytes.Buffer{}
 	logger := slog.New(slog.NewJSONHandler(logs, nil))
-	return New(&database.Store{DB: db, Engine: "sqlite"}, reports, nil, 100*time.Millisecond, time.Second, 5*time.Minute, 1<<20, 16<<20, logger), db, reports, logs
+	return New(service.New(&database.Store{DB: db, Engine: "sqlite"}, reports, nil, 16<<20, logger), time.Second, 5*time.Minute, 1<<20, 16<<20, logger), db, reports, logs
 }
 
 func request(handler http.Handler, method, path string) *httptest.ResponseRecorder {
@@ -79,8 +80,7 @@ func TestHealthRoutes(t *testing.T) {
 
 func TestHealthIgnoresDependencies(t *testing.T) {
 	// Nil dependencies prove that neither route even accesses the stores.
-	handler := New(nil, nil, nil, time.Second, time.Second, time.Minute, 1024, 1024,
-		slog.New(slog.NewJSONHandler(io.Discard, nil)))
+	handler := New(service.New(nil, nil, nil, 1024, slog.New(slog.NewJSONHandler(io.Discard, nil))), time.Second, time.Minute, 1024, 1024, slog.New(slog.NewJSONHandler(io.Discard, nil)))
 	for _, path := range []string{"/health/live", "/health/ready"} {
 		if response := request(handler, "GET", path); response.Code != http.StatusOK {
 			t.Fatalf("%s: %d %s", path, response.Code, response.Body)

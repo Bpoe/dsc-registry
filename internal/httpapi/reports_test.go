@@ -16,6 +16,7 @@ import (
 	"github.com/Bpoe/dsc-registry/internal/database"
 	"github.com/Bpoe/dsc-registry/internal/desired"
 	"github.com/Bpoe/dsc-registry/internal/reportstore"
+	"github.com/Bpoe/dsc-registry/internal/service"
 	"github.com/Bpoe/dsc-registry/internal/testdb"
 	"github.com/google/uuid"
 )
@@ -43,7 +44,7 @@ func TestReportPathsHTTPBothEngines(t *testing.T) {
 			t.Fatal(err)
 		}
 		defer files.Close()
-		handler := New(db, files, nil, time.Second, 5*time.Second, 37*time.Second, 2048, 4096, slog.New(slog.NewJSONHandler(logs, nil)))
+		handler := New(service.New(db, files, nil, 4096, slog.New(slog.NewJSONHandler(logs, nil))), 5*time.Second, 37*time.Second, 2048, 4096, slog.New(slog.NewJSONHandler(logs, nil)))
 		base := "/v1/machines/" + machine.ID
 		configPath := base + "/configurations/docker"
 		config := decodeResponse[database.ConfigurationResult](t,
@@ -83,24 +84,27 @@ func TestReportPathsHTTPBothEngines(t *testing.T) {
 				} {
 					apiRequest(t, handler, key.Key, "POST", "/v1/agent/reports", changed, 409)
 				}
-				status := decodeResponse[database.ConfigurationStatus](t,
+				status := decodeResponse[service.ConfigurationStatus](t,
 					apiRequest(t, handler, admin.Key, "GET", configPath+"/status", "", 200))
 				for _, path := range []string{configPath + "/report", base + "/reports/" + status.ReportID + "/content"} {
 					if got := apiRequest(t, handler, admin.Key, "GET", path, "", 200); got.Body.String() != result {
 						t.Fatal("retrieved report paths or original bytes changed")
 					}
 				}
-				metadata, err := db.GetReport(context.Background(), machine.ID, status.ReportID, func(path string) error {
-					if filepath.Base(path) != path || !strings.HasSuffix(path, ".json") ||
-						!validUUID(strings.TrimSuffix(path, ".json")) {
-						t.Fatal("report storage key is not a server-generated UUID filename", path)
-					}
-					stored, err := os.ReadFile(filepath.Join(root, path))
-					if err == nil && string(stored) != result {
-						t.Fatal("stored report paths or original bytes changed")
-					}
-					return err
-				})
+				metadata, path, err := db.GetReport(context.Background(), machine.ID, status.ReportID)
+				if err == nil {
+					err = func() error {
+						if filepath.Base(path) != path || !strings.HasSuffix(path, ".json") ||
+							!validUUID(strings.TrimSuffix(path, ".json")) {
+							t.Fatal("report storage key is not a server-generated UUID filename", path)
+						}
+						stored, err := os.ReadFile(filepath.Join(root, path))
+						if err == nil && string(stored) != result {
+							t.Fatal("stored report paths or original bytes changed")
+						}
+						return err
+					}()
+				}
 				if err != nil || metadata.MachineID != machine.ID || metadata.ConfigurationName != "docker" ||
 					metadata.ConfigurationRevision != config.Revision {
 					t.Fatal("embedded paths changed report identity", metadata, err)
@@ -124,7 +128,7 @@ func TestReportsHTTPBothEngines(t *testing.T) {
 			t.Fatal(err)
 		}
 		defer files.Close()
-		handler := New(db, files, nil, time.Second, 10*time.Second, 37*time.Second, 2048, 4096, slog.New(slog.NewJSONHandler(logs, nil)))
+		handler := New(service.New(db, files, nil, 4096, slog.New(slog.NewJSONHandler(logs, nil))), 10*time.Second, 37*time.Second, 2048, 4096, slog.New(slog.NewJSONHandler(logs, nil)))
 		path := "/v1/machines/" + machine.ID + "/configurations/docker"
 		agentPath := "/v1/agent/reports"
 		config := decodeResponse[database.ConfigurationResult](t, apiRequest(t, handler, admin.Key, "PUT", path, `{"template":{},"parameters":{}}`, 201))
@@ -181,7 +185,7 @@ func TestReportsHTTPBothEngines(t *testing.T) {
 			t.Fatal("full original report bytes not returned", response.Body)
 		}
 		status := apiRequest(t, handler, admin.Key, "GET", path+"/status", "", 200)
-		summary := decodeResponse[database.ConfigurationStatus](t, status)
+		summary := decodeResponse[service.ConfigurationStatus](t, status)
 		if summary.ConfigurationRevision != config.Revision || summary.Operation == nil || *summary.Operation != "test" ||
 			summary.Outcome != "succeeded" || summary.ErrorKind != nil || summary.InputHash != nil || !summary.HasReport {
 			t.Fatal("drift misinterpreted or summary malformed", status.Body)
@@ -220,7 +224,7 @@ func TestReportsHTTPBothEngines(t *testing.T) {
 			if response.Body.String() != result {
 				t.Fatal("failure envelope changed")
 			}
-			current := decodeResponse[database.ConfigurationStatus](t, apiRequest(t, handler, admin.Key, "GET", path+"/status", "", 200))
+			current := decodeResponse[service.ConfigurationStatus](t, apiRequest(t, handler, admin.Key, "GET", path+"/status", "", 200))
 			if current.Outcome != outcome || current.Operation != nil || current.ErrorKind == nil || *current.ErrorKind != kind {
 				t.Fatal("failure summary incorrect", current)
 			}
@@ -267,7 +271,7 @@ func TestReportBoundsAndStorageFailureBothEngines(t *testing.T) {
 			t.Fatal(err)
 		}
 		body := reportBody(config.Revision, uuid.NewString(), rawSuccessReport)
-		handler := New(db, files, nil, time.Second, time.Second, 37*time.Second, 128, int64(len(body)), slog.New(slog.NewJSONHandler(logs, nil)))
+		handler := New(service.New(db, files, nil, int64(len(body)), slog.New(slog.NewJSONHandler(logs, nil))), time.Second, 37*time.Second, 128, int64(len(body)), slog.New(slog.NewJSONHandler(logs, nil)))
 		path := "/v1/machines/" + machine.ID + "/configurations/docker"
 		agentPath := "/v1/agent/reports"
 		// The report-specific limit is distinct from max-request-bytes and
@@ -353,7 +357,7 @@ func TestReportRestartRecoveryBothEngines(t *testing.T) {
 			t.Fatal(err)
 		}
 		logger := slog.New(slog.NewJSONHandler(logs, nil))
-		handler := New(db, files, nil, time.Second, time.Second, 37*time.Second, 2048, 4096, logger)
+		handler := New(service.New(db, files, nil, 4096, logger), time.Second, 37*time.Second, 2048, 4096, logger)
 		path := "/v1/machines/" + machine.ID + "/configurations/docker"
 		agentPath := "/v1/agent/reports"
 		config := decodeResponse[database.ConfigurationResult](t,
@@ -389,7 +393,7 @@ func TestReportRestartRecoveryBothEngines(t *testing.T) {
 			t.Fatal(err)
 		}
 		defer files.Close()
-		handler = New(db, files, nil, time.Second, time.Second, 37*time.Second, 2048, 4096, logger)
+		handler = New(service.New(db, files, nil, 4096, logger), time.Second, 37*time.Second, 2048, 4096, logger)
 		apiRequest(t, handler, "", "GET", "/health/ready", "", 200)
 		assertAgentCache(t, agentRequest(handler, key.Key, tag), 304)
 		apiRequest(t, handler, key.Key, "POST", agentPath, body, 200)

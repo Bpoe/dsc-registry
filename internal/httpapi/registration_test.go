@@ -16,6 +16,7 @@ import (
 
 	"github.com/Bpoe/dsc-registry/internal/database"
 	"github.com/Bpoe/dsc-registry/internal/reportstore"
+	"github.com/Bpoe/dsc-registry/internal/service"
 	"github.com/Bpoe/dsc-registry/internal/testdb"
 )
 
@@ -272,7 +273,7 @@ func TestConcurrentRegistrationsHTTPBothEngines(t *testing.T) {
 			t.Fatal(err)
 		}
 		defer reports.Close()
-		second := New(secondStore, reports, nil, time.Second, 5*time.Second, 37*time.Second, 2048, 16<<20, slog.New(slog.NewTextHandler(io.Discard, nil)))
+		second := New(service.New(secondStore, reports, nil, 16<<20, slog.New(slog.NewTextHandler(io.Discard, nil))), 5*time.Second, 37*time.Second, 2048, 16<<20, slog.New(slog.NewTextHandler(io.Discard, nil)))
 		handlers := []http.Handler{first, second}
 		token, err := store.CreateRegistrationToken(context.Background(), 3600)
 		if err != nil {
