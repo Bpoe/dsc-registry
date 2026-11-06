@@ -1,0 +1,12 @@
+**/bin/
+**/obj/
+**/TestResults/
+.vs/
+data/
+# Keep the Data source folder without including runtime files on Windows.
+!src/Dscregd/Data/
+src/Dscregd/Data/*
+!src/Dscregd/Data/*.cs
+*.db
+*.db-wal
+*.db-shm

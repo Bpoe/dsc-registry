@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+  <PropertyGroup>
+    <AssemblyName>dscregd</AssemblyName>
+    <RootNamespace>Dscregd</RootNamespace>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" Version="10.0.14" />
+    <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" Version="10.0.3" />
+    <PackageReference Include="SQLitePCLRaw.lib.e_sqlite3" Version="3.53.3" />
+    <PackageReference Include="AMQPNetLite" Version="2.5.1" />
+  </ItemGroup>
+  <ItemGroup>
+    <EmbeddedResource Include="..\..\..\migrations\sqlite\*.sql" Link="Schema\sqlite\%(Filename)%(Extension)" />
+    <EmbeddedResource Include="..\..\..\migrations\postgres\*.sql" Link="Schema\postgres\%(Filename)%(Extension)" />
+  </ItemGroup>
+</Project>
