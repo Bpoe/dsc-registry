@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/Bpoe/dsc-registry/migrations"
+	"github.com/XSAM/otelsql"
 	_ "modernc.org/sqlite"
 )
 
@@ -42,7 +43,7 @@ func Open(ctx context.Context, path string, busyTimeout time.Duration) (*sql.DB,
 		"_txlock": {"immediate"},
 	}
 	dsn := "file:" + (&url.URL{Path: filepath.ToSlash(absolute)}).EscapedPath() + "?" + query.Encode()
-	db, err := sql.Open("sqlite", dsn)
+	db, err := otelsql.Open("sqlite", dsn, sqlTelemetryOptions("sqlite")...)
 	if err != nil {
 		return nil, fmt.Errorf("open SQLite: %w", err)
 	}

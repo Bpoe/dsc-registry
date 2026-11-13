@@ -339,10 +339,8 @@ func TestReportBoundsAndStorageFailureBothEngines(t *testing.T) {
 				t.Fatal("storage failure leaked data into logs")
 			}
 		}
-		for _, outcome := range []string{"written", "write_error"} {
-			if !strings.Contains(logs.String(), `"msg":"report write","outcome":"`+outcome+`","duration":`) {
-				t.Fatalf("missing report write timing for %s", outcome)
-			}
+		if strings.Contains(logs.String(), `"msg":"report write"`) {
+			t.Fatal("per-report INFO timing should be replaced by storage histograms")
 		}
 	})
 }
@@ -380,14 +378,14 @@ func TestReportRestartRecoveryBothEngines(t *testing.T) {
 		if err := files.Close(); err != nil {
 			t.Fatal(err)
 		}
-		if err := db.DB.Close(); err != nil {
+		if err := db.Close(); err != nil {
 			t.Fatal(err)
 		}
 		db, err = database.Connect(context.Background(), engine, dsn, time.Second)
 		if err != nil {
 			t.Fatal(err)
 		}
-		defer db.DB.Close()
+		defer db.Close()
 		files, err = reportstore.Open(context.Background(), root)
 		if err != nil {
 			t.Fatal(err)

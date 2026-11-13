@@ -745,32 +745,235 @@ failure are not repaired by API replicas; define and measure your own RPO/RTO.
 
 ## Structured observability
 
-JSON logs on stderr provide events, not a new public metrics endpoint or
-framework. Collect logs from **each** replica using your existing private
-collector. Durations are numeric **nanoseconds** (`slog` JSON duration encoding).
+`dscregd` uses the OpenTelemetry Go SDK with
+[`otelhttp`](https://pkg.go.dev/go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp),
+[`XSAM/otelsql`](https://pkg.go.dev/github.com/XSAM/otelsql), the official
+[Go runtime instrumentation](https://pkg.go.dev/go.opentelemetry.io/contrib/instrumentation/runtime),
+and [`autoexport`](https://pkg.go.dev/go.opentelemetry.io/contrib/exporters/autoexport).
+`cmd/dscregd` initializes providers once before constructing dependencies.
+HTTP owns standard request instrumentation, SQL owns driver instrumentation,
+services measure report workflows, and reportstore measures confined file I/O.
+There is no metrics endpoint, Collector, cloud SDK, or new configuration file
+section in the server. SQLite and PostgreSQL use the same instrumentation.
 
-| Event | Fields and operator use |
+### Enabling export
+
+With no exporter selection or OTLP endpoint, startup needs no telemetry backend
+and does not contact localhost:4317/4318. Resource attributes or sampling settings
+alone do not enable exporting. Bootstrap, `-version`, and `dscreg` do not initialize
+exporters, even if the server's telemetry environment is present.
+
+For a Collector reachable as `otel-collector` on your container network:
+
+```sh
+export OTEL_SERVICE_NAME=dscregd
+export OTEL_TRACES_EXPORTER=otlp
+export OTEL_METRICS_EXPORTER=otlp
+export OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
+export OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4318
+export OTEL_TRACES_SAMPLER=parentbased_traceidratio
+export OTEL_TRACES_SAMPLER_ARG=0.01
+./dscregd -config /etc/dscregd/settings.json
+```
+
+The Collector must enable OTLP HTTP reception and traces/metrics pipelines. For
+local development replace the endpoint with `http://localhost:4318`; for gRPC
+use `OTEL_EXPORTER_OTLP_PROTOCOL=grpc` and `http://localhost:4317`. Use `https://`
+for TLS. Container endpoints refer to the container's network, not your host's
+loopback address. These same OTLP variables can point to an Azure Container Apps
+managed OpenTelemetry agent or any compatible destination; use the endpoint and
+protocol supplied by that environment. No Application Insights instrumentation
+or direct Azure Monitor SDK is required.
+
+Windows PowerShell uses the same variables, for example:
+
+```powershell
+$env:OTEL_SERVICE_NAME = 'dscregd'
+$env:OTEL_TRACES_EXPORTER = 'otlp'
+$env:OTEL_METRICS_EXPORTER = 'otlp'
+$env:OTEL_EXPORTER_OTLP_PROTOCOL = 'http/protobuf'
+$env:OTEL_EXPORTER_OTLP_ENDPOINT = 'http://localhost:4318'
+$env:OTEL_TRACES_SAMPLER = 'parentbased_traceidratio'
+$env:OTEL_TRACES_SAMPLER_ARG = '0.01'
+.\dscregd.exe -config C:\ProgramData\dscregd\settings.json
+```
+
+Set variables in the service/container environment for deployed services; a
+shell's variables are not automatically inherited by an already running service.
+
+Supported settings:
+
+| Variable | Behavior |
 | --- | --- |
-| `http request` | Bounded method and route template (never IDs/names), actual first final status, duration. Count per interval for rate; group 4xx/5xx for client/dependency errors; compute p50/p95/p99 from duration. Separate health traffic and distinguish expected 304, 401 and upload-identity 409 from faults. |
-| `report write` | `written`/`write_error`, duration including direct create/write/sync/close. A retry bypassing the file creates no write event. No path, body, byte-content label or identity. |
-| `database transaction` | Fixed operation and engine, `committed`/`rolled_back`/`begin_error`/`commit_error`/`rollback_error`, duration, pool in-use and cumulative wait count/duration. One event per attempt. Rollback can be an expected missing resource, conflicting upload identity or file failure, not necessarily a database outage. Commit error can be ambiguous; retry stable upload ID. Pool counters reset on restart; take per-replica deltas, not sums of cumulative samples. |
-| Dependency errors | Health endpoints do not test dependencies; HTTP database/storage failures are redacted. Startup logs identify failed dependency without OS/driver text. |
+| `OTEL_SERVICE_NAME` | Default `dscregd`; overrides `service.name` in resource attributes. |
+| `OTEL_RESOURCE_ATTRIBUTES` | Comma-separated `key=value` pairs, e.g. `deployment.environment.name=production,service.instance.id=replica-1`; percent-encode reserved characters. Include a stable replica identity when aggregating multiple servers. Never put credentials or report data here. |
+| `service.version` | Defaults to the existing server build version (`dev` for development); may be overridden in resource attributes. |
+| `OTEL_TRACES_EXPORTER`, `OTEL_METRICS_EXPORTER` | `otlp`, `none`, or `console` (local debugging to stdout). Unset signals are enabled by a common or corresponding signal-specific endpoint; otherwise disabled. Explicit `otlp` without an endpoint deliberately uses that exporter's localhost default. `none` overrides endpoints. Multiple comma-separated exporters and `prometheus` are rejected. |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | Base HTTP(S) URL; HTTP exporters append `/v1/traces` and `/v1/metrics`. Credentials, query strings, and fragments in endpoints are rejected. |
+| `OTEL_EXPORTER_OTLP_PROTOCOL` | `http/protobuf` (autoexport default) or `grpc`. |
+| `OTEL_EXPORTER_OTLP_HEADERS` | Comma-separated header pairs, e.g. `authorization=Bearer%20TOKEN`; supply secrets through your deployment's secret mechanism. Never put secrets in command arguments. |
+| `OTEL_EXPORTER_OTLP_TRACES_*`, `OTEL_EXPORTER_OTLP_METRICS_*` | The official exporters support signal-specific `ENDPOINT`, `PROTOCOL`, and `HEADERS`, taking precedence over common values. HTTP signal-specific endpoints are complete URLs including `/v1/traces` or `/v1/metrics`. Official exporter TLS/certificate and timeout variables are also passed through. |
+| `OTEL_TRACES_SAMPLER` | SDK samplers: `always_on`, `always_off`, `traceidratio`, `parentbased_always_on` (SDK default), `parentbased_always_off`, `parentbased_traceidratio`. |
+| `OTEL_TRACES_SAMPLER_ARG` | Finite ratio from 0 to 1 for ratio samplers; omitted ratio defaults to 1. Parent-based samplers preserve incoming decisions and apply the ratio to new root traces. |
+| `OTEL_BSP_MAX_QUEUE_SIZE`, `OTEL_BSP_MAX_EXPORT_BATCH_SIZE`, `OTEL_BSP_SCHEDULE_DELAY`, `OTEL_BSP_EXPORT_TIMEOUT` | Standard SDK batching controls. Defaults: 2048 queued spans, 512 per batch, 5000 ms delay, 30000 ms export timeout. Queue overflow drops spans rather than blocking requests. |
+| `OTEL_METRIC_EXPORT_INTERVAL`, `OTEL_METRIC_EXPORT_TIMEOUT` | Standard periodic reader settings in milliseconds; defaults 60000 and 30000. No synchronous request-path export. |
+| `OTEL_SDK_DISABLED=true` | Disable SDK initialization, overriding exporter settings. Alternatively set both exporters to `none`. |
 
-Database non-transaction query/auth failures are surfaced by redacted HTTP
-dependency-error logs and `503` request events, not transaction events.
-Bootstrapping is a local one-time CLI and does not emit transaction telemetry.
-No raw URL/query/headers, supplied method token, machine/configuration name,
-API key, DSN, template, parameters, report/error payload or storage filename is
-logged. Standard `net/http` diagnostics are replaced by a generic transport/
-handler error. Restrict log access/retention anyway.
+The SDK reads resources, sampling, and batching variables; autoexport selects
+exporters and protocols; the official exporters read endpoints, headers, TLS,
+and transport timeouts. The initialization package adds opt-in behavior and
+validation for configuration that would otherwise silently fall back. Invalid
+exporter/protocol/endpoint/header/resource/sampler settings fail startup with
+variable names and safe corrective guidance. Transient export failures only
+produce a redacted warning and do not stop the service. SDK shutdown attempts a
+final metric collection and trace batch flush concurrently, within five seconds,
+after HTTP/event draining and dependency closure. Export buffers are in memory;
+forced termination, outages, full trace queues, or a shutdown deadline can lose
+telemetry. Metrics have a 2000-series limit per instrument; the documented
+bounded application dimensions fit well below it.
 
-Alert on sustained non-health 5xx, unready replicas, commit/begin errors,
-report-write errors or increased durations/pool waits; investigate underlying
-DB locks/disk and NFS health out of band. Monitor retained report growth and plan
-bounded **offline** cleanup, not deletion on a live fleet. Logs do not measure
-kernel transport errors as completed HTTP requests or replace PostgreSQL
-WAL/autovacuum/NFS server telemetry. Avoid high-cardinality/sensitive labels
-when exporting derived metrics.
+### Standard signals
+
+`otelhttp.NewHandler` instruments the existing ServeMux and logging boundary.
+It emits `http.server.request.duration` (histogram, seconds),
+`http.server.request.body.size`, and `http.server.response.body.size` (histograms,
+bytes). Throughput and HTTP error rates come from duration histogram counts
+partitioned by `http.request.method`, `http.response.status_code`, `http.route`,
+and safe `error.type` for 5xx through otelhttp's supported labeler. Route attributes are templates
+such as `/v1/machines/{id}`; span names include the method, e.g.
+`POST /v1/agent/reports`. Tests verify Go ServeMux `Request.Pattern` handling,
+including HEAD, unmatched routes, and authorization failures. Raw paths are
+suppressed at span creation, and completed span paths are replaced by templates.
+No identifiers or raw URLs become metric dimensions.
+
+The selected otelhttp release does **not** expose
+`http.server.active_requests`; no replacement counter is added. Use ingress
+connection/concurrency metrics externally where needed. Health traffic retains
+both HTTP metrics and traces, so filter `/health/live` and `/health/ready` in
+analysis. Health endpoints still perform no dependency I/O. Use sampling to
+bound trace volume, including probes; no filter discards their useful metrics.
+
+`otelsql` emits `db.client.operation.duration` (histogram, seconds), with
+`db.system.name=sqlite|postgresql` and `error.type` on failures. Database
+attributes and metrics are otherwise supplied by otelsql; Registry does not
+assign driver method names to `db.operation.name` or parse SQL to infer commands.
+Query text, SQL parameters, SQL comments, and DSNs are not exported. Raw driver exception
+events are disabled because error messages can disclose SQL values; failed SQL
+spans have safe `error.type` attributes, and failed application boundary spans
+have error status and sanitized error events. Per-row spans/events are disabled.
+SQL spans are children of the HTTP/service phase that initiated the operation.
+
+Connection-pool observations are provided by otelsql, without a polling worker:
+
+| Metric | Interpretation |
+| --- | --- |
+| `db.sql.connection.max_open` | Gauge: configured maximum connections (normally PostgreSQL 10, SQLite 1). |
+| `db.sql.connection.open` | Gauge split by `status=inuse|idle`; sum for total open connections. |
+| `db.sql.connection.wait` | Cumulative count of waits for a connection. |
+| `db.sql.connection.wait_duration` | Cumulative **milliseconds** spent waiting across callers, not seconds. |
+| `db.sql.connection.closed_max_idle` | Cumulative closures due to the idle connection count limit. |
+| `db.sql.connection.closed_max_idle_time` | Cumulative closures due to an idle time limit, if configured. |
+| `db.sql.connection.closed_max_lifetime` | Cumulative closures due to maximum connection lifetime. |
+
+Use deltas/rates per replica for cumulative counters; do not sum cumulative
+samples over time. Divide the delta wait duration by delta wait count to estimate
+mean pool-wait time. Rising waits while in-use approaches max-open indicate pool
+contention. Compare SQL spans/durations with PostgreSQL lock/query monitoring to
+distinguish slow statements from connection acquisition. Pool observers are
+unregistered by `database.Store.Close`; pool limits, PostgreSQL's 30-minute
+connection lifetime, migrations, and SQLite WAL are unchanged.
+
+The official runtime instrumentation provides `go.memory.used`,
+`go.memory.limit` (when configured), `go.memory.allocated`,
+`go.memory.allocations`, `go.memory.gc.goal`, `go.goroutine.count`,
+`go.processor.limit`, and `go.config.gogc`. Its histogram producer supplies
+`go.schedule.duration` through the same periodic reader. Runtime reads are
+cached for at least 15 seconds. The current stable library exposes GC goal and
+configuration; legacy GC pause/count instruments require its deprecated runtime
+mode, which is not enabled by DSC Registry because it also duplicates memory and
+goroutine signals. There is no custom runtime, CPU, or host polling.
+
+### Four report histograms
+
+These are the only custom metric instruments. They have no identifiers, names,
+paths, or payload labels. Duration buckets span 1 ms through 60 s (storage also
+includes 100 and 500 microseconds); size buckets span 1 KiB through 1 GiB,
+including the default 16 MiB maximum, with an overflow bucket above that.
+
+| Name | Type / unit | Attributes and recording boundary |
+| --- | --- | --- |
+| `dscreg.report.ingest.duration` | Float64Histogram / `s` | Exactly once on return from `Service.PublishReport`, including parse/validation, hashing, all retries, file I/O, SQL publication, notification admission, and synchronous cleanup. `dscreg.report.ingest.outcome=created|duplicate|failed`. Both database `MutationCreated` and `MutationUpdated` are `created` (a new accepted report); `MutationUnchanged` is `duplicate`; any returned error is `failed`. A valid DSC execution failure can still be a successfully created ingestion. |
+| `dscreg.report.size` | Int64Histogram / `By` | Once after successful parsing, using `len(upload.Result)`: exact original result envelope bytes, excluding upload wrapper and HTTP overhead. Includes duplicates/conflicts and subsequent storage/database failures. No attributes. |
+| `dscreg.report.publish.duration` | Float64Histogram / `s` | Once per parsed attempt entering database publication: the sum of wall time spent in all service-orchestrated `FindReportUpload` calls/rechecks and `CommitReport` calls across retries. Includes existing-upload detection and metadata/backfill transactions, even on failure; excludes hashing, legacy file reads, file writes, notification scheduling, and cleanup. This is cumulative phase time, not a single contiguous span or the entire interval between first query and last commit. No attributes. |
+| `dscreg.report.storage.operation.duration` | Float64Histogram / `s` | Once per attempted filesystem operation. `dscreg.storage.operation=open|write|sync|close|stat|read|delete`; failures add bounded `error.type=canceled|timeout|not_found|permission_denied|already_exists|short_write|other`. Write measures OpenFile, Write (including short-write detection), Sync, and Close individually. Read measures open, the existing `file.Stat()` call as `stat`, bounded reading as `read`, and close. Stat timing/classification reflects the syscall itself; subsequent regular-file/size validation remains in the parent span, and a rejected read records no `read` operation. Delete measures the actual remove syscall, including cleanup. No measurements for calls skipped after earlier failures/cancellation/path rejection. Startup/health probes are excluded. |
+
+Storage measurements include time blocked inside the actual system calls.
+Exclusive UUID-file creation, original bytes, `os.Root` confinement, explicit
+Sync, closing, failure cleanup, and retention on uncertain SQL commits remain
+unchanged. A missing-file delete remains idempotently successful and is measured
+without `error.type`; genuine removal failures retain bounded error classification.
+The existing Remove API has no context parameter; its metric records without a trace exemplar.
+No additional filesystem calls are made for telemetry.
+
+Report traces contain `Service.PublishReport`, `Find existing upload`,
+`Report storage write`/`Report storage read`, `Publish metadata`, and
+`Cleanup retired reports` when cleanup is needed. Individual SQL spans nest
+under lookup/publication phases. Filesystem calls have metrics within the
+storage span, not four more spans per report. Retried publication adds a
+`Report publication retry` event. Filesystem/service errors are sanitized before
+trace error events/status are recorded. HTTP rejections before the service
+(body bounds, malformed transport, authentication) contribute only standard
+HTTP measurements, not duplicate ingestion measurements.
+
+### Diagnosing upload latency
+
+1. Compare HTTP upload p50/p95/p99 and status counts with ingestion duration,
+   outcome counts, and report size. A gap before service instrumentation can
+   indicate body transfer, request decoding, authentication, or HTTP overhead.
+2. Split storage duration by operation. High `sync` latency identifies time
+   blocked in Sync; high `open`, `write`, `close`, `stat`, `read`, or `delete` isolates
+   the corresponding remote-share operation. Check failures separately from
+   successful calls. Compare with externally collected Azure Files latency,
+   throughput/IOPS, throttling, and client mount diagnostics. Keep Sync enabled.
+3. Compare the cumulative publication histogram with storage and ingestion.
+   Inspect sampled traces for retry events, lookup/recheck spans, transactions,
+   and SQL calls. Publication includes pool/lock waits but no filesystem time.
+   Check the pool statistics above and PostgreSQL monitoring for contention.
+4. Use allocation rate, GC goal/memory usage, goroutine count, and scheduling
+   latency to check application pressure alongside container resource metrics.
+   Aggregate metric counts/rates per replica to distinguish load imbalance.
+
+Metrics aggregate every completed attempt regardless of trace sampling. A 1%
+trace sample is not a 1% sample of histogram observations. Histogram counts
+provide throughput and outcome/error rates; no separate ingested counter exists.
+Histogram percentiles are bucket estimates; choose compatible aggregation and
+units in your backend. Trace sampling gives individual causal examples, and can
+miss rare stalls; it does not change metric aggregation. Parent-based sampling
+honors upstream decisions, so use a trusted ingress sampling policy for
+high-volume fleets.
+
+JSON `log/slog` logs remain on stderr. `http request` retains bounded method,
+route, first final status, and duration, and adds `trace_id`/`span_id` whenever a
+valid span context exists (even when unsampled). Log durations are numeric
+nanoseconds, unlike histogram seconds. No OTLP log exporter or otelslog bridge
+is initialized. The per-report INFO `report write` timing log is replaced by
+storage histograms and storage spans. Existing SQL transaction and error/cleanup
+warnings remain. Database transaction events expose bounded operation/engine,
+outcome, duration, and pool waits; begin/commit/rollback failures stay errors.
+An ambiguous commit still requires the stable upload-ID retry behavior.
+
+Restrict telemetry/log access and retention. Do not add API keys, registration
+tokens, SQL text/parameters, report bodies, full paths, machine/report/upload
+UUIDs, configuration names, or arbitrary error messages as metric dimensions.
+Exporter diagnostic warnings are redacted; there is no per-report export call.
+Azure Monitor/container resource metrics, Azure Files service metrics, PostgreSQL
+server metrics, and NFS kernel metrics are collected externally, not by DSC
+Registry. Observability does not constitute an Azure Files/NFS capacity test.
+
+Alert on sustained non-health 5xx, commit/begin errors, increased ingestion or
+filesystem duration/failure counts, pool waits, and replica availability. Retained
+report growth still requires bounded **offline** maintenance, never deletion by
+age while replicas run. Health endpoints do not certify dependency availability.
 
 ## Repeatable two-replica verification
 

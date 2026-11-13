@@ -109,7 +109,7 @@ func TestRegistrationUpgradeAndPersistenceBothEngines(t *testing.T) {
 		exec(t, store.DB, "DELETE FROM schema_migrations WHERE version = $1", version)
 		exec(t, store.DB, "CREATE TABLE registration_tokens(existing TEXT)")
 		if next, err := Connect(ctx, engine, dsn, time.Second); err == nil {
-			next.DB.Close()
+			next.Close()
 			t.Fatal("migration collision accepted")
 		}
 		assertCount(t, store.DB, "schema_migrations", version-1)
@@ -123,7 +123,7 @@ func TestRegistrationUpgradeAndPersistenceBothEngines(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := store.DB.Close(); err != nil {
+		if err := store.Close(); err != nil {
 			t.Fatal(err)
 		}
 		store = testStore(t, engine, dsn)

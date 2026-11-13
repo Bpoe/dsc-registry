@@ -215,7 +215,7 @@ func TestConfigurationRevisionBothEngines(t *testing.T) {
 		if _, err := reader.ConfigurationRevision(ctx, machine.ID); !errors.Is(err, ErrNotFound) {
 			t.Fatalf("missing machine: %v", err)
 		}
-		if err := reader.DB.Close(); err != nil {
+		if err := reader.Close(); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := reader.ConfigurationRevision(ctx, machine.ID); err == nil || errors.Is(err, ErrNotFound) {

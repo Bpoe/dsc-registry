@@ -37,7 +37,7 @@ func configurationAPIWithEvents(t testing.TB, engine, dsn string, logs io.Writer
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { store.DB.Close() })
+	t.Cleanup(func() { store.Close() })
 	reports, err := reportstore.Open(ctx, t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -271,7 +271,7 @@ func TestConfigurationsHTTPBothEngines(t *testing.T) {
 				t.Fatal("logs include credentials, desired content, or storage data")
 			}
 		}
-		if err := store.DB.Close(); err != nil {
+		if err := store.Close(); err != nil {
 			t.Fatal(err)
 		}
 		response = agentRequest(handler, otherKey.Key, "*")
@@ -306,7 +306,7 @@ func TestConcurrentHTTPConfigurationPollingBothEngines(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		defer otherStore.DB.Close()
+		defer otherStore.Close()
 		// Poll another API replica/connection pool while this one mutates.
 		pollHandler := New(service.New(otherStore, nil, nil, 16<<20, slog.New(slog.NewJSONHandler(io.Discard, nil))), 5*time.Second, 37*time.Second, 2048, 16<<20, slog.New(slog.NewJSONHandler(io.Discard, nil)))
 		path := "/v1/machines/" + machine.ID + "/configurations/current"

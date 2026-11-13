@@ -782,3 +782,12 @@ archives and tagged Dockerfile. Tag pushes, drafts, prereleases and pull request
 do not publish images; only the release's `vX.Y.Z` tag is published, without
 moving aliases. See [container operations](docs/operations.md#containers)
 for version/digest pinning, storage permissions, and a single-instance Compose example.
+
+### OpenTelemetry
+
+Telemetry is optional and disabled unless an exporter or OTLP endpoint is set.
+The server supports OTLP traces and metrics over HTTP/protobuf or gRPC using
+standard `OTEL_*` variables, with no Collector dependency for local startup or
+bootstrap. See the [observability runbook](docs/operations.md#structured-observability)
+for working environment examples, the four report histograms, trace sampling,
+and investigation of database or remote-filesystem upload latency.

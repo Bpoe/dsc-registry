@@ -189,7 +189,7 @@ func TestMachineNameMigrationBothEngines(t *testing.T) {
 					t.Fatalf("migration/reopen changed machine: %+v, %v", got, err)
 				}
 			}
-			if err := store.DB.Close(); err != nil {
+			if err := store.Close(); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -203,7 +203,7 @@ func TestMachineNameMigrationCollisionRollsBack(t *testing.T) {
 		exec(t, raw, "INSERT INTO machines VALUES ($1, $2, 7, 'then')", firstID, "\u00c9")
 		exec(t, raw, "INSERT INTO machines VALUES ($1, $2, 9, 'then')", secondID, "e\u0301")
 		if store, err := Connect(context.Background(), engine, dsn, time.Second); err == nil {
-			store.DB.Close()
+			store.Close()
 			t.Fatal("colliding legacy names were accepted")
 		}
 		assertCount(t, raw, "schema_migrations", version)

@@ -295,3 +295,14 @@ The current [`dsc-reconciler`](https://github.com/Bpoe/dsc-reconciler) design is
 | Heartbeat-only unchanged status | Future protocol optimization. Stable upload IDs deduplicate retries; distinct IDs represent distinct execution records |
 | OAuth/Entra/mTLS/SSH-style keys | Future auth providers only if required |
 | Global stamp routing, Citus/Elastic Clusters, Cosmos, MongoDB | Out of scope; prefer ordinary PostgreSQL and independent future stamps |
+
+### OpenTelemetry implementation
+
+Server startup initializes one standard SDK provider per enabled signal through
+`internal/telemetry`. HTTP uses otelhttp, SQL uses otelsql (including pool
+observers), and runtime measurements use the official Go instrumentation.
+Service and reportstore own the four DSC report histograms and boundary spans.
+No file I/O moves into SQL transactions, no instrumentation framework or new
+application interface is added, and no API/schema/storage behavior changes.
+See [operations.md](operations.md#structured-observability) for opt-in OTLP
+configuration, exact metric boundaries, sampling, and latency diagnosis.

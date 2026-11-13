@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -56,7 +57,7 @@ func TestBootstrapCLIBothEngines(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				defer store.DB.Close()
+				defer store.Close()
 				if _, err := store.Authenticate(ctx, result.Key); err != nil {
 					t.Fatal("bootstrap credential does not authenticate")
 				}
@@ -122,8 +123,17 @@ func TestBootstrapRelativeFileDatabase(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer store.DB.Close()
+	defer store.Close()
 	if _, err := store.Authenticate(context.Background(), result.Key); err != nil {
 		t.Fatal("relative file database did not receive the recovered credential")
+	}
+}
+
+func TestBootstrapDoesNotInitializeTelemetry(t *testing.T) {
+	t.Setenv("OTEL_TRACES_EXPORTER", "invalid-private-exporter")
+	t.Setenv("OTEL_METRICS_EXPORTER", "invalid-private-exporter")
+	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "invalid-private-endpoint")
+	if err := bootstrap(context.Background(), []string{"-database-dsn", filepath.Join(t.TempDir(), "bootstrap.db")}, io.Discard); err != nil {
+		t.Fatal("bootstrap required telemetry configuration or a backend", err)
 	}
 }

@@ -166,8 +166,9 @@ and requires it in CI. This does not start PR 3 or the rest of PR 5.
 
 **Done when:** repeatable install, safe restart and recovery, readable operator docs, and fault tests.
 
-Implemented: bounded per-route/method request signals, report direct-write
-timings, SQL transaction outcomes/timings/pool-wait signals, redaction tests,
+Implemented: standard OpenTelemetry HTTP/SQL/runtime instrumentation and four
+DSC report histograms, bounded per-route/method request logs, SQL transaction
+outcomes/timings/pool-wait signals, redaction tests,
 persisted report/idempotency/ETag restart coverage on both engines, report
 envelope fuzzing, and bounded CI fuzz smoke runs. Existing write/sync/close,
 commit, locking, migration, auth and input-bound fault tests are retained.
@@ -247,3 +248,16 @@ Do not add agent code inside the DSC Registry server repository. A separate desi
 ## First PR Copilot prompt
 
 See [COPILOT_KICKOFF.md](../COPILOT_KICKOFF.md). Require Copilot to **plan and implement PR 1 only**, summarize changed files, list validations it ran, and raise any unavoidable API/schema ambiguity rather than silently inventing a new product surface.
+
+### OpenTelemetry observability follow-up
+
+HTTP instrumentation uses otelhttp ServeMux patterns; both database engines use
+otelsql for spans, operation durations, and pool observations. Official runtime
+instrumentation and autoexport integrate with standard OTEL environment
+variables. Service ingestion/publication and reportstore syscall durations use
+exactly four custom histograms, with in-memory SDK tests covering outcomes,
+retry aggregation, phase separation, safe dimensions, and error paths. OTLP
+HTTP/gRPC tests use in-process receivers; ordinary tests need no Collector.
+The [operations runbook](operations.md#structured-observability) documents
+configuration, sampling, shutdown, and Azure Files latency investigation.
+The existing real-NFS acceptance gate remains separate.

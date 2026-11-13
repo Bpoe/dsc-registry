@@ -26,7 +26,7 @@ func testStore(t *testing.T, engine, dsn string) *Store {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { store.DB.Close() })
+	t.Cleanup(func() { store.Close() })
 	return store
 }
 
@@ -163,7 +163,7 @@ func TestAdministrationBothEngines(t *testing.T) {
 		if _, err := store.Authenticate(ctx, recovery.Key); err != nil {
 			t.Fatal("recovery credential refused")
 		}
-		if err := store.DB.Close(); err != nil {
+		if err := store.Close(); err != nil {
 			t.Fatal(err)
 		}
 		store = testStore(t, engine, dsn)

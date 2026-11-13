@@ -18,6 +18,10 @@ import (
 
 	"github.com/Bpoe/dsc-registry/internal/config"
 	"github.com/Bpoe/dsc-registry/internal/database"
+	"github.com/Bpoe/dsc-registry/internal/testotel"
+	"go.opentelemetry.io/otel"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 )
 
 func TestRunServesDuringBrokerOutageAndStopsPublisher(t *testing.T) {
@@ -54,7 +58,7 @@ func TestRunServesDuringBrokerOutageAndStopsPublisher(t *testing.T) {
 		t.Fatal(err)
 	}
 	admin, err := db.Bootstrap(context.Background(), "test")
-	db.DB.Close()
+	db.Close()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -125,9 +129,6 @@ type reportShutdownLog struct {
 
 func (h reportShutdownLog) Handle(ctx context.Context, record slog.Record) error {
 	switch record.Message {
-	case "report write":
-		close(h.written)
-		<-h.release
 	case "server shutting down":
 		close(h.shuttingDown)
 	case "http request":
@@ -136,9 +137,24 @@ func (h reportShutdownLog) Handle(ctx context.Context, record slog.Record) error
 	return h.Handler.Handle(ctx, record)
 }
 
+// Gate the same file-before-SQL boundary through a test span observer. The
+// production per-report timing log has been replaced by aggregated metrics.
+type reportShutdownSpans struct {
+	sdktrace.SpanProcessor
+	gate reportShutdownLog
+}
+
+func (s reportShutdownSpans) OnEnd(span sdktrace.ReadOnlySpan) {
+	if span.Name() == "Report storage write" {
+		close(s.gate.written)
+		<-s.gate.release
+	}
+}
+
 func TestRunKeepsEventAdmissionOpenUntilHTTPShutdownCompletes(t *testing.T) {
 	for _, mode := range []string{"graceful", "http-timeout"} {
 		t.Run(mode, func(t *testing.T) {
+			testotel.Setup(t)
 			broker, err := net.Listen("tcp", "127.0.0.1:0")
 			if err != nil {
 				t.Fatal(err)
@@ -161,7 +177,7 @@ func TestRunKeepsEventAdmissionOpenUntilHTTPShutdownCompletes(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer store.DB.Close()
+			defer store.Close()
 			machine, err := store.CreateMachineWithKey(context.Background(), "in-flight-report")
 			if err != nil {
 				t.Fatal(err)
@@ -170,6 +186,9 @@ func TestRunKeepsEventAdmissionOpenUntilHTTPShutdownCompletes(t *testing.T) {
 			gate := reportShutdownLog{Handler: slog.NewJSONHandler(&logs, nil),
 				written: make(chan struct{}), release: make(chan struct{}),
 				shuttingDown: make(chan struct{}), requestDone: make(chan struct{})}
+			otel.GetTracerProvider().(*sdktrace.TracerProvider).RegisterSpanProcessor(reportShutdownSpans{
+				SpanProcessor: tracetest.NewSpanRecorder(), gate: gate,
+			})
 			release := sync.OnceFunc(func() { close(gate.release) })
 			defer release()
 			address := make(chan string, 1)

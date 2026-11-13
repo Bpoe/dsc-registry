@@ -15,6 +15,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/Bpoe/dsc-registry/internal/config"
 	"github.com/Bpoe/dsc-registry/internal/database"
@@ -22,6 +23,7 @@ import (
 	"github.com/Bpoe/dsc-registry/internal/httpapi"
 	"github.com/Bpoe/dsc-registry/internal/reportstore"
 	"github.com/Bpoe/dsc-registry/internal/service"
+	"github.com/Bpoe/dsc-registry/internal/telemetry"
 )
 
 func main() {
@@ -68,6 +70,18 @@ func runWithReady(ctx context.Context, settings config.Settings, logger *slog.Lo
 	if err := settings.Validate(); err != nil {
 		return err
 	}
+	shutdownTelemetry, err := telemetry.Init(ctx, version, logger)
+	if err != nil {
+		logger.Error("telemetry initialization failed", "error", err)
+		return err
+	}
+	defer func() {
+		shutdown, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := shutdownTelemetry(shutdown); err != nil {
+			logger.Warn("telemetry shutdown incomplete", "reason", "flush_failed")
+		}
+	}()
 	var tlsConfig *tls.Config
 	if settings.TLS != nil {
 		certificate, err := tls.LoadX509KeyPair(settings.TLS.CertFile, settings.TLS.KeyFile)
@@ -93,7 +107,7 @@ func runWithReady(ctx context.Context, settings config.Settings, logger *slog.Lo
 		logger.Error("startup dependency failed", "dependency", "database")
 		return err
 	}
-	defer func() { err = errors.Join(err, db.DB.Close()) }()
+	defer func() { err = errors.Join(err, db.Close()) }()
 	db.Logger = logger
 	var publisher *eventing.AMQP
 	if settings.Eventing != nil {
@@ -158,7 +172,7 @@ func bootstrap(ctx context.Context, args []string, output io.Writer) error {
 	if err != nil {
 		return errors.New("bootstrap database initialization failed")
 	}
-	defer db.DB.Close()
+	defer db.Close()
 	result, err := db.Bootstrap(ctx, name)
 	if errors.Is(err, database.ErrAlreadyBootstrapped) {
 		return err

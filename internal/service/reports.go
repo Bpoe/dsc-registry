@@ -13,6 +13,10 @@ import (
 	"github.com/Bpoe/dsc-registry/internal/eventing"
 	"github.com/Bpoe/dsc-registry/internal/report"
 	"github.com/Bpoe/dsc-registry/internal/reportstore"
+	"github.com/Bpoe/dsc-registry/internal/telemetry"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/metric"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // ErrReportStorage lets callers classify storage failures without inspecting
@@ -26,12 +30,27 @@ func storageError(err error) error {
 	return fmt.Errorf("%w: %w", ErrReportStorage, err)
 }
 
-func (s *Service) PublishReport(ctx context.Context, id string, body []byte) (database.Publication, error) {
+func (s *Service) PublishReport(ctx context.Context, id string, body []byte) (publication database.Publication, err error) {
+	ctx, span := s.tracer.Start(ctx, "Service.PublishReport")
+	defer span.End()
+	start := time.Now()
+	defer func() {
+		outcome := "failed"
+		if err == nil {
+			outcome = "created"
+			if publication.Outcome == database.MutationUnchanged {
+				outcome = "duplicate"
+			}
+		}
+		s.metrics.ingest.Record(ctx, time.Since(start).Seconds(), metric.WithAttributes(attribute.String("dscreg.report.ingest.outcome", outcome)))
+		telemetry.RecordError(span, err)
+	}()
 	upload, err := report.Parse(body)
 	if err != nil {
 		return database.Publication{}, err
 	}
-	publication, err := s.publishReport(ctx, id, upload.Name, upload)
+	s.metrics.size.Record(ctx, int64(len(upload.Result)))
+	publication, err = s.publishReport(ctx, id, upload.Name, upload)
 	if err == nil {
 		data := eventing.Identifiers{MachineID: id, ConfigurationName: upload.Name, ReportID: publication.Report.ID}
 		switch publication.Outcome {
@@ -41,7 +60,11 @@ func (s *Service) PublishReport(ctx context.Context, id string, body []byte) (da
 			s.events.Notify(eventing.ReportUpdated, data)
 		}
 	}
-	s.removeReportFiles(publication.CleanupPaths)
+	if len(publication.CleanupPaths) != 0 {
+		_, cleanupSpan := s.tracer.Start(ctx, "Cleanup retired reports")
+		s.removeReportFiles(publication.CleanupPaths)
+		cleanupSpan.End()
+	}
 	return publication, err
 }
 
@@ -54,17 +77,11 @@ func (s *Service) removeReportFiles(paths []string) {
 }
 
 func (s *Service) writeContent(ctx context.Context, content []byte) (string, error) {
-	start := time.Now()
 	path, err := s.files.Write(ctx, content)
 	var cleanupErr *reportstore.CleanupError
 	if errors.As(err, &cleanupErr) {
 		s.logger.Warn("report file cleanup failed", "path", cleanupErr.Path, "error", cleanupErr.Err)
 	}
-	outcome := "written"
-	if err != nil {
-		outcome = "write_error"
-	}
-	s.logger.Info("report write", "outcome", outcome, "duration", time.Since(start))
 	return path, storageError(err)
 }
 
@@ -110,10 +127,18 @@ func (s *Service) ReadReport(ctx context.Context, id, name string) ([]byte, erro
 
 func (s *Service) publishReport(ctx context.Context, id, name string, upload report.Upload) (publication database.Publication, err error) {
 	var unused []string
+	var publicationTime time.Duration
+	defer func() { s.metrics.publish.Record(ctx, publicationTime.Seconds()) }()
 	defer func() { publication.CleanupPaths = append(publication.CleanupPaths, unused...) }()
 	digest := sha256.Sum256(upload.Result)
 	for {
-		existingID, revision, existingPath, storedDigest, err := s.db.FindReportUpload(ctx, id, name, upload.ID)
+		lookupCtx, lookupSpan, lookupStart := s.databasePhase(ctx, "Find existing upload")
+		existingID, revision, existingPath, storedDigest, err := s.db.FindReportUpload(lookupCtx, id, name, upload.ID)
+		lookupErr := err
+		if errors.Is(lookupErr, database.ErrReportNotFound) {
+			lookupErr = nil
+		}
+		finishDatabasePhase(lookupSpan, lookupStart, &publicationTime, lookupErr)
 		path := ""
 		switch {
 		case err == nil:
@@ -123,11 +148,18 @@ func (s *Service) publishReport(ctx context.Context, id, name string, upload rep
 			if storedDigest == nil {
 				content, err := s.readContent(ctx, existingPath)
 				if errors.Is(err, os.ErrNotExist) {
-					currentID, _, _, _, lookupErr := s.db.FindReportUpload(ctx, id, name, upload.ID)
+					recheckCtx, recheckSpan, recheckStart := s.databasePhase(ctx, "Find existing upload")
+					currentID, _, _, _, lookupErr := s.db.FindReportUpload(recheckCtx, id, name, upload.ID)
+					phaseErr := lookupErr
+					if errors.Is(phaseErr, database.ErrReportNotFound) {
+						phaseErr = nil
+					}
+					finishDatabasePhase(recheckSpan, recheckStart, &publicationTime, phaseErr)
 					if lookupErr != nil && !errors.Is(lookupErr, database.ErrReportNotFound) {
 						return database.Publication{}, lookupErr
 					}
 					if currentID != existingID {
+						traceRetry(ctx)
 						continue
 					}
 				}
@@ -148,15 +180,20 @@ func (s *Service) publishReport(ctx context.Context, id, name string, upload rep
 		default:
 			return database.Publication{}, err
 		}
-		publication, keepFile, err := s.db.CommitReport(ctx, id, name, upload, path, digest[:], existingID)
+		commitCtx, commitSpan, commitStart := s.databasePhase(ctx, "Publish metadata")
+		publication, keepFile, err := s.db.CommitReport(commitCtx, id, name, upload, path, digest[:], existingID)
+		finishDatabasePhase(commitSpan, commitStart, &publicationTime, err)
 		if path != "" && !keepFile {
 			unused = append(unused, path)
 		}
 		if errors.Is(err, database.ErrReportChanged) {
 			// A retry's report was replaced after the preliminary lookup.
 			// Recheck it without holding a transaction during file I/O.
+			traceRetry(ctx)
 			continue
 		}
 		return publication, err
 	}
 }
+
+func traceRetry(ctx context.Context) { trace.SpanFromContext(ctx).AddEvent("Report publication retry") }

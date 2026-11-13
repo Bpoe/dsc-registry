@@ -439,7 +439,7 @@ func TestLatestOnlyReportsRequireMatchingDesiredRevisionBothEngines(t *testing.T
 		if err != nil {
 			t.Fatal(err)
 		}
-		defer reopened.DB.Close()
+		defer reopened.Close()
 		reloaded, err := service.New(reopened, nil, nil, 4096, slog.Default()).GetMachineStatus(context.Background(), machine.ID)
 		if err != nil || !reflect.DeepEqual(got, reloaded) {
 			t.Fatal("current/history selection did not survive a new database connection", reloaded, err)
@@ -547,7 +547,7 @@ func TestConcurrentHistoryUploadsBothEngines(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		defer second.DB.Close()
+		defer second.Close()
 		handlers := []http.Handler{
 			New(service.New(db, files, nil, 4096, slog.New(slog.NewTextHandler(io.Discard, nil))), 30*time.Second, time.Second, 128, 4096, slog.New(slog.NewTextHandler(io.Discard, nil))),
 			New(service.New(second, files, nil, 4096, slog.New(slog.NewTextHandler(io.Discard, nil))), 30*time.Second, time.Second, 128, 4096, slog.New(slog.NewTextHandler(io.Discard, nil))),
