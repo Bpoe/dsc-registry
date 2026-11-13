@@ -1,7 +1,6 @@
 package database
 
 import (
-	"context"
 	"database/sql/driver"
 	"errors"
 
@@ -23,9 +22,6 @@ func sqlTelemetryOptions(system string) []otelsql.Option {
 			RecordError: func(error) bool { return false },
 		}),
 		otelsql.WithDisableSkipErrMeasurement(true),
-		otelsql.WithAttributesGetter(func(_ context.Context, method otelsql.Method, _ string, _ []driver.NamedValue) []attribute.KeyValue {
-			return []attribute.KeyValue{attribute.String("db.operation.name", string(method))}
-		}),
 		otelsql.WithSpanErrorAttributesGetter(func(err error) []attribute.KeyValue {
 			if errors.Is(err, driver.ErrSkip) {
 				return nil

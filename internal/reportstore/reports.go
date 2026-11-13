@@ -83,7 +83,12 @@ func validPath(name string) bool {
 	return ok && err == nil && id.String() == stem
 }
 
-func (s *Store) Read(ctx context.Context, name string, limit int64) (content []byte, err error) {
+func (s *Store) Read(ctx context.Context, name string, limit int64) ([]byte, error) {
+	return s.read(ctx, name, limit, s.root.Open)
+}
+
+// The opener seam permits Stat failure tests using an already-closed file.
+func (s *Store) read(ctx context.Context, name string, limit int64, open func(string) (*os.File, error)) (content []byte, err error) {
 	ctx, span := s.tracer.Start(ctx, "Report storage read")
 	defer func() { telemetry.RecordError(span, err); span.End() }()
 	if !validPath(name) {
@@ -93,12 +98,14 @@ func (s *Store) Read(ctx context.Context, name string, limit int64) (content []b
 		return nil, err
 	}
 	start := time.Now()
-	file, err := s.root.Open(name)
+	file, err := open(name)
 	s.recordOperation(ctx, "open", start, err)
 	if err != nil {
 		return nil, err
 	}
+	start = time.Now()
 	info, statErr := file.Stat()
+	s.recordOperation(ctx, "stat", start, statErr)
 	if statErr == nil && (!info.Mode().IsRegular() || info.Size() > limit) {
 		statErr = errors.New("invalid stored report")
 	}
@@ -128,9 +135,9 @@ func (s *Store) Remove(name string) error {
 	}
 	start := time.Now()
 	err := s.root.Remove(name)
-	s.recordOperation(context.Background(), "delete", start, err)
 	if errors.Is(err, os.ErrNotExist) {
-		return nil
+		err = nil
 	}
+	s.recordOperation(context.Background(), "delete", start, err)
 	return err
 }

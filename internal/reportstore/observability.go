@@ -21,6 +21,7 @@ func newStorageMetric() metric.Float64Histogram {
 	return histogram
 }
 
+// operation is one of open, write, sync, close, stat, read, or delete.
 func (s *Store) recordOperation(ctx context.Context, operation string, start time.Time, err error) {
 	attrs := []attribute.KeyValue{attribute.String("dscreg.storage.operation", operation)}
 	if err != nil {

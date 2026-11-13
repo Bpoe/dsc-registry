@@ -854,9 +854,10 @@ analysis. Health endpoints still perform no dependency I/O. Use sampling to
 bound trace volume, including probes; no filter discards their useful metrics.
 
 `otelsql` emits `db.client.operation.duration` (histogram, seconds), with
-`db.system.name=sqlite|postgresql`, library operation names such as
-`sql.conn.query` in `db.operation.name`, and `error.type` on failures. Query text,
-SQL parameters, SQL comments, and DSNs are not exported. Raw driver exception
+`db.system.name=sqlite|postgresql` and `error.type` on failures. Database
+attributes and metrics are otherwise supplied by otelsql; Registry does not
+assign driver method names to `db.operation.name` or parse SQL to infer commands.
+Query text, SQL parameters, SQL comments, and DSNs are not exported. Raw driver exception
 events are disabled because error messages can disclose SQL values; failed SQL
 spans have safe `error.type` attributes, and failed application boundary spans
 have error status and sanitized error events. Per-row spans/events are disabled.
@@ -904,14 +905,14 @@ including the default 16 MiB maximum, with an overflow bucket above that.
 | `dscreg.report.ingest.duration` | Float64Histogram / `s` | Exactly once on return from `Service.PublishReport`, including parse/validation, hashing, all retries, file I/O, SQL publication, notification admission, and synchronous cleanup. `dscreg.report.ingest.outcome=created|duplicate|failed`. Both database `MutationCreated` and `MutationUpdated` are `created` (a new accepted report); `MutationUnchanged` is `duplicate`; any returned error is `failed`. A valid DSC execution failure can still be a successfully created ingestion. |
 | `dscreg.report.size` | Int64Histogram / `By` | Once after successful parsing, using `len(upload.Result)`: exact original result envelope bytes, excluding upload wrapper and HTTP overhead. Includes duplicates/conflicts and subsequent storage/database failures. No attributes. |
 | `dscreg.report.publish.duration` | Float64Histogram / `s` | Once per parsed attempt entering database publication: the sum of wall time spent in all service-orchestrated `FindReportUpload` calls/rechecks and `CommitReport` calls across retries. Includes existing-upload detection and metadata/backfill transactions, even on failure; excludes hashing, legacy file reads, file writes, notification scheduling, and cleanup. This is cumulative phase time, not a single contiguous span or the entire interval between first query and last commit. No attributes. |
-| `dscreg.report.storage.operation.duration` | Float64Histogram / `s` | Once per attempted filesystem operation. `dscreg.storage.operation=open|write|sync|close|read|delete`; failures add bounded `error.type=canceled|timeout|not_found|permission_denied|already_exists|short_write|other`. Write measures OpenFile, Write (including short-write detection), Sync, and Close individually. Read measures open, bounded reading as `read`, and close; stat/size validation is visible in the parent span, and a rejected read records no `read` operation. Delete measures the actual remove syscall, including cleanup. No measurements for calls skipped after earlier failures/cancellation/path rejection. Startup/health probes are excluded. |
+| `dscreg.report.storage.operation.duration` | Float64Histogram / `s` | Once per attempted filesystem operation. `dscreg.storage.operation=open|write|sync|close|stat|read|delete`; failures add bounded `error.type=canceled|timeout|not_found|permission_denied|already_exists|short_write|other`. Write measures OpenFile, Write (including short-write detection), Sync, and Close individually. Read measures open, the existing `file.Stat()` call as `stat`, bounded reading as `read`, and close. Stat timing/classification reflects the syscall itself; subsequent regular-file/size validation remains in the parent span, and a rejected read records no `read` operation. Delete measures the actual remove syscall, including cleanup. No measurements for calls skipped after earlier failures/cancellation/path rejection. Startup/health probes are excluded. |
 
 Storage measurements include time blocked inside the actual system calls.
 Exclusive UUID-file creation, original bytes, `os.Root` confinement, explicit
 Sync, closing, failure cleanup, and retention on uncertain SQL commits remain
-unchanged. A missing-file delete is measured as `not_found` even though the
-public cleanup operation remains idempotently successful. The existing Remove
-API has no context parameter; its metric records without a trace exemplar.
+unchanged. A missing-file delete remains idempotently successful and is measured
+without `error.type`; genuine removal failures retain bounded error classification.
+The existing Remove API has no context parameter; its metric records without a trace exemplar.
 No additional filesystem calls are made for telemetry.
 
 Report traces contain `Service.PublishReport`, `Find existing upload`,
@@ -930,7 +931,7 @@ HTTP measurements, not duplicate ingestion measurements.
    outcome counts, and report size. A gap before service instrumentation can
    indicate body transfer, request decoding, authentication, or HTTP overhead.
 2. Split storage duration by operation. High `sync` latency identifies time
-   blocked in Sync; high `open`, `write`, `close`, `read`, or `delete` isolates
+   blocked in Sync; high `open`, `write`, `close`, `stat`, `read`, or `delete` isolates
    the corresponding remote-share operation. Check failures separately from
    successful calls. Compare with externally collected Azure Files latency,
    throughput/IOPS, throttling, and client mount diagnostics. Keep Sync enabled.

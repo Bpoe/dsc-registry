@@ -45,6 +45,9 @@ func TestDatabaseTelemetryBothEngines(t *testing.T) {
 				found = true
 			}
 			for _, a := range span.Attributes() {
+				if a.Key == "db.operation.name" && strings.HasPrefix(a.Value.AsString(), "sql.") {
+					t.Fatal("driver method incorrectly assigned as database operation", a)
+				}
 				if a.Key == "error.type" {
 					failure = true
 				}
