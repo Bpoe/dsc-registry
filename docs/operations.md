@@ -769,6 +769,7 @@ For a Collector reachable as `otel-collector` on your container network:
 export OTEL_SERVICE_NAME=dscregd
 export OTEL_TRACES_EXPORTER=otlp
 export OTEL_METRICS_EXPORTER=otlp
+export OTEL_LOGS_EXPORTER=otlp
 export OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
 export OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4318
 export OTEL_TRACES_SAMPLER=parentbased_traceidratio
@@ -776,7 +777,7 @@ export OTEL_TRACES_SAMPLER_ARG=0.01
 ./dscregd -config /etc/dscregd/settings.json
 ```
 
-The Collector must enable OTLP HTTP reception and traces/metrics pipelines. For
+The Collector must enable OTLP HTTP reception and traces, metrics, and logs pipelines. For
 local development replace the endpoint with `http://localhost:4318`; for gRPC
 use `OTEL_EXPORTER_OTLP_PROTOCOL=grpc` and `http://localhost:4317`. Use `https://`
 for TLS. Container endpoints refer to the container's network, not your host's
@@ -785,12 +786,28 @@ managed OpenTelemetry agent or any compatible destination; use the endpoint and
 protocol supplied by that environment. No Application Insights instrumentation
 or direct Azure Monitor SDK is required.
 
+For [Grafana Cloud](https://grafana.com/docs/grafana-cloud/send-data/otlp/send-data-otlp/),
+use the gateway URL from the OpenTelemetry tile for your stack. Configure these
+variables in the deployment environment and inject the authorization header
+through your deployment's secret mechanism.
+
+```dotenv
+OTEL_SERVICE_NAME=dscregd
+OTEL_TRACES_EXPORTER=otlp
+OTEL_METRICS_EXPORTER=otlp
+OTEL_LOGS_EXPORTER=otlp
+OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
+OTEL_EXPORTER_OTLP_ENDPOINT=https://otlp-gateway-<region>.grafana.net/otlp
+OTEL_EXPORTER_OTLP_HEADERS=Authorization=Basic%20<base64-instance-id-and-token>
+```
+
 Windows PowerShell uses the same variables, for example:
 
 ```powershell
 $env:OTEL_SERVICE_NAME = 'dscregd'
 $env:OTEL_TRACES_EXPORTER = 'otlp'
 $env:OTEL_METRICS_EXPORTER = 'otlp'
+$env:OTEL_LOGS_EXPORTER = 'otlp'
 $env:OTEL_EXPORTER_OTLP_PROTOCOL = 'http/protobuf'
 $env:OTEL_EXPORTER_OTLP_ENDPOINT = 'http://localhost:4318'
 $env:OTEL_TRACES_SAMPLER = 'parentbased_traceidratio'
@@ -808,29 +825,35 @@ Supported settings:
 | `OTEL_SERVICE_NAME` | Default `dscregd`; overrides `service.name` in resource attributes. |
 | `OTEL_RESOURCE_ATTRIBUTES` | Comma-separated `key=value` pairs, e.g. `deployment.environment.name=production,service.instance.id=replica-1`; percent-encode reserved characters. Include a stable replica identity when aggregating multiple servers. Never put credentials or report data here. |
 | `service.version` | Defaults to the existing server build version (`dev` for development); may be overridden in resource attributes. |
-| `OTEL_TRACES_EXPORTER`, `OTEL_METRICS_EXPORTER` | `otlp`, `none`, or `console` (local debugging to stdout). Unset signals are enabled by a common or corresponding signal-specific endpoint; otherwise disabled. Explicit `otlp` without an endpoint deliberately uses that exporter's localhost default. `none` overrides endpoints. Multiple comma-separated exporters and `prometheus` are rejected. |
-| `OTEL_EXPORTER_OTLP_ENDPOINT` | Base HTTP(S) URL; HTTP exporters append `/v1/traces` and `/v1/metrics`. Credentials, query strings, and fragments in endpoints are rejected. |
+| `OTEL_TRACES_EXPORTER`, `OTEL_METRICS_EXPORTER`, `OTEL_LOGS_EXPORTER` | `otlp`, `none`, or `console` (local debugging to stdout). Unset signals are enabled by a common or corresponding signal-specific endpoint; otherwise disabled. Explicit `otlp` without an endpoint deliberately uses that exporter's localhost default. `none` overrides endpoints. Multiple comma-separated exporters and `prometheus` are rejected. |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | Base HTTP(S) URL; HTTP exporters append `/v1/traces`, `/v1/metrics`, or `/v1/logs`. Credentials, query strings, and fragments in endpoints are rejected. |
 | `OTEL_EXPORTER_OTLP_PROTOCOL` | `http/protobuf` (autoexport default) or `grpc`. |
 | `OTEL_EXPORTER_OTLP_HEADERS` | Comma-separated header pairs, e.g. `authorization=Bearer%20TOKEN`; supply secrets through your deployment's secret mechanism. Never put secrets in command arguments. |
-| `OTEL_EXPORTER_OTLP_TRACES_*`, `OTEL_EXPORTER_OTLP_METRICS_*` | The official exporters support signal-specific `ENDPOINT`, `PROTOCOL`, and `HEADERS`, taking precedence over common values. HTTP signal-specific endpoints are complete URLs including `/v1/traces` or `/v1/metrics`. Official exporter TLS/certificate and timeout variables are also passed through. |
+| `OTEL_EXPORTER_OTLP_TRACES_*`, `OTEL_EXPORTER_OTLP_METRICS_*`, `OTEL_EXPORTER_OTLP_LOGS_*` | The official exporters support signal-specific `ENDPOINT`, `PROTOCOL`, and `HEADERS`, taking precedence over common values. HTTP signal-specific endpoints are complete URLs including the signal path (for example, `https://logs.example.com/v1/logs`). Official exporter TLS/certificate and timeout variables are also passed through. |
 | `OTEL_TRACES_SAMPLER` | SDK samplers: `always_on`, `always_off`, `traceidratio`, `parentbased_always_on` (SDK default), `parentbased_always_off`, `parentbased_traceidratio`. |
 | `OTEL_TRACES_SAMPLER_ARG` | Finite ratio from 0 to 1 for ratio samplers; omitted ratio defaults to 1. Parent-based samplers preserve incoming decisions and apply the ratio to new root traces. |
 | `OTEL_BSP_MAX_QUEUE_SIZE`, `OTEL_BSP_MAX_EXPORT_BATCH_SIZE`, `OTEL_BSP_SCHEDULE_DELAY`, `OTEL_BSP_EXPORT_TIMEOUT` | Standard SDK batching controls. Defaults: 2048 queued spans, 512 per batch, 5000 ms delay, 30000 ms export timeout. Queue overflow drops spans rather than blocking requests. |
 | `OTEL_METRIC_EXPORT_INTERVAL`, `OTEL_METRIC_EXPORT_TIMEOUT` | Standard periodic reader settings in milliseconds; defaults 60000 and 30000. No synchronous request-path export. |
-| `OTEL_SDK_DISABLED=true` | Disable SDK initialization, overriding exporter settings. Alternatively set both exporters to `none`. |
+| `OTEL_SDK_DISABLED=true` | Disable SDK initialization, overriding exporter settings. Alternatively set all three exporters to `none`. |
 
-The SDK reads resources, sampling, and batching variables; autoexport selects
-exporters and protocols; the official exporters read endpoints, headers, TLS,
+Set a signal-specific endpoint to opt in to that signal independently. For
+example, with the common endpoint unset, `OTEL_EXPORTER_OTLP_LOGS_ENDPOINT`
+enables logs by itself. With a common endpoint, set unwanted signals'
+exporters to `none`.
+
+The SDK reads resources, sampling, and batching variables. Autoexport selects
+exporters and protocols. The official exporters read endpoints, headers, TLS,
 and transport timeouts. The initialization package adds opt-in behavior and
 validation for configuration that would otherwise silently fall back. Invalid
 exporter/protocol/endpoint/header/resource/sampler settings fail startup with
 variable names and safe corrective guidance. Transient export failures only
-produce a redacted warning and do not stop the service. SDK shutdown attempts a
-final metric collection and trace batch flush concurrently, within five seconds,
-after HTTP/event draining and dependency closure. Export buffers are in memory;
-forced termination, outages, full trace queues, or a shutdown deadline can lose
-telemetry. Metrics have a 2000-series limit per instrument; the documented
-bounded application dimensions fit well below it.
+produce a redacted warning through the local logger. After HTTP and event
+draining and dependency closure, SDK shutdown has five seconds to collect final
+metrics and flush queued traces and logs concurrently. The log SDK batches
+asynchronously and drops records when its in-memory queue fills. Forced
+termination, outages, and shutdown deadlines can also lose buffered telemetry.
+Metrics have a 2000-series limit per instrument. The bounded application
+dimensions fit below it.
 
 ### Standard signals
 
@@ -952,13 +975,19 @@ miss rare stalls; it does not change metric aggregation. Parent-based sampling
 honors upstream decisions, so use a trusted ingress sampling policy for
 high-volume fleets.
 
-JSON `log/slog` logs remain on stderr. `http request` retains bounded method,
-route, first final status, and duration, and adds `trace_id`/`span_id` whenever a
+JSON `log/slog` logs remain on stderr or in Windows Event Log for the Windows
+service. Enabling OTLP adds a second destination. If a separate agent also
+forwards stderr to the same backend, both paths can ingest the same record.
+
+`http request` retains bounded method, route, first final status, and duration,
+and adds `trace_id`/`span_id` whenever a
 valid span context exists (even when unsampled). Log durations are numeric
-nanoseconds, unlike histogram seconds. No OTLP log exporter or otelslog bridge
-is initialized. The per-report INFO `report write` timing log is replaced by
-storage histograms and storage spans. Existing SQL transaction and error/cleanup
-warnings remain. Database transaction events expose bounded operation/engine,
+nanoseconds, unlike histogram seconds. The OTLP bridge uses the span
+context passed by context-aware `slog` calls and sets the native trace and span
+IDs. To navigate from a log to its trace, the corresponding trace also needs
+to be sampled and available in the backend. Records emitted without a valid
+span context have no trace or span ID. SQL transaction and report cleanup logs
+carry the context of the operation that emitted them. Database transaction events expose bounded operation/engine,
 outcome, duration, and pool waits; begin/commit/rollback failures stay errors.
 An ambiguous commit still requires the stable upload-ID retry behavior.
 

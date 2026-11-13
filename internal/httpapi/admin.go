@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -36,7 +37,7 @@ func (a *adminAPI) createMachine(w http.ResponseWriter, r *http.Request) {
 	}
 	machine, err := a.service.CreateMachine(r.Context(), name)
 	if err != nil {
-		a.machineCreationError(w, err)
+		a.machineCreationError(r.Context(), w, err)
 		return
 	}
 	w.Header().Set("Location", "/v1/machines/"+machine.ID)
@@ -60,7 +61,7 @@ func (a *adminAPI) listMachines(w http.ResponseWriter, r *http.Request) {
 		}
 		machine, err := a.service.GetMachineByName(r.Context(), names[0])
 		if err != nil {
-			a.resourceError(w, err, apikey.Machine)
+			a.resourceError(r.Context(), w, err, apikey.Machine)
 			return
 		}
 		writeJSON(w, http.StatusOK, machine)
@@ -72,7 +73,7 @@ func (a *adminAPI) listMachines(w http.ResponseWriter, r *http.Request) {
 	}
 	machines, err := a.service.ListMachines(r.Context(), cursor, limit+1)
 	if err != nil {
-		a.failure(w, err)
+		a.failure(r.Context(), w)
 		return
 	}
 	next := ""
@@ -89,7 +90,7 @@ func (a *adminAPI) listMachines(w http.ResponseWriter, r *http.Request) {
 func (a *adminAPI) getMachine(w http.ResponseWriter, r *http.Request) {
 	machine, err := a.service.GetMachine(r.Context(), r.PathValue("id"))
 	if err != nil {
-		a.resourceError(w, err, apikey.Machine)
+		a.resourceError(r.Context(), w, err, apikey.Machine)
 		return
 	}
 	writeJSON(w, http.StatusOK, machine)
@@ -98,7 +99,7 @@ func (a *adminAPI) getMachine(w http.ResponseWriter, r *http.Request) {
 func (a *adminAPI) deleteMachine(w http.ResponseWriter, r *http.Request) {
 	err := a.service.DeleteMachine(r.Context(), r.PathValue("id"))
 	if err != nil {
-		a.resourceError(w, err, apikey.Machine)
+		a.resourceError(r.Context(), w, err, apikey.Machine)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -112,7 +113,7 @@ func (a *adminAPI) issueKey(w http.ResponseWriter, r *http.Request, role string)
 	}
 	key, err := a.service.IssueKey(r.Context(), role, r.PathValue("id"), description)
 	if err != nil {
-		a.resourceError(w, err, role)
+		a.resourceError(r.Context(), w, err, role)
 		return
 	}
 	writeJSON(w, http.StatusCreated, key)
@@ -125,7 +126,7 @@ func (a *adminAPI) listKeys(w http.ResponseWriter, r *http.Request, role string)
 	}
 	keys, err := a.service.ListKeys(r.Context(), role, r.PathValue("id"), cursor, limit+1)
 	if err != nil {
-		a.resourceError(w, err, role)
+		a.resourceError(r.Context(), w, err, role)
 		return
 	}
 	next := ""
@@ -141,7 +142,7 @@ func (a *adminAPI) listKeys(w http.ResponseWriter, r *http.Request, role string)
 
 func (a *adminAPI) revokeKey(w http.ResponseWriter, r *http.Request, role string) {
 	if err := a.service.RevokeKey(r.Context(), role, r.PathValue("id"), r.PathValue("keyId")); err != nil {
-		a.resourceError(w, err, role)
+		a.resourceError(r.Context(), w, err, role)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -189,7 +190,7 @@ func (a *adminAPI) decodeStringField(w http.ResponseWriter, r *http.Request, fie
 	return result, true
 }
 
-func (a *adminAPI) machineCreationError(w http.ResponseWriter, err error) {
+func (a *adminAPI) machineCreationError(ctx context.Context, w http.ResponseWriter, err error) {
 	if errors.Is(err, service.ErrInvalidMachineName) {
 		writeError(w, http.StatusBadRequest, "invalid_name", "Name must be 1-256 UTF-8 bytes without surrounding whitespace or control characters")
 		return
@@ -198,7 +199,7 @@ func (a *adminAPI) machineCreationError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusConflict, "machine_name_conflict", "A machine with this name already exists")
 		return
 	}
-	a.failure(w, err)
+	a.failure(ctx, w)
 }
 
 func (a *adminAPI) readJSONBody(w http.ResponseWriter, r *http.Request) ([]byte, bool) {
@@ -263,7 +264,7 @@ func (a *adminAPI) unauthorized(w http.ResponseWriter) {
 	writeError(w, http.StatusUnauthorized, "unauthorized", "Valid API key required")
 }
 
-func (a *adminAPI) resourceError(w http.ResponseWriter, err error, role string) {
+func (a *adminAPI) resourceError(ctx context.Context, w http.ResponseWriter, err error, role string) {
 	if errors.Is(err, service.ErrInvalidDescription) {
 		writeError(w, http.StatusBadRequest, "invalid_description", "Description must be at most 1024 UTF-8 bytes without surrounding whitespace or control characters")
 		return
@@ -273,10 +274,10 @@ func (a *adminAPI) resourceError(w http.ResponseWriter, err error, role string) 
 		writeError(w, http.StatusNotFound, role+"_not_found", "Owner or key not found")
 		return
 	}
-	a.failure(w, err)
+	a.failure(ctx, w)
 }
 
-func (a *adminAPI) failure(w http.ResponseWriter, err error) {
-	a.logger.Error("administration database operation failed")
+func (a *adminAPI) failure(ctx context.Context, w http.ResponseWriter) {
+	a.logger.ErrorContext(ctx, "administration database operation failed")
 	writeError(w, http.StatusServiceUnavailable, "database_unavailable", "Database operation unavailable")
 }

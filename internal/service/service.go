@@ -72,7 +72,7 @@ func (s *Service) DeleteMachine(ctx context.Context, id string) error {
 	paths, err := s.db.DeleteMachine(ctx, id)
 	if err == nil {
 		s.events.Notify(eventing.MachineDeleted, eventing.Identifiers{MachineID: id})
-		s.removeReportFiles(paths)
+		s.removeReportFiles(ctx, paths)
 	}
 	return err
 }
@@ -105,7 +105,7 @@ func (s *Service) DeleteConfiguration(ctx context.Context, id, name string) erro
 	if err == nil {
 		s.events.Notify(eventing.ConfigurationDeleted, eventing.Identifiers{MachineID: id, ConfigurationName: name})
 		s.events.Notify(eventing.MachineUpdated, eventing.Identifiers{MachineID: id})
-		s.removeReportFiles(paths)
+		s.removeReportFiles(ctx, paths)
 	}
 	return err
 }

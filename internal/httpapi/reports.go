@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"errors"
 	"net/http"
 
@@ -21,7 +22,7 @@ func (a *adminAPI) uploadReport(w http.ResponseWriter, r *http.Request) {
 	}
 	publication, err := a.service.PublishReport(r.Context(), id, body)
 	if err != nil {
-		a.reportError(w, err)
+		a.reportError(r.Context(), w, err)
 		return
 	}
 	w.Header().Set("Location", "/v1/machines/"+id+"/reports/"+publication.Report.ID)
@@ -39,7 +40,7 @@ func (a *adminAPI) machineReports(w http.ResponseWriter, r *http.Request) {
 	}
 	items, err := a.service.ListReports(r.Context(), r.PathValue("id"), cursor, limit+1)
 	if err != nil {
-		a.reportError(w, err)
+		a.reportError(r.Context(), w, err)
 		return
 	}
 	next := ""
@@ -59,7 +60,7 @@ func (a *adminAPI) machineReport(w http.ResponseWriter, r *http.Request, full bo
 	}
 	item, content, err := a.service.GetReport(r.Context(), r.PathValue("id"), r.PathValue("reportId"), full)
 	if err != nil {
-		a.reportError(w, err)
+		a.reportError(r.Context(), w, err)
 		return
 	}
 	if full {
@@ -77,7 +78,7 @@ func (a *adminAPI) machineStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	status, err := a.service.GetMachineStatus(r.Context(), r.PathValue("id"))
 	if err != nil {
-		a.reportError(w, err)
+		a.reportError(r.Context(), w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, status)
@@ -89,7 +90,7 @@ func (a *adminAPI) configurationStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	status, err := a.service.GetConfigurationStatus(r.Context(), r.PathValue("id"), r.PathValue("name"))
 	if err != nil {
-		a.reportError(w, err)
+		a.reportError(r.Context(), w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, status)
@@ -101,7 +102,7 @@ func (a *adminAPI) configurationReport(w http.ResponseWriter, r *http.Request) {
 	}
 	content, err := a.service.ReadReport(r.Context(), r.PathValue("id"), r.PathValue("name"))
 	if err != nil {
-		a.reportError(w, err)
+		a.reportError(r.Context(), w, err)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -117,12 +118,12 @@ func reportReadRequest(w http.ResponseWriter, r *http.Request) bool {
 	return true
 }
 
-func (a *adminAPI) reportError(w http.ResponseWriter, err error) {
+func (a *adminAPI) reportError(ctx context.Context, w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, report.ErrInvalid):
 		writeError(w, http.StatusBadRequest, "invalid_report", "Expected a valid wrapped dscd v1 report")
 	case errors.Is(err, service.ErrReportStorage):
-		a.reportStorageError(w)
+		a.reportStorageError(ctx, w)
 	case errors.Is(err, database.ErrUploadConflict):
 		writeError(w, http.StatusConflict, "upload_id_conflict", "Upload ID already identifies a different report")
 	case errors.Is(err, database.ErrReportCursor):
@@ -130,11 +131,11 @@ func (a *adminAPI) reportError(w http.ResponseWriter, err error) {
 	case errors.Is(err, database.ErrReportNotFound):
 		writeError(w, http.StatusNotFound, "report_not_found", "No matching report has been received")
 	default:
-		a.configurationError(w, err)
+		a.configurationError(ctx, w, err)
 	}
 }
 
-func (a *adminAPI) reportStorageError(w http.ResponseWriter) {
-	a.logger.Error("report storage operation failed")
+func (a *adminAPI) reportStorageError(ctx context.Context, w http.ResponseWriter) {
+	a.logger.ErrorContext(ctx, "report storage operation failed")
 	writeError(w, http.StatusServiceUnavailable, "report_storage_unavailable", "Report storage operation unavailable")
 }

@@ -11,6 +11,7 @@ import (
 type transaction struct {
 	*sql.Tx
 	store     *Store
+	ctx       context.Context
 	operation string
 	start     time.Time
 	done      bool
@@ -20,10 +21,10 @@ func (s *Store) begin(ctx context.Context, operation string) (*transaction, erro
 	start := time.Now()
 	tx, err := s.DB.BeginTx(ctx, nil)
 	if err != nil {
-		s.logTransaction(operation, start, "begin_error")
+		s.logTransaction(ctx, operation, start, "begin_error")
 		return nil, err
 	}
-	return &transaction{Tx: tx, store: s, operation: operation, start: start}, nil
+	return &transaction{Tx: tx, store: s, ctx: ctx, operation: operation, start: start}, nil
 }
 
 func (tx *transaction) Commit() error {
@@ -49,11 +50,11 @@ func (tx *transaction) Rollback() error {
 func (tx *transaction) finish(outcome string) {
 	if !tx.done {
 		tx.done = true
-		tx.store.logTransaction(tx.operation, tx.start, outcome)
+		tx.store.logTransaction(tx.ctx, tx.operation, tx.start, outcome)
 	}
 }
 
-func (s *Store) logTransaction(operation string, start time.Time, outcome string) {
+func (s *Store) logTransaction(ctx context.Context, operation string, start time.Time, outcome string) {
 	if s.Logger == nil {
 		return
 	}
@@ -62,7 +63,7 @@ func (s *Store) logTransaction(operation string, start time.Time, outcome string
 		level = slog.LevelError
 	}
 	stats := s.DB.Stats()
-	s.Logger.Log(context.Background(), level, "database transaction",
+	s.Logger.Log(ctx, level, "database transaction",
 		"engine", s.Engine, "operation", operation, "outcome", outcome,
 		"duration", time.Since(start), "pool_in_use", stats.InUse,
 		"pool_wait_count", stats.WaitCount, "pool_wait_duration", stats.WaitDuration)
