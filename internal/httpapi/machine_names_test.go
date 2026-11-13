@@ -143,7 +143,7 @@ func TestConcurrentMachineNamesHTTPBothEngines(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		t.Cleanup(func() { secondStore.DB.Close() })
+		t.Cleanup(func() { secondStore.Close() })
 		reports, err := reportstore.Open(context.Background(), t.TempDir())
 		if err != nil {
 			t.Fatal(err)

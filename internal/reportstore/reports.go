@@ -8,7 +8,9 @@ import (
 	"math"
 	"os"
 	"strings"
+	"time"
 
+	"github.com/Bpoe/dsc-registry/internal/telemetry"
 	"github.com/google/uuid"
 )
 
@@ -37,24 +39,35 @@ func (s *Store) Write(ctx context.Context, content []byte) (string, error) {
 	})
 }
 
-func (s *Store) write(ctx context.Context, content []byte, create func(string) (reportFile, error)) (string, error) {
+func (s *Store) write(ctx context.Context, content []byte, create func(string) (reportFile, error)) (key string, err error) {
+	ctx, span := s.tracer.Start(ctx, "Report storage write")
+	defer func() { telemetry.RecordError(span, err); span.End() }()
 	if err := ctx.Err(); err != nil {
 		return "", err
 	}
 	name := uuid.NewString() + ".json"
+	start := time.Now()
 	file, err := create(name)
+	s.recordOperation(ctx, "open", start, err)
 	if err != nil {
 		return "", err
 	}
+	start = time.Now()
 	n, writeErr := file.Write(content)
 	if writeErr == nil && n != len(content) {
 		writeErr = io.ErrShortWrite
 	}
+	s.recordOperation(ctx, "write", start, writeErr)
 	err = errors.Join(writeErr, ctx.Err())
 	if err == nil {
+		start = time.Now()
 		err = file.Sync()
+		s.recordOperation(ctx, "sync", start, err)
 	}
-	err = errors.Join(err, file.Close(), ctx.Err())
+	start = time.Now()
+	closeErr := file.Close()
+	s.recordOperation(ctx, "close", start, closeErr)
+	err = errors.Join(err, closeErr, ctx.Err())
 	if err != nil {
 		if cleanupErr := s.Remove(name); cleanupErr != nil {
 			err = errors.Join(err, &CleanupError{Path: name, Err: cleanupErr})
@@ -70,14 +83,18 @@ func validPath(name string) bool {
 	return ok && err == nil && id.String() == stem
 }
 
-func (s *Store) Read(ctx context.Context, name string, limit int64) ([]byte, error) {
+func (s *Store) Read(ctx context.Context, name string, limit int64) (content []byte, err error) {
+	ctx, span := s.tracer.Start(ctx, "Report storage read")
+	defer func() { telemetry.RecordError(span, err); span.End() }()
 	if !validPath(name) {
 		return nil, errors.New("invalid report storage key")
 	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
+	start := time.Now()
 	file, err := s.root.Open(name)
+	s.recordOperation(ctx, "open", start, err)
 	if err != nil {
 		return nil, err
 	}
@@ -85,18 +102,22 @@ func (s *Store) Read(ctx context.Context, name string, limit int64) ([]byte, err
 	if statErr == nil && (!info.Mode().IsRegular() || info.Size() > limit) {
 		statErr = errors.New("invalid stored report")
 	}
-	var content []byte
 	if statErr == nil {
 		readLimit := limit
 		if readLimit < math.MaxInt64 {
 			readLimit++
 		}
+		start = time.Now()
 		content, err = io.ReadAll(io.LimitReader(file, readLimit))
 		if int64(len(content)) > limit {
 			err = errors.New("stored report exceeds limit")
 		}
+		s.recordOperation(ctx, "read", start, err)
 	}
-	return content, errors.Join(statErr, err, file.Close(), ctx.Err())
+	start = time.Now()
+	closeErr := file.Close()
+	s.recordOperation(ctx, "close", start, closeErr)
+	return content, errors.Join(statErr, err, closeErr, ctx.Err())
 }
 
 // Remove reclaims an unpublished file or a key retired by a successful commit.
@@ -105,7 +126,9 @@ func (s *Store) Remove(name string) error {
 	if !validPath(name) {
 		return errors.New("invalid report storage key")
 	}
+	start := time.Now()
 	err := s.root.Remove(name)
+	s.recordOperation(context.Background(), "delete", start, err)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
 	}

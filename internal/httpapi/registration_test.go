@@ -267,7 +267,7 @@ func TestConcurrentRegistrationsHTTPBothEngines(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		defer secondStore.DB.Close()
+		defer secondStore.Close()
 		reports, err := reportstore.Open(context.Background(), t.TempDir())
 		if err != nil {
 			t.Fatal(err)

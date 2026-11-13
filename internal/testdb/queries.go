@@ -40,17 +40,9 @@ func (c *queryConnector) Connect(ctx context.Context) (driver.Conn, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	var conn driver.Conn
-	var err error
-	if contextual, ok := c.base.(driver.DriverContext); ok {
-		var connector driver.Connector
-		connector, err = contextual.OpenConnector(c.dsn)
-		if err == nil {
-			conn, err = connector.Connect(ctx)
-		}
-	} else {
-		conn, err = c.base.Open(c.dsn)
-	}
+	// Open works for both drivers, including an otelsql-wrapped SQLite
+	// driver whose underlying driver does not implement DriverContext.
+	conn, err := c.base.Open(c.dsn)
 	if err != nil {
 		return nil, err
 	}

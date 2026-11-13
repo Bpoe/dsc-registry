@@ -5,14 +5,17 @@ import (
 	"database/sql"
 	"errors"
 	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/Bpoe/dsc-registry/migrations"
+	"github.com/XSAM/otelsql"
 	_ "github.com/jackc/pgx/v5/stdlib"
+	"go.opentelemetry.io/otel/metric"
 )
 
 func OpenPostgres(ctx context.Context, dsn string) (*sql.DB, error) {
-	db, err := sql.Open("pgx", dsn)
+	db, err := otelsql.Open("pgx", dsn, sqlTelemetryOptions("postgresql")...)
 	if err != nil {
 		return nil, errors.New("invalid PostgreSQL connection settings")
 	}
@@ -105,9 +108,12 @@ func initializePostgres(ctx context.Context, db *sql.DB) error {
 }
 
 type Store struct {
-	DB     *sql.DB
-	Engine string
-	Logger *slog.Logger
+	DB          *sql.DB
+	Engine      string
+	Logger      *slog.Logger
+	poolMetrics metric.Registration
+	closeOnce   sync.Once
+	closeErr    error
 }
 
 func Connect(ctx context.Context, engine, dsn string, busyTimeout time.Duration) (*Store, error) {
@@ -124,5 +130,14 @@ func Connect(ctx context.Context, engine, dsn string, busyTimeout time.Duration)
 	if err != nil {
 		return nil, err
 	}
-	return &Store{DB: db, Engine: engine}, nil
+	system := "sqlite"
+	if engine == "postgres" {
+		system = "postgresql"
+	}
+	reg, err := otelsql.RegisterDBStatsMetrics(db, sqlTelemetryOptions(system)...)
+	if err != nil {
+		_ = db.Close()
+		return nil, errors.New("cannot register database pool telemetry")
+	}
+	return &Store{DB: db, Engine: engine, poolMetrics: reg}, nil
 }

@@ -64,7 +64,7 @@ func TestAdministrationHTTPBothEngines(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		t.Cleanup(func() { store.DB.Close() })
+		t.Cleanup(func() { store.Close() })
 		reports, err := reportstore.Open(ctx, t.TempDir())
 		if err != nil {
 			t.Fatal(err)

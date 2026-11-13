@@ -7,11 +7,17 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/metric"
+	"go.opentelemetry.io/otel/trace"
 )
 
 type Store struct {
-	path string
-	root *os.Root
+	path              string
+	root              *os.Root
+	operationDuration metric.Float64Histogram
+	tracer            trace.Tracer
 }
 
 func Open(ctx context.Context, path string) (*Store, error) {
@@ -27,7 +33,7 @@ func Open(ctx context.Context, path string) (*Store, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open report root: %w", err)
 	}
-	s := &Store{path: canonical, root: root}
+	s := &Store{path: canonical, root: root, operationDuration: newStorageMetric(), tracer: otel.Tracer("github.com/Bpoe/dsc-registry/internal/reportstore")}
 	if err := s.Check(ctx); err != nil {
 		return nil, errors.Join(err, root.Close())
 	}

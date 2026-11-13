@@ -29,7 +29,7 @@ func TestRegistryCLIEndToEndBothEngines(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		t.Cleanup(func() { db.DB.Close() })
+		t.Cleanup(func() { db.Close() })
 		reports, err := reportstore.Open(ctx, t.TempDir())
 		if err != nil {
 			t.Fatal(err)

@@ -12,6 +12,8 @@ import (
 	"github.com/Bpoe/dsc-registry/internal/desired"
 	"github.com/Bpoe/dsc-registry/internal/eventing"
 	"github.com/Bpoe/dsc-registry/internal/reportstore"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/trace"
 )
 
 var (
@@ -33,13 +35,15 @@ type Service struct {
 	events         eventing.Dispatcher
 	maxReportBytes int64
 	logger         *slog.Logger
+	metrics        reportMetrics
+	tracer         trace.Tracer
 }
 
 func New(db *database.Store, files *reportstore.Store, events eventing.Dispatcher, maxReportBytes int64, logger *slog.Logger) *Service {
 	if events == nil {
 		events = eventing.Noop{}
 	}
-	return &Service{db: db, files: files, events: events, maxReportBytes: maxReportBytes, logger: logger}
+	return &Service{db: db, files: files, events: events, maxReportBytes: maxReportBytes, logger: logger, metrics: newReportMetrics(), tracer: otel.Tracer("github.com/Bpoe/dsc-registry/internal/service")}
 }
 
 func (s *Service) CreateMachine(ctx context.Context, name string) (database.Machine, error) {

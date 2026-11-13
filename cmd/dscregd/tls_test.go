@@ -123,7 +123,7 @@ func TestRunNativeHTTPS(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		t.Cleanup(func() { db.DB.Close() })
+		t.Cleanup(func() { db.Close() })
 		admin, err := db.Bootstrap(context.Background(), "operator")
 		if err != nil {
 			t.Fatal(err)
@@ -136,7 +136,7 @@ func TestRunNativeHTTPS(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := db.DB.Close(); err != nil {
+		if err := db.Close(); err != nil {
 			t.Fatal(err)
 		}
 		for range 2 {

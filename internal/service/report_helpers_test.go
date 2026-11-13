@@ -14,6 +14,7 @@ import (
 	"github.com/Bpoe/dsc-registry/internal/report"
 	"github.com/Bpoe/dsc-registry/migrations"
 	"github.com/google/uuid"
+	"go.opentelemetry.io/otel"
 )
 
 // The adapter preserves the existing workflow fault-injection tests while
@@ -33,7 +34,7 @@ func (f callbackFiles) Read(_ context.Context, path string, _ int64) ([]byte, er
 }
 func (callbackFiles) Remove(string) error { panic("unexpected cleanup in workflow adapter") }
 func testService(db *database.Store, files reportFiles) *Service {
-	return &Service{db: db, files: files, maxReportBytes: 1 << 20, logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	return &Service{tracer: otel.Tracer("github.com/Bpoe/dsc-registry/internal/service"), metrics: newReportMetrics(), db: db, files: files, maxReportBytes: 1 << 20, logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
 }
 func (s *reportTestStore) PublishReport(ctx context.Context, id, name string, upload report.Upload, write func() (string, error), read func(string) ([]byte, error)) (database.Publication, error) {
 	return testService(s.Store, callbackFiles{write: write, read: read}).publishReport(ctx, id, name, upload)
@@ -70,7 +71,7 @@ func testStore(t *testing.T, engine, dsn string) *reportTestStore {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { store.DB.Close() })
+	t.Cleanup(func() { store.Close() })
 	return wrapStore(store)
 }
 
