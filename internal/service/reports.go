@@ -61,17 +61,17 @@ func (s *Service) PublishReport(ctx context.Context, id string, body []byte) (pu
 		}
 	}
 	if len(publication.CleanupPaths) != 0 {
-		_, cleanupSpan := s.tracer.Start(ctx, "Cleanup retired reports")
-		s.removeReportFiles(publication.CleanupPaths)
+		cleanupCtx, cleanupSpan := s.tracer.Start(ctx, "Cleanup retired reports")
+		s.removeReportFiles(cleanupCtx, publication.CleanupPaths)
 		cleanupSpan.End()
 	}
 	return publication, err
 }
 
-func (s *Service) removeReportFiles(paths []string) {
+func (s *Service) removeReportFiles(ctx context.Context, paths []string) {
 	for _, path := range paths {
 		if err := s.files.Remove(path); err != nil {
-			s.logger.Warn("report file cleanup failed", "path", path, "error", err)
+			s.logger.WarnContext(ctx, "report file cleanup failed", "path", path, "error", err)
 		}
 	}
 }
@@ -80,7 +80,7 @@ func (s *Service) writeContent(ctx context.Context, content []byte) (string, err
 	path, err := s.files.Write(ctx, content)
 	var cleanupErr *reportstore.CleanupError
 	if errors.As(err, &cleanupErr) {
-		s.logger.Warn("report file cleanup failed", "path", cleanupErr.Path, "error", cleanupErr.Err)
+		s.logger.WarnContext(ctx, "report file cleanup failed", "path", cleanupErr.Path, "error", cleanupErr.Err)
 	}
 	return path, storageError(err)
 }

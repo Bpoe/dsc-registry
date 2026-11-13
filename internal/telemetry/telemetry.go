@@ -15,11 +15,13 @@ import (
 	"sync"
 	"time"
 
+	"go.opentelemetry.io/contrib/bridges/otelslog"
 	"go.opentelemetry.io/contrib/exporters/autoexport"
 	runtimeotel "go.opentelemetry.io/contrib/instrumentation/runtime"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/propagation"
+	sdklog "go.opentelemetry.io/otel/sdk/log"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
@@ -37,38 +39,42 @@ func init() {
 // Init is called once by the server, before constructing dependencies. An
 // exporter selection or endpoint opts a signal in; resource/sampling settings
 // alone never cause a connection to the default localhost OTLP destination.
-// The caller must invoke shutdown after HTTP requests and event work drain.
-func Init(ctx context.Context, version string, logger *slog.Logger) (shutdown func(context.Context) error, err error) {
+// Init returns the logger to pass to server dependencies. The caller must
+// invoke shutdown after HTTP requests and event work drain.
+func Init(ctx context.Context, version string, logger *slog.Logger) (configuredLogger *slog.Logger, shutdown func(context.Context) error, err error) {
 	shutdown = func(context.Context) error { return nil }
 	if logger == nil {
 		logger = slog.Default()
 	}
 	if os.Getenv("OTEL_SDK_DISABLED") == "true" {
-		return shutdown, nil
+		return logger, shutdown, nil
 	}
 	if err := validateEnvironment(); err != nil {
-		return shutdown, err
+		return logger, shutdown, err
 	}
 	otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator(propagation.TraceContext{}, propagation.Baggage{}))
 	traces, metrics := signalEnabled("TRACES"), signalEnabled("METRICS")
-	if !traces && !metrics {
-		return shutdown, nil
+	logs := signalEnabled("LOGS")
+	if !traces && !metrics && !logs {
+		return logger, shutdown, nil
 	}
-	// SDK/exporter diagnostics can contain URLs, headers, or driver errors.
+	// Keep diagnostics on the original logger so exporter failures cannot
+	// enqueue more OTLP records. Diagnostic errors may contain secrets.
 	otel.SetErrorHandler(otel.ErrorHandlerFunc(func(error) { logger.Warn("telemetry export or collection failed", "reason", "otel_failure") }))
 	res, err := resource.New(ctx,
 		resource.WithAttributes(attribute.String("service.name", "dscregd"), attribute.String("service.version", version)),
 		resource.WithTelemetrySDK(), resource.WithFromEnv())
 	if err != nil {
-		return shutdown, errors.New("invalid OTEL_RESOURCE_ATTRIBUTES")
+		return logger, shutdown, errors.New("invalid OTEL_RESOURCE_ATTRIBUTES")
 	}
 	var tp *sdktrace.TracerProvider
 	var mp *sdkmetric.MeterProvider
+	var lp *sdklog.LoggerProvider
 	var shutdownOnce sync.Once
 	var shutdownErr error
 	shutdown = func(ctx context.Context) error {
 		shutdownOnce.Do(func() {
-			var traceErr, metricErr error
+			var traceErr, metricErr, logErr error
 			var work sync.WaitGroup
 			if mp != nil {
 				work.Go(func() { metricErr = mp.Shutdown(ctx) })
@@ -76,8 +82,11 @@ func Init(ctx context.Context, version string, logger *slog.Logger) (shutdown fu
 			if tp != nil {
 				work.Go(func() { traceErr = tp.Shutdown(ctx) })
 			}
+			if lp != nil {
+				work.Go(func() { logErr = lp.Shutdown(ctx) })
+			}
 			work.Wait()
-			shutdownErr = errors.Join(traceErr, metricErr)
+			shutdownErr = errors.Join(traceErr, metricErr, logErr)
 		})
 		return shutdownErr
 	}
@@ -91,7 +100,7 @@ func Init(ctx context.Context, version string, logger *slog.Logger) (shutdown fu
 	if traces {
 		exporter, exportErr := autoexport.NewSpanExporter(ctx)
 		if exportErr != nil {
-			return shutdown, errors.New("cannot initialize OTEL_TRACES_EXPORTER; check OTLP traces settings")
+			return logger, shutdown, errors.New("cannot initialize OTEL_TRACES_EXPORTER; check OTLP traces settings")
 		}
 		// SDK batching is bounded and nonblocking by default; standard OTEL_BSP_*
 		// variables configure queue/batch sizes and delays.
@@ -100,21 +109,31 @@ func Init(ctx context.Context, version string, logger *slog.Logger) (shutdown fu
 	if metrics {
 		reader, exportErr := autoexport.NewMetricReader(ctx)
 		if exportErr != nil {
-			return shutdown, errors.New("cannot initialize OTEL_METRICS_EXPORTER; check OTLP metrics settings")
+			return logger, shutdown, errors.New("cannot initialize OTEL_METRICS_EXPORTER; check OTLP metrics settings")
 		}
 		mp = sdkmetric.NewMeterProvider(sdkmetric.WithResource(res), sdkmetric.WithReader(reader), sdkmetric.WithCardinalityLimit(2000))
 		if runtimeErr := runtimeotel.Start(runtimeotel.WithMeterProvider(mp), runtimeotel.WithMinimumReadMemStatsInterval(15*time.Second)); runtimeErr != nil {
-			return shutdown, errors.New("cannot initialize Go runtime instrumentation")
+			return logger, shutdown, errors.New("cannot initialize Go runtime instrumentation")
 		}
 	}
-	// Publish globals only once both providers have initialized successfully.
+	configuredLogger = logger
+	if logs {
+		exporter, exportErr := autoexport.NewLogExporter(ctx)
+		if exportErr != nil {
+			return logger, shutdown, errors.New("cannot initialize OTEL_LOGS_EXPORTER; check OTLP logs settings")
+		}
+		lp = sdklog.NewLoggerProvider(sdklog.WithResource(res), sdklog.WithProcessor(sdklog.NewBatchProcessor(exporter)))
+		bridge := otelslog.NewHandler("dscregd", otelslog.WithLoggerProvider(lp))
+		configuredLogger = slog.New(slog.NewMultiHandler(logger.Handler(), bridge))
+	}
+	// Publish globals only after all providers have initialized successfully.
 	if tp != nil {
 		otel.SetTracerProvider(tp)
 	}
 	if mp != nil {
 		otel.SetMeterProvider(mp)
 	}
-	return shutdown, nil
+	return configuredLogger, shutdown, nil
 }
 
 func signalEnabled(signal string) bool {
@@ -144,7 +163,7 @@ func validateEnvironment() error {
 			}
 		}
 	}
-	for _, signal := range []string{"TRACES", "METRICS"} {
+	for _, signal := range []string{"TRACES", "METRICS", "LOGS"} {
 		key := "OTEL_" + signal + "_EXPORTER"
 		switch os.Getenv(key) {
 		case "", "none", "otlp", "console":
@@ -152,7 +171,7 @@ func validateEnvironment() error {
 			return fmt.Errorf("invalid %s; use none, otlp, or console", key)
 		}
 	}
-	for _, suffix := range []string{"", "_TRACES", "_METRICS"} {
+	for _, suffix := range []string{"", "_TRACES", "_METRICS", "_LOGS"} {
 		prefix := "OTEL_EXPORTER_OTLP" + suffix
 		if protocol := os.Getenv(prefix + "_PROTOCOL"); protocol != "" && protocol != "grpc" && protocol != "http/protobuf" {
 			return fmt.Errorf("invalid %s_PROTOCOL; use grpc or http/protobuf", prefix)

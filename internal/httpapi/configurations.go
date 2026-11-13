@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
@@ -18,7 +19,7 @@ func (a *adminAPI) configurations(w http.ResponseWriter, r *http.Request) {
 	}
 	items, err := a.service.ListConfigurations(r.Context(), r.PathValue("id"), cursor, limit+1)
 	if err != nil {
-		a.configurationError(w, err)
+		a.configurationError(r.Context(), w, err)
 		return
 	}
 	next := ""
@@ -40,7 +41,7 @@ func (a *adminAPI) putConfiguration(w http.ResponseWriter, r *http.Request) {
 	id, name := r.PathValue("id"), r.PathValue("name")
 	result, outcome, err := a.service.PutConfiguration(r.Context(), id, name, body)
 	if err != nil {
-		a.configurationError(w, err)
+		a.configurationError(r.Context(), w, err)
 		return
 	}
 	status := http.StatusOK
@@ -54,7 +55,7 @@ func (a *adminAPI) putConfiguration(w http.ResponseWriter, r *http.Request) {
 func (a *adminAPI) getConfiguration(w http.ResponseWriter, r *http.Request) {
 	result, err := a.service.GetConfiguration(r.Context(), r.PathValue("id"), r.PathValue("name"))
 	if err != nil {
-		a.configurationError(w, err)
+		a.configurationError(r.Context(), w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, result)
@@ -64,14 +65,14 @@ func (a *adminAPI) deleteConfiguration(w http.ResponseWriter, r *http.Request) {
 	id, name := r.PathValue("id"), r.PathValue("name")
 	err := a.service.DeleteConfiguration(r.Context(), id, name)
 	if err != nil {
-		a.configurationError(w, err)
+		a.configurationError(r.Context(), w, err)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func (a *adminAPI) configurationError(w http.ResponseWriter, err error) {
+func (a *adminAPI) configurationError(ctx context.Context, w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, desired.ErrInvalid):
 		writeError(w, http.StatusBadRequest, "invalid_configuration", "Expected a JSON-object template and optional JSON-object parameters without duplicate keys or document wrappers")
@@ -80,7 +81,7 @@ func (a *adminAPI) configurationError(w http.ResponseWriter, err error) {
 	case errors.Is(err, database.ErrConfigurationNotFound):
 		writeError(w, http.StatusNotFound, "configuration_not_found", "Configuration not found")
 	default:
-		a.failure(w, err)
+		a.failure(ctx, w)
 	}
 }
 
@@ -93,7 +94,7 @@ func (a *adminAPI) agentConfigurations(w http.ResponseWriter, r *http.Request) {
 	if validators := r.Header.Values("If-None-Match"); len(validators) > 0 {
 		revision, err := a.service.ConfigurationRevision(r.Context(), id)
 		if err != nil {
-			a.configurationError(w, err)
+			a.configurationError(r.Context(), w, err)
 			return
 		}
 		etag := fmt.Sprintf(`"machine-%s-config-%d"`, id, revision)
@@ -106,7 +107,7 @@ func (a *adminAPI) agentConfigurations(w http.ResponseWriter, r *http.Request) {
 	}
 	snapshot, err := a.service.ConfigurationSnapshot(r.Context(), id)
 	if err != nil {
-		a.configurationError(w, err)
+		a.configurationError(r.Context(), w, err)
 		return
 	}
 	// A conditional miss may race with a mutation; only the snapshot's

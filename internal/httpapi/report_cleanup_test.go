@@ -261,7 +261,7 @@ func TestFailedPersistenceCleanupWarningPreservesErrorBothEngines(t *testing.T) 
 		}
 		api := &adminAPI{logger: slog.New(slog.NewJSONHandler(&logs, nil))}
 		response := httptest.NewRecorder()
-		api.reportError(response, persistenceErr)
+		api.reportError(context.Background(), response, persistenceErr)
 		if response.Code != 503 || !strings.Contains(response.Body.String(), `"code":"database_unavailable"`) ||
 			!errors.Is(persistenceErr, injected) {
 			t.Fatal("cleanup failure masked original database failure", response.Body)

@@ -70,7 +70,7 @@ func runWithReady(ctx context.Context, settings config.Settings, logger *slog.Lo
 	if err := settings.Validate(); err != nil {
 		return err
 	}
-	shutdownTelemetry, err := telemetry.Init(ctx, version, logger)
+	serverLogger, shutdownTelemetry, err := telemetry.Init(ctx, version, logger)
 	if err != nil {
 		logger.Error("telemetry initialization failed", "error", err)
 		return err
@@ -86,7 +86,7 @@ func runWithReady(ctx context.Context, settings config.Settings, logger *slog.Lo
 	if settings.TLS != nil {
 		certificate, err := tls.LoadX509KeyPair(settings.TLS.CertFile, settings.TLS.KeyFile)
 		if err != nil {
-			logger.Error("TLS initialization failed", "reason", "certificate_key_pair_unreadable_or_invalid")
+			serverLogger.Error("TLS initialization failed", "reason", "certificate_key_pair_unreadable_or_invalid")
 			return errors.New("cannot load TLS certificate and private key; require readable PEM files with a matching key")
 		}
 		tlsConfig = &tls.Config{
@@ -98,27 +98,27 @@ func runWithReady(ctx context.Context, settings config.Settings, logger *slog.Lo
 	defer cancel()
 	reports, err := reportstore.Open(startup, settings.ReportRoot)
 	if err != nil {
-		logger.Error("startup dependency failed", "dependency", "report_storage")
+		serverLogger.Error("startup dependency failed", "dependency", "report_storage")
 		return fmt.Errorf("validate report storage: %w", err)
 	}
 	defer func() { err = errors.Join(err, reports.Close()) }()
 	db, err := database.Connect(startup, settings.DatabaseEngine, settings.DatabaseDSN, settings.SQLiteBusyTimeout)
 	if err != nil {
-		logger.Error("startup dependency failed", "dependency", "database")
+		serverLogger.Error("startup dependency failed", "dependency", "database")
 		return err
 	}
 	defer func() { err = errors.Join(err, db.Close()) }()
-	db.Logger = logger
+	db.Logger = serverLogger
 	var publisher *eventing.AMQP
 	if settings.Eventing != nil {
-		publisher, err = eventing.NewAMQP(*settings.Eventing, logger)
+		publisher, err = eventing.NewAMQP(*settings.Eventing, serverLogger)
 		if err != nil {
 			return err
 		}
 	}
 	listener, err := (&net.ListenConfig{}).Listen(ctx, "tcp", settings.ListenAddress)
 	if err != nil {
-		logger.Error("HTTP listener startup failed")
+		serverLogger.Error("HTTP listener startup failed")
 		return fmt.Errorf("listen HTTP: %w", err)
 	}
 	server := &http.Server{
@@ -127,35 +127,35 @@ func runWithReady(ctx context.Context, settings config.Settings, logger *slog.Lo
 		WriteTimeout:      settings.WriteTimeout,
 		IdleTimeout:       settings.IdleTimeout,
 		MaxHeaderBytes:    64 << 10,
-		ErrorLog:          log.New(&serverErrorLog{logger: logger}, "", 0),
+		ErrorLog:          log.New(&serverErrorLog{logger: serverLogger}, "", 0),
 		TLSConfig:         tlsConfig,
 	}
 	var dispatcher eventing.Dispatcher = eventing.Noop{}
 	var worker *eventing.Worker
 	if publisher != nil {
 		var startErr error
-		worker, startErr = eventing.Start(publisher, settings.Eventing.QueueCapacity, settings.Eventing.PublishTimeout, logger)
+		worker, startErr = eventing.Start(publisher, settings.Eventing.QueueCapacity, settings.Eventing.PublishTimeout, serverLogger)
 		if startErr != nil {
 			_ = listener.Close()
 			return startErr
 		}
 		dispatcher = worker
 	}
-	app := service.New(db, reports, dispatcher, settings.MaxReportBytes, logger)
-	server.Handler = httpapi.New(app, settings.ReadTimeout, settings.PollMaxAge, settings.MaxRequestBytes, settings.MaxReportBytes, logger)
+	app := service.New(db, reports, dispatcher, settings.MaxReportBytes, serverLogger)
+	server.Handler = httpapi.New(app, settings.ReadTimeout, settings.PollMaxAge, settings.MaxRequestBytes, settings.MaxReportBytes, serverLogger)
 	if settings.TLS == nil {
-		logger.Warn("HTTP transport is unencrypted; API keys and registration tokens may be exposed in transit")
+		serverLogger.Warn("HTTP transport is unencrypted; API keys and registration tokens may be exposed in transit")
 	}
-	logger.Info("server listening", "address", listener.Addr().String())
+	serverLogger.Info("server listening", "address", listener.Addr().String())
 	if ready != nil {
 		ready()
 	}
-	err = serve(ctx, server, listener, settings, logger)
+	err = serve(ctx, server, listener, settings, serverLogger)
 	if worker != nil {
 		shutdown, cancel := context.WithTimeout(context.Background(), settings.Eventing.ShutdownTimeout)
 		defer cancel()
 		if shutdownErr := worker.Shutdown(shutdown); shutdownErr != nil {
-			logger.Warn("event worker shutdown incomplete", "reason", "best_effort_event_loss")
+			serverLogger.Warn("event worker shutdown incomplete", "reason", "best_effort_event_loss")
 		}
 	}
 	return err
