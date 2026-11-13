@@ -254,8 +254,10 @@ def main():
                            "dsc-error-canary", "after-backup-canary", "stderr-canary", "demo-machine-canary",
                            "postgres://", "/reports/"):
                 require(secret.encode() not in logs, "sensitive canary found in API logs")
-            for event in (b'"msg":"database transaction"', b'"msg":"report write"', b'"route":"/v1/agent/configurations"'):
-                require(event in logs, "required observability signal missing")
+            # Per-report write timing is exported as metrics/spans, not INFO logs.
+            # The default deployment still logs uploads, polling and transactions.
+            for event in (b'"msg":"database transaction"', b'"route":"/v1/agent/reports"', b'"route":"/v1/agent/configurations"'):
+                require(event in logs, "required observability signal missing: " + event.decode())
             with tarfile.open(fileobj=io.BytesIO(archive)) as saved:
                 files = [entry for entry in saved if entry.isfile()]
                 require(len(files) == 1, "idempotent report retries created extra current files")
