@@ -13,6 +13,7 @@ import (
 	"github.com/Bpoe/dsc-registry/internal/database"
 	"github.com/Bpoe/dsc-registry/internal/eventing"
 	"github.com/Bpoe/dsc-registry/internal/reportstore"
+	"github.com/Bpoe/dsc-registry/internal/service"
 	"github.com/Bpoe/dsc-registry/internal/testdb"
 	"github.com/google/uuid"
 )
@@ -71,7 +72,7 @@ func TestMutationEventsBothEngines(t *testing.T) {
 					t.Fatal("configuration event preceded deletion", err)
 				}
 			case eventing.ReportCreated, eventing.ReportUpdated:
-				if _, err := store.GetReport(ctx, item.data.MachineID, item.data.ReportID, nil); err != nil {
+				if _, _, err := store.GetReport(ctx, item.data.MachineID, item.data.ReportID); err != nil {
 					t.Fatal("report event preceded commit", err)
 				}
 				apiRequest(t, handler, admin.Key, "GET", "/v1/machines/"+item.data.MachineID+"/reports/"+item.data.ReportID+"/content", "", 200)
@@ -177,8 +178,7 @@ func TestRejectedMutationsDoNotEmitEventsBothEngines(t *testing.T) {
 		if err := files.Close(); err != nil {
 			t.Fatal(err)
 		}
-		brokenStorage := New(store, files, recorder, time.Second, 5*time.Second, time.Minute, 2048, 4096,
-			slog.New(slog.NewTextHandler(io.Discard, nil)))
+		brokenStorage := New(service.New(store, files, recorder, 4096, slog.New(slog.NewTextHandler(io.Discard, nil))), 5*time.Second, time.Minute, 2048, 4096, slog.New(slog.NewTextHandler(io.Discard, nil)))
 		apiRequest(t, brokenStorage, key.Key, "POST", "/v1/agent/reports",
 			historyBody("one", uuid.NewString(), uuid.NewString(), rawSuccessReport), 503)
 		recorder.assertTypes(t)
@@ -240,8 +240,7 @@ func TestFailedMutationsDoNotEmitEventsBothEngines(t *testing.T) {
 							t.Fatal(err)
 						}
 						t.Cleanup(func() { files.Close() })
-						handler = New(lost, files, recorder, time.Second, 5*time.Second, time.Minute, 2048, 4096,
-							slog.New(slog.NewTextHandler(io.Discard, nil)))
+						handler = New(service.New(lost, files, recorder, 4096, slog.New(slog.NewTextHandler(io.Discard, nil))), 5*time.Second, time.Minute, 2048, 4096, slog.New(slog.NewTextHandler(io.Discard, nil)))
 					} else if engine == "sqlite" {
 						exec("CREATE TRIGGER mutation_fail AFTER " + mutation + " ON " + table + " BEGIN " + body + " END")
 					} else {

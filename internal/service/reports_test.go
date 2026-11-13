@@ -1,4 +1,4 @@
-package database
+package service
 
 import (
 	"bytes"
@@ -14,6 +14,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Bpoe/dsc-registry/internal/database"
+	. "github.com/Bpoe/dsc-registry/internal/database"
 	"github.com/Bpoe/dsc-registry/internal/report"
 	"github.com/Bpoe/dsc-registry/internal/reportstore"
 	"github.com/Bpoe/dsc-registry/internal/testdb"
@@ -29,7 +31,7 @@ func reportUpload(revision string) report.Upload {
 	}
 }
 
-func reportSetup(t *testing.T, engine, dsn string) (*Store, *reportstore.Store, string, Machine, ConfigurationResult) {
+func reportSetup(t *testing.T, engine, dsn string) (*reportTestStore, *reportstore.Store, string, Machine, ConfigurationResult) {
 	t.Helper()
 	store := testStore(t, engine, dsn)
 	root := t.TempDir()
@@ -49,7 +51,7 @@ func reportSetup(t *testing.T, engine, dsn string) (*Store, *reportstore.Store, 
 	return store, files, root, machine, config
 }
 
-func publish(t *testing.T, store *Store, files *reportstore.Store, id string, upload report.Upload) string {
+func publish(t *testing.T, store *reportTestStore, files *reportstore.Store, id string, upload report.Upload) string {
 	t.Helper()
 	ctx := context.Background()
 	_, err := publishStoredReport(ctx, store, files, id, "one", upload, func() (string, error) { return files.Write(ctx, upload.Result) })
@@ -227,7 +229,7 @@ func TestLegacyReportRetryPreservesStorageErrorsBothEngines(t *testing.T) {
 	})
 }
 
-func publishStoredReport(ctx context.Context, store *Store, files *reportstore.Store, id, name string,
+func publishStoredReport(ctx context.Context, store *reportTestStore, files *reportstore.Store, id, name string,
 	upload report.Upload, write func() (string, error)) (Publication, error) {
 	result, err := store.PublishReport(ctx, id, name, upload, write, reportReader(ctx, files))
 	for _, path := range result.CleanupPaths {
@@ -640,12 +642,13 @@ func TestReportLostCommitAcknowledgementBothEngines(t *testing.T) {
 		first := publish(t, store, files, machine.ID, upload)
 		upload.ID = uuid.NewString()
 		lost := errors.New("injected lost commit acknowledgement")
-		uncertain := &Store{Engine: engine, DB: testdb.ObserveCommits(t, store.DB, dsn, func(err error) error {
+		uncertain := wrapStore(&database.Store{Engine: engine, DB: testdb.ObserveCommits(t, store.DB, dsn, func(err error) error {
 			if err != nil {
 				return err
 			}
 			return lost
-		})}
+		})})
+
 		var next string
 		result, err := uncertain.PublishReport(ctx, machine.ID, "one", upload, func() (string, error) {
 			if uncertain.DB.Stats().InUse != 0 {
@@ -689,13 +692,14 @@ func TestReportPersistenceErrorReturnsUnusedFileBothEngines(t *testing.T) {
 		first := publish(t, store, files, machine.ID, upload)
 		upload.ID = uuid.NewString()
 		injected := errors.New("injected database query failure")
-		failed := &Store{Engine: engine, DB: testdb.ObserveQueries(t, store.DB, dsn,
+		failed := wrapStore(&database.Store{Engine: engine, DB: testdb.ObserveQueries(t, store.DB, dsn,
 			func(_ context.Context, query string, _ []driver.NamedValue) error {
 				if strings.Contains(query, "COALESCE(MAX(sequence)") {
 					return injected
 				}
 				return nil
-			})}
+			})})
+
 		var candidate string
 		result, err := failed.PublishReport(ctx, machine.ID, "one", upload, func() (string, error) {
 			if failed.DB.Stats().InUse != 0 {

@@ -10,7 +10,6 @@ import (
 
 	"github.com/Bpoe/dsc-registry/internal/database"
 	"github.com/Bpoe/dsc-registry/internal/desired"
-	"github.com/Bpoe/dsc-registry/internal/eventing"
 )
 
 func (a *adminAPI) registrationTokens(w http.ResponseWriter, r *http.Request) {
@@ -38,7 +37,7 @@ func (a *adminAPI) registrationTokens(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	token, err := a.store.CreateRegistrationToken(r.Context(), ttl)
+	token, err := a.service.CreateRegistrationToken(r.Context(), ttl)
 	if err != nil {
 		a.failure(w, err)
 		return
@@ -60,7 +59,7 @@ func (a *adminAPI) authorizeRegistration(next http.HandlerFunc) http.HandlerFunc
 			registrationUnauthorized(w)
 			return
 		}
-		if err := a.store.AuthenticateRegistrationToken(ctx, token); err != nil {
+		if err := a.service.AuthenticateRegistrationToken(ctx, token); err != nil {
 			if errors.Is(err, database.ErrInvalidRegistrationToken) {
 				registrationUnauthorized(w)
 			} else {
@@ -73,16 +72,15 @@ func (a *adminAPI) authorizeRegistration(next http.HandlerFunc) http.HandlerFunc
 }
 
 func (a *adminAPI) registerMachine(w http.ResponseWriter, r *http.Request) {
-	name, ok := a.decodeMachineName(w, r)
+	name, ok := a.decodeStringField(w, r, "name")
 	if !ok {
 		return
 	}
-	machine, err := a.store.CreateMachineWithKey(r.Context(), name)
+	machine, err := a.service.CreateMachineWithKey(r.Context(), name)
 	if err != nil {
 		a.machineCreationError(w, err)
 		return
 	}
-	a.events.Notify(eventing.MachineCreated, eventing.Identifiers{MachineID: machine.ID})
 	w.Header().Set("Location", "/v1/machines/"+machine.ID)
 	writeJSON(w, http.StatusCreated, machine)
 }

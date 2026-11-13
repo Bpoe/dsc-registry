@@ -16,6 +16,7 @@ import (
 	"github.com/Bpoe/dsc-registry/internal/database"
 	"github.com/Bpoe/dsc-registry/internal/httpapi"
 	"github.com/Bpoe/dsc-registry/internal/reportstore"
+	"github.com/Bpoe/dsc-registry/internal/service"
 	"github.com/Bpoe/dsc-registry/internal/testdb"
 	"github.com/google/uuid"
 )
@@ -38,7 +39,7 @@ func TestRegistryCLIEndToEndBothEngines(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		server := httptest.NewServer(httpapi.New(db, reports, nil, time.Second, 5*time.Second, time.Minute, 1<<20, 16<<20, slog.New(slog.NewTextHandler(io.Discard, nil))))
+		server := httptest.NewServer(httpapi.New(service.New(db, reports, nil, 16<<20, slog.New(slog.NewTextHandler(io.Discard, nil))), 5*time.Second, time.Minute, 1<<20, 16<<20, slog.New(slog.NewTextHandler(io.Discard, nil))))
 		defer server.Close()
 		t.Setenv("DSCREG_SERVER", server.URL)
 		t.Setenv("DSCREG_API_KEY", admin.Key)

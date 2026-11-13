@@ -6,19 +6,11 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/Bpoe/dsc-registry/internal/database"
-	"github.com/Bpoe/dsc-registry/internal/eventing"
-	"github.com/Bpoe/dsc-registry/internal/reportstore"
+	"github.com/Bpoe/dsc-registry/internal/service"
 )
 
-// The legacy probe timeout argument is retained for caller compatibility.
-// Health endpoints perform no dependency I/O and need no timeout.
-func New(db *database.Store, reports *reportstore.Store, events eventing.Dispatcher, _, requestTimeout, pollMaxAge time.Duration, maxRequestBytes, maxReportBytes int64, logger *slog.Logger) http.Handler {
-	if events == nil {
-		events = eventing.Noop{}
-	}
-
-	admin := &adminAPI{store: db, reports: reports, events: events, maxRequestBytes: maxRequestBytes, maxReportBytes: maxReportBytes,
+func New(app *service.Service, requestTimeout, pollMaxAge time.Duration, maxRequestBytes, maxReportBytes int64, logger *slog.Logger) http.Handler {
+	admin := &adminAPI{service: app, maxRequestBytes: maxRequestBytes, maxReportBytes: maxReportBytes,
 		timeout: requestTimeout, pollMaxAge: pollMaxAge, logger: logger}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health/live", func(w http.ResponseWriter, r *http.Request) {

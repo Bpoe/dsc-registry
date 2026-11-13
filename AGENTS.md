@@ -18,7 +18,10 @@ Read `docs/design.md`, `docs/api.md`, and `docs/implementation-plan.md` before e
 ## Coding guidelines
 
 - Standard library first: `context`, `net/http`, `encoding/json`, `database/sql`, `log/slog`, `crypto/rand`, `crypto/subtle`, `os`, `path/filepath`, `time`.
-- Concrete dependency wiring in `cmd/dscregd` and small interfaces only at a demonstrated testing/implementation boundary. No Clean/Onion, layered architecture, generic CRUD repository, service locator, dependency injection container, ORM, generic event bus or Kubernetes operator.
+- Concrete dependency wiring in `cmd/dscregd` and small interfaces only at a demonstrated testing/implementation boundary. No Clean/Onion scaffolding, generic CRUD repository, service locator, dependency injection container, ORM, generic event bus or Kubernetes operator.
+- Dependency direction: `httpapi` → `service` → `database`, `reportstore`, `eventing`. Construct concrete dependencies in `cmd/dscregd`. HTTP owns binding, authentication/authorization, response/error envelopes, ETags and caching; services own business validation, status derivation, mutation notifications and cross-dependency workflows. Do not put filesystem callbacks, cleanup or event publishing in HTTP or SQL code.
+- Keep SQL transactions and machine locks inside `database`. Return committed mutation outcomes and retired references to services. Report services perform all file I/O outside transactions, preserve upload-ID retries and original bytes, and retain both files on ambiguous commit errors. Delete retired files and notify only after successful commits; cleanup failures warn without masking results.
+- Use a cohesive service boundary where orchestration exists; do not create one package/interface per entity, generic repositories, or speculative extension points. Reuse persistence result types when they already express the operation; never expose SQL driver error codes to handlers.
 - Use context propagation and timeouts. Validate input and bound body sizes. Return stable HTTP status/error shapes.
 - No raw credentials, parameters, templates, report bodies or DSC error messages in routine logs. Full reports are sensitive and admin-only.
 - For SQL mutations, use atomic transactions and parameterized queries. Cross-engine behavior must be tested on SQLite and PostgreSQL.

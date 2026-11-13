@@ -69,7 +69,7 @@ func (a *adminAPI) authorize(role string, next http.HandlerFunc) http.HandlerFun
 			a.unauthorized(w)
 			return
 		}
-		principal, err := a.store.Authenticate(ctx, key)
+		principal, err := a.service.Authenticate(ctx, key)
 		if errors.Is(err, apikey.ErrInvalid) {
 			a.unauthorized(w)
 			return

@@ -17,6 +17,7 @@ import (
 	"github.com/Bpoe/dsc-registry/internal/apikey"
 	"github.com/Bpoe/dsc-registry/internal/database"
 	"github.com/Bpoe/dsc-registry/internal/reportstore"
+	"github.com/Bpoe/dsc-registry/internal/service"
 	"github.com/Bpoe/dsc-registry/internal/testdb"
 	"github.com/google/uuid"
 )
@@ -53,8 +54,7 @@ func TestReportOperationsHTTPBothEngines(t *testing.T) {
 					t.Fatal(err)
 				}
 				defer files.Close()
-				handler := New(db, files, nil, time.Second, 5*time.Second, 37*time.Second, 2048, 4096,
-					slog.New(slog.NewJSONHandler(logs, nil)))
+				handler := New(service.New(db, files, nil, 4096, slog.New(slog.NewJSONHandler(logs, nil))), 5*time.Second, 37*time.Second, 2048, 4096, slog.New(slog.NewJSONHandler(logs, nil)))
 				base := "/v1/machines/" + machine.ID
 				configPath := base + "/configurations/docker"
 				config := decodeResponse[database.ConfigurationResult](t,
@@ -110,9 +110,9 @@ func TestReportOperationsHTTPBothEngines(t *testing.T) {
 						}
 						apiRequest(t, handler, key.Key, "GET", path, "", 403)
 					}
-					summary := decodeResponse[database.ConfigurationStatus](t,
+					summary := decodeResponse[service.ConfigurationStatus](t,
 						apiRequest(t, handler, admin.Key, "GET", configPath+"/status", "", 200))
-					status := decodeResponse[database.MachineStatus](t,
+					status := decodeResponse[service.MachineStatus](t,
 						apiRequest(t, handler, admin.Key, "GET", base+"/status", "", 200))
 					if !summary.HasReport || summary.ReportID != current.ID || !reflect.DeepEqual(summary.Summary, current.Summary) ||
 						status.Outcome != outcome || status.HasStaleReports || len(status.Configurations) != 1 ||
@@ -139,7 +139,7 @@ func TestReportOperationsHTTPBothEngines(t *testing.T) {
 					previous = current
 				}
 				apiRequest(t, handler, admin.Key, "PUT", configPath, `{"template":{"changed":true}}`, 200)
-				stale := decodeResponse[database.MachineStatus](t,
+				stale := decodeResponse[service.MachineStatus](t,
 					apiRequest(t, handler, admin.Key, "GET", base+"/status", "", 200))
 				if stale.Outcome != "unknown" || !stale.HasStaleReports || stale.LatestReport != nil ||
 					len(stale.Configurations) != 1 || stale.Configurations[0].RevisionState != "stale" ||
@@ -157,8 +157,8 @@ func TestLatestReportsAndMachineStatusBothEngines(t *testing.T) {
 	testdb.Engines(t, func(t *testing.T, engine, dsn string) {
 		handler, db, admin, machine, key := configurationAPI(t, engine, dsn, io.Discard)
 		base := "/v1/machines/" + machine.ID
-		status := func() database.MachineStatus {
-			return decodeResponse[database.MachineStatus](t, apiRequest(t, handler, admin.Key, "GET", base+"/status", "", 200))
+		status := func() service.MachineStatus {
+			return decodeResponse[service.MachineStatus](t, apiRequest(t, handler, admin.Key, "GET", base+"/status", "", 200))
 		}
 		empty := status()
 		if empty.HasReport || empty.LatestReport != nil || empty.LatestReceivedReport != nil || empty.Outcome != "never_reported" ||
@@ -319,9 +319,9 @@ func TestLatestOnlyReportsRequireMatchingDesiredRevisionBothEngines(t *testing.T
 		handler, _, admin, machine, key := configurationAPI(t, engine, dsn, io.Discard)
 		base := "/v1/machines/" + machine.ID
 		configPath := base + "/configurations/docker"
-		status := func() database.MachineStatus {
+		status := func() service.MachineStatus {
 			t.Helper()
-			return decodeResponse[database.MachineStatus](t, apiRequest(t, handler, admin.Key, "GET", base+"/status", "", 200))
+			return decodeResponse[service.MachineStatus](t, apiRequest(t, handler, admin.Key, "GET", base+"/status", "", 200))
 		}
 		upload := func(revision, result string) database.ReportMetadata {
 			t.Helper()
@@ -354,7 +354,7 @@ func TestLatestOnlyReportsRequireMatchingDesiredRevisionBothEngines(t *testing.T
 				item.LatestReceivedReport == nil || item.LatestReceivedReport.ID != received.ID {
 				t.Fatal("historical receipt replaced current per-configuration result", item)
 			}
-			summary := decodeResponse[database.ConfigurationStatus](t, apiRequest(t, handler, admin.Key, "GET", configPath+"/status", "", 200))
+			summary := decodeResponse[service.ConfigurationStatus](t, apiRequest(t, handler, admin.Key, "GET", configPath+"/status", "", 200))
 			if summary.ReportID != current.ID || summary.ConfigurationRevision != current.ConfigurationRevision ||
 				summary.Outcome != current.Outcome || summary.ReceivedAt != current.ReceivedAt {
 				t.Fatal("named status selected a historical revision", summary)
@@ -440,7 +440,7 @@ func TestLatestOnlyReportsRequireMatchingDesiredRevisionBothEngines(t *testing.T
 			t.Fatal(err)
 		}
 		defer reopened.DB.Close()
-		reloaded, err := reopened.GetMachineStatus(context.Background(), machine.ID)
+		reloaded, err := service.New(reopened, nil, nil, 4096, slog.Default()).GetMachineStatus(context.Background(), machine.ID)
 		if err != nil || !reflect.DeepEqual(got, reloaded) {
 			t.Fatal("current/history selection did not survive a new database connection", reloaded, err)
 		}
@@ -457,7 +457,7 @@ func TestReportHistoryFailuresBothEngines(t *testing.T) {
 		}
 		defer files.Close()
 		body := historyBody("docker", uuid.NewString(), uuid.NewString(), rawSuccessReport)
-		handler := New(db, files, nil, time.Second, 5*time.Second, 37*time.Second, 128, int64(len(body)), slog.New(slog.NewTextHandler(io.Discard, nil)))
+		handler := New(service.New(db, files, nil, int64(len(body)), slog.New(slog.NewTextHandler(io.Discard, nil))), 5*time.Second, 37*time.Second, 128, int64(len(body)), slog.New(slog.NewTextHandler(io.Discard, nil)))
 		base := "/v1/machines/" + machine.ID
 		first := decodeResponse[database.ReportMetadata](t, apiRequest(t, handler, key.Key, "POST", "/v1/agent/reports", body, 201))
 		apiRequest(t, handler, key.Key, "POST", "/v1/agent/reports", body+" ", 413)
@@ -549,8 +549,8 @@ func TestConcurrentHistoryUploadsBothEngines(t *testing.T) {
 		}
 		defer second.DB.Close()
 		handlers := []http.Handler{
-			New(db, files, nil, time.Second, 30*time.Second, time.Second, 128, 4096, slog.New(slog.NewTextHandler(io.Discard, nil))),
-			New(second, files, nil, time.Second, 30*time.Second, time.Second, 128, 4096, slog.New(slog.NewTextHandler(io.Discard, nil))),
+			New(service.New(db, files, nil, 4096, slog.New(slog.NewTextHandler(io.Discard, nil))), 30*time.Second, time.Second, 128, 4096, slog.New(slog.NewTextHandler(io.Discard, nil))),
+			New(service.New(second, files, nil, 4096, slog.New(slog.NewTextHandler(io.Discard, nil))), 30*time.Second, time.Second, 128, 4096, slog.New(slog.NewTextHandler(io.Discard, nil))),
 		}
 		revision, uploadID := uuid.NewString(), uuid.NewString()
 		for _, duplicate := range []bool{true, false} {
@@ -607,7 +607,7 @@ func TestConcurrentHistoryUploadsBothEngines(t *testing.T) {
 				t.Fatal("partial concurrent report")
 			}
 		}
-		got := decodeResponse[database.MachineStatus](t, apiRequest(t, handlers[0], admin.Key, "GET", base+"/status", "", 200))
+		got := decodeResponse[service.MachineStatus](t, apiRequest(t, handlers[0], admin.Key, "GET", base+"/status", "", 200))
 		if got.LatestReport != nil || got.LatestReceivedReport.ID != page.Reports[0].ID {
 			t.Fatal("status differs from persisted history")
 		}

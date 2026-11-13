@@ -16,33 +16,29 @@ import (
 	"github.com/Bpoe/dsc-registry/internal/apikey"
 	"github.com/Bpoe/dsc-registry/internal/config"
 	"github.com/Bpoe/dsc-registry/internal/database"
-	"github.com/Bpoe/dsc-registry/internal/eventing"
-	"github.com/Bpoe/dsc-registry/internal/reportstore"
+	"github.com/Bpoe/dsc-registry/internal/service"
 	"github.com/google/uuid"
 )
 
 type adminAPI struct {
-	store           *database.Store
-	events          eventing.Dispatcher
+	service         *service.Service
 	maxRequestBytes int64
 	maxReportBytes  int64
-	reports         *reportstore.Store
 	timeout         time.Duration
 	pollMaxAge      time.Duration
 	logger          *slog.Logger
 }
 
 func (a *adminAPI) createMachine(w http.ResponseWriter, r *http.Request) {
-	name, ok := a.decodeMachineName(w, r)
+	name, ok := a.decodeStringField(w, r, "name")
 	if !ok {
 		return
 	}
-	machine, err := a.store.CreateMachine(r.Context(), name)
+	machine, err := a.service.CreateMachine(r.Context(), name)
 	if err != nil {
 		a.machineCreationError(w, err)
 		return
 	}
-	a.events.Notify(eventing.MachineCreated, eventing.Identifiers{MachineID: machine.ID})
 	w.Header().Set("Location", "/v1/machines/"+machine.ID)
 	writeJSON(w, http.StatusCreated, machine)
 }
@@ -62,7 +58,7 @@ func (a *adminAPI) listMachines(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, "invalid_name", "Name must be 1-256 UTF-8 bytes without surrounding whitespace or control characters")
 			return
 		}
-		machine, err := a.store.GetMachineByName(r.Context(), names[0])
+		machine, err := a.service.GetMachineByName(r.Context(), names[0])
 		if err != nil {
 			a.resourceError(w, err, apikey.Machine)
 			return
@@ -74,7 +70,7 @@ func (a *adminAPI) listMachines(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	machines, err := a.store.ListMachines(r.Context(), cursor, limit+1)
+	machines, err := a.service.ListMachines(r.Context(), cursor, limit+1)
 	if err != nil {
 		a.failure(w, err)
 		return
@@ -91,7 +87,7 @@ func (a *adminAPI) listMachines(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *adminAPI) getMachine(w http.ResponseWriter, r *http.Request) {
-	machine, err := a.store.GetMachine(r.Context(), r.PathValue("id"))
+	machine, err := a.service.GetMachine(r.Context(), r.PathValue("id"))
 	if err != nil {
 		a.resourceError(w, err, apikey.Machine)
 		return
@@ -100,13 +96,11 @@ func (a *adminAPI) getMachine(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *adminAPI) deleteMachine(w http.ResponseWriter, r *http.Request) {
-	paths, err := a.store.DeleteMachine(r.Context(), r.PathValue("id"))
+	err := a.service.DeleteMachine(r.Context(), r.PathValue("id"))
 	if err != nil {
 		a.resourceError(w, err, apikey.Machine)
 		return
 	}
-	a.events.Notify(eventing.MachineDeleted, eventing.Identifiers{MachineID: r.PathValue("id")})
-	a.removeReportFiles(paths)
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -116,11 +110,7 @@ func (a *adminAPI) issueKey(w http.ResponseWriter, r *http.Request, role string)
 	if !ok {
 		return
 	}
-	if description != "" && !config.ValidDisplayName(description, 1024) {
-		writeError(w, http.StatusBadRequest, "invalid_description", "Description must be at most 1024 UTF-8 bytes without surrounding whitespace or control characters")
-		return
-	}
-	key, err := a.store.IssueKey(r.Context(), role, r.PathValue("id"), description)
+	key, err := a.service.IssueKey(r.Context(), role, r.PathValue("id"), description)
 	if err != nil {
 		a.resourceError(w, err, role)
 		return
@@ -133,7 +123,7 @@ func (a *adminAPI) listKeys(w http.ResponseWriter, r *http.Request, role string)
 	if !ok {
 		return
 	}
-	keys, err := a.store.ListKeys(r.Context(), role, r.PathValue("id"), cursor, limit+1)
+	keys, err := a.service.ListKeys(r.Context(), role, r.PathValue("id"), cursor, limit+1)
 	if err != nil {
 		a.resourceError(w, err, role)
 		return
@@ -150,7 +140,7 @@ func (a *adminAPI) listKeys(w http.ResponseWriter, r *http.Request, role string)
 }
 
 func (a *adminAPI) revokeKey(w http.ResponseWriter, r *http.Request, role string) {
-	if err := a.store.RevokeKey(r.Context(), role, r.PathValue("id"), r.PathValue("keyId")); err != nil {
+	if err := a.service.RevokeKey(r.Context(), role, r.PathValue("id"), r.PathValue("keyId")); err != nil {
 		a.resourceError(w, err, role)
 		return
 	}
@@ -199,19 +189,11 @@ func (a *adminAPI) decodeStringField(w http.ResponseWriter, r *http.Request, fie
 	return result, true
 }
 
-func (a *adminAPI) decodeMachineName(w http.ResponseWriter, r *http.Request) (string, bool) {
-	name, ok := a.decodeStringField(w, r, "name")
-	if !ok {
-		return "", false
-	}
-	if !config.ValidDisplayName(name, 256) {
-		writeError(w, http.StatusBadRequest, "invalid_name", "Name must be 1-256 UTF-8 bytes without surrounding whitespace or control characters")
-		return "", false
-	}
-	return name, true
-}
-
 func (a *adminAPI) machineCreationError(w http.ResponseWriter, err error) {
+	if errors.Is(err, service.ErrInvalidMachineName) {
+		writeError(w, http.StatusBadRequest, "invalid_name", "Name must be 1-256 UTF-8 bytes without surrounding whitespace or control characters")
+		return
+	}
 	if errors.Is(err, database.ErrMachineNameConflict) {
 		writeError(w, http.StatusConflict, "machine_name_conflict", "A machine with this name already exists")
 		return
@@ -282,6 +264,10 @@ func (a *adminAPI) unauthorized(w http.ResponseWriter) {
 }
 
 func (a *adminAPI) resourceError(w http.ResponseWriter, err error, role string) {
+	if errors.Is(err, service.ErrInvalidDescription) {
+		writeError(w, http.StatusBadRequest, "invalid_description", "Description must be at most 1024 UTF-8 bytes without surrounding whitespace or control characters")
+		return
+	}
 	if errors.Is(err, database.ErrNotFound) {
 		// The same response covers missing owners and keys not owned by the URL owner.
 		writeError(w, http.StatusNotFound, role+"_not_found", "Owner or key not found")
