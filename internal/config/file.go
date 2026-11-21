@@ -18,6 +18,7 @@ func mergeFile(flags *flag.FlagSet, path string, s *Settings) error {
 	overrides := make(map[string]string)
 	flags.Visit(func(f *flag.Flag) { overrides[f.Name] = f.Value.String() })
 	if _, specified := overrides["config"]; !specified {
+		s.databasePoolDefaults(nil)
 		return nil
 	}
 	data, err := os.ReadFile(path)
@@ -47,7 +48,11 @@ func mergeFile(flags *flag.FlagSet, path string, s *Settings) error {
 		"idleTimeout": &s.IdleTimeout, "startupTimeout": &s.StartupTimeout,
 		"shutdownTimeout": &s.ShutdownTimeout, "probeTimeout": &s.ProbeTimeout,
 		"sqliteBusyTimeout": &s.SQLiteBusyTimeout,
-		"database":          map[string]any{"engine": &s.DatabaseEngine, "dsn": &s.DatabaseDSN},
+		"database": map[string]any{
+			"engine": &s.DatabaseEngine, "dsn": &s.DatabaseDSN,
+			"maxOpenConnections": &s.DatabaseMaxOpenConnections,
+			"maxIdleConnections": &s.DatabaseMaxIdleConnections,
+		},
 	}
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.UseNumber()
@@ -69,6 +74,7 @@ func mergeFile(flags *flag.FlagSet, path string, s *Settings) error {
 			return errors.New("cannot apply command-line override")
 		}
 	}
+	s.databasePoolDefaults(present)
 	if err := s.validateDatabase(); err != nil {
 		return err
 	}

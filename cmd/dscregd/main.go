@@ -102,7 +102,7 @@ func runWithReady(ctx context.Context, settings config.Settings, logger *slog.Lo
 		return fmt.Errorf("validate report storage: %w", err)
 	}
 	defer func() { err = errors.Join(err, reports.Close()) }()
-	db, err := database.Connect(startup, settings.DatabaseEngine, settings.DatabaseDSN, settings.SQLiteBusyTimeout)
+	db, err := connectDatabase(startup, settings)
 	if err != nil {
 		serverLogger.Error("startup dependency failed", "dependency", "database")
 		return err
@@ -168,7 +168,7 @@ func bootstrap(ctx context.Context, args []string, output io.Writer) error {
 	}
 	ctx, cancel := context.WithTimeout(ctx, settings.StartupTimeout)
 	defer cancel()
-	db, err := database.Connect(ctx, settings.DatabaseEngine, settings.DatabaseDSN, settings.SQLiteBusyTimeout)
+	db, err := connectDatabase(ctx, settings)
 	if err != nil {
 		return errors.New("bootstrap database initialization failed")
 	}
@@ -233,4 +233,14 @@ func (w *serverErrorLog) Write(p []byte) (int, error) {
 	// net/http diagnostics can contain untrusted request data or panic values.
 	w.logger.Error("HTTP server transport or handler error")
 	return len(p), nil
+}
+
+func connectDatabase(ctx context.Context, settings config.Settings) (*database.Store, error) {
+	db, err := database.Connect(ctx, settings.DatabaseEngine, settings.DatabaseDSN, settings.SQLiteBusyTimeout)
+	if err != nil {
+		return nil, err
+	}
+	db.DB.SetMaxOpenConns(settings.DatabaseMaxOpenConnections)
+	db.DB.SetMaxIdleConns(settings.DatabaseMaxIdleConnections)
+	return db, nil
 }

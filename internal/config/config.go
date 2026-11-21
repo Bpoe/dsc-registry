@@ -15,23 +15,25 @@ import (
 )
 
 type Settings struct {
-	ListenAddress     string
-	TLS               *TLSSettings
-	Eventing          *EventingSettings
-	DatabaseEngine    string
-	DatabaseDSN       string
-	ReportRoot        string
-	PollMaxAge        time.Duration
-	MaxRequestBytes   int64
-	MaxReportBytes    int64
-	ReadHeaderTimeout time.Duration
-	ReadTimeout       time.Duration
-	WriteTimeout      time.Duration
-	IdleTimeout       time.Duration
-	StartupTimeout    time.Duration
-	ShutdownTimeout   time.Duration
-	ProbeTimeout      time.Duration
-	SQLiteBusyTimeout time.Duration
+	ListenAddress              string
+	TLS                        *TLSSettings
+	Eventing                   *EventingSettings
+	DatabaseEngine             string
+	DatabaseDSN                string
+	DatabaseMaxOpenConnections int
+	DatabaseMaxIdleConnections int
+	ReportRoot                 string
+	PollMaxAge                 time.Duration
+	MaxRequestBytes            int64
+	MaxReportBytes             int64
+	ReadHeaderTimeout          time.Duration
+	ReadTimeout                time.Duration
+	WriteTimeout               time.Duration
+	IdleTimeout                time.Duration
+	StartupTimeout             time.Duration
+	ShutdownTimeout            time.Duration
+	ProbeTimeout               time.Duration
+	SQLiteBusyTimeout          time.Duration
 }
 
 type TLSSettings struct {
@@ -43,6 +45,7 @@ func Defaults() Settings {
 	return Settings{
 		ListenAddress: "127.0.0.1:8080", DatabaseEngine: "sqlite",
 		DatabaseDSN: "registry.db", ReportRoot: "reports",
+		DatabaseMaxOpenConnections: 1, DatabaseMaxIdleConnections: 1,
 		PollMaxAge: 5 * time.Minute, MaxRequestBytes: 1 << 20, MaxReportBytes: 16 << 20,
 		ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 30 * time.Second,
 		WriteTimeout: 30 * time.Second, IdleTimeout: time.Minute,
@@ -189,9 +192,32 @@ func (s Settings) Validate() error {
 	return nil
 }
 
+// Apply defaults after the final engine is selected, preserving explicit zeros.
+func (s *Settings) databasePoolDefaults(present map[string]bool) {
+	maxOpen, maxIdle := 1, 1
+	if s.DatabaseEngine == "postgres" {
+		maxOpen, maxIdle = 10, 5
+	}
+	if !present["database.maxOpenConnections"] {
+		s.DatabaseMaxOpenConnections = maxOpen
+	}
+	if !present["database.maxIdleConnections"] {
+		s.DatabaseMaxIdleConnections = maxIdle
+	}
+}
+
 func (s Settings) validateDatabase() error {
 	if s.DatabaseEngine != "sqlite" && s.DatabaseEngine != "postgres" {
 		return errors.New("database-engine must be sqlite or postgres")
+	}
+	if s.DatabaseMaxOpenConnections <= 0 {
+		return errors.New("database.maxOpenConnections must be positive")
+	}
+	if s.DatabaseMaxIdleConnections < 0 {
+		return errors.New("database.maxIdleConnections must be nonnegative")
+	}
+	if s.DatabaseMaxIdleConnections > s.DatabaseMaxOpenConnections {
+		return errors.New("database.maxIdleConnections must not exceed database.maxOpenConnections")
 	}
 	if strings.TrimSpace(s.DatabaseDSN) == "" {
 		return errors.New("database-dsn must not be empty")
