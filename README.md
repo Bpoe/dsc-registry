@@ -174,6 +174,32 @@ The same `-config` flag works on Windows, for example
 `dscregd -config C:\ProgramData\dscregd\config.json`. For SQLite, use
 `"database": {"engine": "sqlite", "dsn": "data/registry.db"}`.
 
+Optional `database.maxOpenConnections` and `database.maxIdleConnections` control
+connection pool sizing through the JSON file only (no CLI flags). Omitted values
+use the final engine's defaults: SQLite has 1 open and 1 idle connection;
+PostgreSQL has 10 open and 5 idle connections. `maxOpenConnections` must be a
+positive integer; `maxIdleConnections` must be a nonnegative integer no greater
+than `maxOpenConnections`. Each omitted property keeps its engine default, so
+when lowering the open limit below the default idle limit, also lower the idle
+limit. Zero idle connections disables idle connection retention.
+
+For example, benchmark SQLite with 1, 2, 4, or 8 connections by changing both
+values and restarting the server:
+
+```json
+{
+  "database": {
+    "engine": "sqlite",
+    "dsn": "/data/registry.db",
+    "maxOpenConnections": 4,
+    "maxIdleConnections": 4
+  }
+}
+```
+
+Bootstrap reads and validates the same pool settings. WAL, busy timeout,
+transaction locking, durability settings, and existing pool metrics are unchanged.
+
 Precedence is **built-in defaults, then file properties, then explicitly supplied
 CLI flags**, including flags explicitly set to their default value.
 Omitted properties keep existing defaults; explicit empty strings and zero
@@ -335,9 +361,9 @@ applies to that backend connection. Use network controls appropriate to the
 deployment to protect unencrypted traffic. Forwarded headers do not grant
 identity or bypass authentication.
 
-SQLite uses WAL, foreign keys, full synchronous writes, and a single pooled
-connection. Connection-specific pragmas are reapplied on reconnect. The
-transactional, embedded migration in `migrations\sqlite\001_initial.sql` creates
+SQLite uses WAL, foreign keys, full synchronous writes, and by default one open
+and one idle pooled connection. Connection-specific pragmas are reapplied on
+reconnect. The transactional, embedded migration in `migrations\sqlite\001_initial.sql` creates
 machine, configuration, latest-status, administrator, and digest-only API-key
 records. `schema_migrations` tracks applied versions; restart does not recreate
 or erase records. Configuration/status foreign keys and API-key owner triggers
@@ -365,8 +391,8 @@ and the original migration. This permits opaque JSON numbers beyond PostgreSQL's
 numeric range and escaped NUL strings without changing the text storage.
 Migration `003_machine_names.sql` adds the same name-key uniqueness and lookup
 semantics as SQLite, bringing PostgreSQL to schema version 3.
-The pool allows ten connections. PostgreSQL uses text UUID/timestamp
-representations to match SQLite's existing schema, with `BIGINT` revisions and
+The pool defaults to ten open and five idle connections. PostgreSQL uses text
+UUID/timestamp representations to match SQLite's existing schema, with `BIGINT` revisions and
 `BYTEA` digests. Both schemas enforce owner existence, immutable identities,
 object-shaped configuration JSON, and deletion cascades. PostgreSQL owner checks
 lock against concurrent deletion. Report publication and full-report reads use

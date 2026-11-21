@@ -46,9 +46,10 @@ func TestCompleteFile(t *testing.T) {
 	}
 	want := Settings{
 		ListenAddress: "[::]:8443", DatabaseEngine: "postgres",
-		DatabaseDSN: "postgres://registry@localhost/registry?sslmode=verify-full",
-		ReportRoot:  filepath.Join(filepath.Dir(path), "private-reports"),
-		PollMaxAge:  time.Minute, MaxRequestBytes: 2048, MaxReportBytes: 4096,
+		DatabaseDSN:                "postgres://registry@localhost/registry?sslmode=verify-full",
+		DatabaseMaxOpenConnections: 10, DatabaseMaxIdleConnections: 5,
+		ReportRoot: filepath.Join(filepath.Dir(path), "private-reports"),
+		PollMaxAge: time.Minute, MaxRequestBytes: 2048, MaxReportBytes: 4096,
 		ReadHeaderTimeout: time.Second, ReadTimeout: 2 * time.Second,
 		WriteTimeout: 3 * time.Second, IdleTimeout: 4 * time.Second,
 		StartupTimeout: 5 * time.Second, ShutdownTimeout: 6 * time.Second,
