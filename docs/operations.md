@@ -376,10 +376,11 @@ shell history, source control, telemetry or health response bodies.
 Migrations are embedded explicit SQL, applied in a transaction at **every
 startup** when needed; there is no separate migrate command. PostgreSQL
 replicas serialize initialization with an advisory transaction lock. Current
-versions are SQLite **4** and PostgreSQL **5**. The latest migration adds only
-hashed registration tokens and expirations. A failed migration rolls back;
-an unsupported/future/non-contiguous ledger fails startup rather than
-resetting data. Never edit the migration ledger to bypass this. Before an
+versions are SQLite **5** and PostgreSQL **6**. These migrations add the report
+file cleanup outbox, preserve the latest receipt per machine and configuration,
+and enqueue files from older, hidden reports for cleanup. A failed migration
+rolls back. An unsupported, future or non-contiguous ledger prevents startup.
+Never edit the migration ledger to bypass this. Before an
 upgrade take a paired backup; migrate one stopped/drained deployment first.
 There is no promise that an older binary can read a newer schema: rollback
 means restoring a matching pre-upgrade database/report pair and binary.
