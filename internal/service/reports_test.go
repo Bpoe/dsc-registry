@@ -94,26 +94,26 @@ func TestReportMutationOutcomesBothEngines(t *testing.T) {
 			return result
 		}
 		first := save()
-		if first.Outcome != MutationCreated || writes != 1 || len(first.CleanupPaths) != 0 {
+		if first.Outcome != MutationCreated || writes != 1 {
 			t.Fatal("first report did not report creation", first, writes)
 		}
 		retry := save()
-		if retry.Outcome != MutationUnchanged || !reflect.DeepEqual(retry.Report, first.Report) || writes != 1 {
+		if retry.Outcome != MutationUnchanged || !reflect.DeepEqual(retry.Report, first.Report) || writes != 2 {
 			t.Fatal("retained retry changed the receipt", retry, writes)
 		}
 		exec(t, store.DB, "UPDATE reports SET result_sha256 = NULL WHERE machine_id = $1", machine.ID)
 		backfill := save()
-		if backfill.Outcome != MutationUnchanged || !reflect.DeepEqual(backfill.Report, first.Report) || writes != 1 {
+		if backfill.Outcome != MutationUnchanged || !reflect.DeepEqual(backfill.Report, first.Report) || writes != 3 {
 			t.Fatal("digest backfill changed the receipt", backfill, writes)
 		}
 		upload.ID = uuid.NewString()
 		replacement := save()
 		if replacement.Outcome != MutationUpdated || replacement.Report.ID == first.Report.ID ||
-			writes != 2 || len(replacement.CleanupPaths) != 1 {
+			writes != 4 {
 			t.Fatal("replacement did not report an update", replacement, writes)
 		}
 		upload.ID, upload.ConfigurationRevision = uuid.NewString(), uuid.NewString()
-		if historical := save(); historical.Outcome != MutationUpdated || historical.Report.ID == replacement.Report.ID || writes != 3 {
+		if historical := save(); historical.Outcome != MutationUpdated || historical.Report.ID == replacement.Report.ID || writes != 5 {
 			t.Fatal("historical replacement did not report an update", historical, writes)
 		}
 	})
@@ -170,13 +170,11 @@ func TestLegacyReportRetryDuringReplacementBothEngines(t *testing.T) {
 				}
 				return content, err
 			})
-		if err != nil || result.Outcome != MutationUpdated || result.Report.ID == replacementID || len(result.CleanupPaths) != 1 {
+		if err != nil || result.Outcome != MutationUpdated || result.Report.ID == replacementID {
 			t.Fatal("legacy retry did not restart publication after replacement", result, err)
 		}
-		for _, path := range result.CleanupPaths {
-			if err := files.Remove(path); err != nil {
-				t.Fatal(err)
-			}
+		if err := drainReportFiles(ctx, store.Store, files); err != nil {
+			t.Fatal(err)
 		}
 		status, err := store.GetConfigurationStatus(ctx, machine.ID, "one")
 		if err != nil || status.ReportID != result.Report.ID {
@@ -211,14 +209,13 @@ func TestLegacyReportRetryPreservesStorageErrorsBothEngines(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				result, err := store.PublishReport(ctx, machine.ID, "one", upload, func() (string, error) {
-					t.Error("storage failure unexpectedly restarted publication")
-					return "", errors.New("unexpected write")
+				_, err = store.PublishReport(ctx, machine.ID, "one", upload, func() (string, error) {
+					return "", errors.New("candidate storage unavailable")
 				}, func(string) ([]byte, error) {
 					return nil, &os.PathError{Op: "open", Path: path, Err: readErr}
 				})
-				if !errors.Is(err, readErr) || len(result.CleanupPaths) != 0 {
-					t.Fatal("legacy retry masked a genuine storage error", result, err)
+				if !errors.Is(err, readErr) {
+					t.Fatal("legacy retry masked a genuine storage error", err)
 				}
 				after, err := store.GetConfigurationStatus(ctx, machine.ID, "one")
 				if err != nil || !reflect.DeepEqual(before, after) {
@@ -232,10 +229,17 @@ func TestLegacyReportRetryPreservesStorageErrorsBothEngines(t *testing.T) {
 func publishStoredReport(ctx context.Context, store *reportTestStore, files *reportstore.Store, id, name string,
 	upload report.Upload, write func() (string, error)) (Publication, error) {
 	result, err := store.PublishReport(ctx, id, name, upload, write, reportReader(ctx, files))
-	for _, path := range result.CleanupPaths {
-		err = errors.Join(err, files.Remove(path))
+	return result, errors.Join(err, drainReportFiles(ctx, store.Store, files))
+}
+
+func drainReportFiles(ctx context.Context, db *database.Store, files *reportstore.Store) error {
+	app := testService(db, files)
+	for {
+		n, err := app.processReportCleanup(ctx)
+		if err != nil || n < cleanupBatchSize {
+			return err
+		}
 	}
-	return result, err
 }
 
 func TestReportsBothEngines(t *testing.T) {
@@ -254,8 +258,7 @@ func TestReportsBothEngines(t *testing.T) {
 		// The same upload survives a new API instance/connection pool.
 		second := testStore(t, engine, dsn)
 		retried, err := second.PublishReport(ctx, machine.ID, "one", upload, func() (string, error) {
-			t.Error("retry wrote a second file")
-			return "", errors.New("must not write")
+			return "", errors.New("storage unavailable during retry")
 		}, reportReader(ctx, files))
 		if err != nil || retried.Outcome != MutationUnchanged || retried.Report.ID != before.ReportID {
 			t.Fatal("retry failed", err)
@@ -288,8 +291,7 @@ func TestReportsBothEngines(t *testing.T) {
 			t.Fatal(err)
 		}
 		_, err = store.PublishReport(ctx, machine.ID, "one", upload, func() (string, error) {
-			t.Error("historical retry wrote a file")
-			return "", nil
+			return "", errors.New("storage unavailable during retry")
 		}, reportReader(ctx, files))
 		if err != nil {
 			t.Fatal("historical retry rejected", err)
@@ -301,14 +303,11 @@ func TestReportsBothEngines(t *testing.T) {
 		upload.ConfigurationRevision = changed.Revision
 		upload.ID = uuid.NewString()
 		publish(t, store, files, machine.ID, upload)
-		paths, err := store.DeleteConfiguration(ctx, machine.ID, "one")
-		if err != nil {
+		if err := store.DeleteConfiguration(ctx, machine.ID, "one"); err != nil {
 			t.Fatal(err)
 		}
-		for _, path := range paths {
-			if err := files.Remove(path); err != nil {
-				t.Fatal(err)
-			}
+		if err := drainReportFiles(ctx, store.Store, files); err != nil {
+			t.Fatal(err)
 		}
 		_, err = publishStoredReport(ctx, store, files, machine.ID, "one", upload,
 			func() (string, error) { return files.Write(ctx, upload.Result) })
@@ -347,16 +346,16 @@ func TestReportFailuresBothEngines(t *testing.T) {
 			t.Fatal("file failure changed prior status", err)
 		}
 		// Both engines reject this deferred FK at COMMIT, after the new
-		// report file and the metadata INSERT have succeeded.
+		// report file and the metadata update have succeeded.
 		exec(t, store.DB, `CREATE TABLE fault_parent(id INTEGER PRIMARY KEY)`)
 		exec(t, store.DB, `CREATE TABLE fault_child(id INTEGER REFERENCES fault_parent(id) DEFERRABLE INITIALLY DEFERRED)`)
 		if engine == "sqlite" {
-			exec(t, store.DB, `CREATE TRIGGER fail_commit AFTER INSERT ON reports
+			exec(t, store.DB, `CREATE TRIGGER fail_commit AFTER UPDATE OF report_path ON reports
 				BEGIN INSERT INTO fault_child VALUES (1); END`)
 		} else {
 			exec(t, store.DB, `CREATE FUNCTION fail_commit() RETURNS trigger LANGUAGE plpgsql AS $$
 				BEGIN INSERT INTO fault_child VALUES (1); RETURN NEW; END $$`)
-			exec(t, store.DB, `CREATE TRIGGER fail_commit AFTER INSERT ON reports
+			exec(t, store.DB, `CREATE TRIGGER fail_commit AFTER UPDATE OF report_path ON reports
 				FOR EACH ROW EXECUTE FUNCTION fail_commit()`)
 		}
 		var orphan string
@@ -542,7 +541,7 @@ func TestReportWriteDoesNotBlockDesiredMutationBothEngines(t *testing.T) {
 		<-entered
 		deleted := make(chan error, 1)
 		go func() {
-			_, err := second.DeleteConfiguration(ctx, machine.ID, "one")
+			err := second.DeleteConfiguration(ctx, machine.ID, "one")
 			deleted <- err
 		}()
 		select {
@@ -595,7 +594,6 @@ func TestReportReadDoesNotBlockRetirementAndDeletionBothEngines(t *testing.T) {
 				mutated := make(chan error, 1)
 				go func() {
 					var err error
-					var paths []string
 					switch mutation {
 					case "replace":
 						next := upload
@@ -603,14 +601,11 @@ func TestReportReadDoesNotBlockRetirementAndDeletionBothEngines(t *testing.T) {
 						_, err = publishStoredReport(ctx, second, files, machine.ID, "one", next,
 							func() (string, error) { return files.Write(ctx, next.Result) })
 					case "configuration":
-						paths, err = second.DeleteConfiguration(ctx, machine.ID, "one")
+						err = second.DeleteConfiguration(ctx, machine.ID, "one")
 					case "machine":
-						paths, err = second.DeleteMachine(ctx, machine.ID)
+						err = second.DeleteMachine(ctx, machine.ID)
 					}
-					for _, path := range paths {
-						err = errors.Join(err, files.Remove(path))
-					}
-					mutated <- err
+					mutated <- errors.Join(err, drainReportFiles(ctx, second.Store, files))
 				}()
 				select {
 				case err := <-mutated:
@@ -658,7 +653,7 @@ func TestReportLostCommitAcknowledgementBothEngines(t *testing.T) {
 			next, err = files.Write(ctx, upload.Result)
 			return next, err
 		}, reportReader(ctx, files))
-		if !errors.Is(err, lost) || result.Outcome != MutationUnchanged || len(result.CleanupPaths) != 0 {
+		if !errors.Is(err, lost) || result.Outcome != MutationUnchanged {
 			t.Fatal("ambiguous commit allowed file deletion or masked error", result, err)
 		}
 		var referenced string
@@ -675,10 +670,9 @@ func TestReportLostCommitAcknowledgementBothEngines(t *testing.T) {
 			}
 		}
 		retry, err := store.PublishReport(ctx, machine.ID, "one", upload, func() (string, error) {
-			t.Error("retry of committed report wrote another file")
-			return "", nil
+			return "", errors.New("storage unavailable during retry")
 		}, reportReader(ctx, files))
-		if err != nil || retry.Outcome != MutationUnchanged || len(retry.CleanupPaths) != 0 {
+		if err != nil || retry.Outcome != MutationUnchanged {
 			t.Fatal("uncertain commit did not resolve to the accepted report", retry, err)
 		}
 	})
@@ -709,14 +703,18 @@ func TestReportPersistenceErrorReturnsUnusedFileBothEngines(t *testing.T) {
 			candidate, err = files.Write(ctx, upload.Result)
 			return candidate, err
 		}, reportReader(ctx, files))
-		if !errors.Is(err, injected) || result.Outcome != MutationUnchanged || len(result.CleanupPaths) != 1 || result.CleanupPaths[0] != candidate {
+		if !errors.Is(err, injected) || result.Outcome != MutationUnchanged {
 			t.Fatal("database error masked or unused file not returned", result, err)
 		}
 		if failed.DB.Stats().InUse != 0 {
 			t.Fatal("cleanup requested before transaction ended")
 		}
-		if err := files.Remove(candidate); err != nil {
+		assertCount(t, store.DB, "report_file_cleanup", 1)
+		if err := drainReportFiles(ctx, store.Store, files); err != nil {
 			t.Fatal(err)
+		}
+		if _, err := files.Read(ctx, candidate, 1<<20); !errors.Is(err, os.ErrNotExist) {
+			t.Fatal("unused candidate was not reclaimed", err)
 		}
 		if _, err := files.Read(ctx, first, 1<<20); err != nil {
 			t.Fatal("previous report was removed", err)
@@ -724,69 +722,85 @@ func TestReportPersistenceErrorReturnsUnusedFileBothEngines(t *testing.T) {
 	})
 }
 
-func TestExistingReportHistoryRetiredBothEngines(t *testing.T) {
-	for _, operation := range []string{"replace", "configuration", "machine"} {
-		t.Run(operation, func(t *testing.T) {
-			testdb.Engines(t, func(t *testing.T, engine, dsn string) {
-				store, files, root, machine, config := reportSetup(t, engine, dsn)
-				ctx := context.Background()
-				upload := reportUpload(config.Revision)
-				first := publish(t, store, files, machine.ID, upload)
-				oldStatus, err := store.GetConfigurationStatus(ctx, machine.ID, "one")
-				if err != nil {
-					t.Fatal(err)
-				}
-				second, err := files.Write(ctx, upload.Result)
-				if err != nil {
-					t.Fatal(err)
-				}
-				latestID := uuid.NewString()
-				// Simulate pre-upgrade history without rewriting its original files.
-				exec(t, store.DB, `INSERT INTO reports
-					(id,machine_id,sequence,name,configuration_revision,received_at,started_at,finished_at,
-					 outcome,operation,input_hash,error_kind,report_path,upload_id,result_sha256)
-					SELECT $1,machine_id,sequence+1,name,configuration_revision,received_at,started_at,finished_at,
-					 outcome,operation,input_hash,error_kind,$2,$3,result_sha256
-					FROM reports WHERE id = $4`, latestID, second, uuid.NewString(), oldStatus.ReportID)
-				latest, err := store.ListReports(ctx, machine.ID, "", 10)
-				if err != nil || len(latest) != 1 || latest[0].ID != latestID {
-					t.Fatal("pre-upgrade history leaked into latest-only listing", latest, err)
-				}
-				if _, err := store.GetReport(ctx, machine.ID, oldStatus.ReportID, nil); !errors.Is(err, ErrReportNotFound) {
-					t.Fatal("obsolete pre-upgrade report still exposed", err)
-				}
-				var paths []string
-				wantFiles := 0
-				switch operation {
-				case "replace":
-					upload.ID = uuid.NewString()
-					result, err := store.PublishReport(ctx, machine.ID, "one", upload,
-						func() (string, error) { return files.Write(ctx, upload.Result) }, reportReader(ctx, files))
-					if err != nil {
-						t.Fatal(err)
-					}
-					paths, wantFiles = result.CleanupPaths, 1
-				case "configuration":
-					paths, err = store.DeleteConfiguration(ctx, machine.ID, "one")
-				case "machine":
-					paths, err = store.DeleteMachine(ctx, machine.ID)
-				}
-				if err != nil || len(paths) != 2 || store.DB.Stats().InUse != 0 {
-					t.Fatal("did not return all obsolete paths after commit", paths, err)
-				}
-				for _, path := range paths {
-					if path != first && path != second {
-						t.Fatal("cleanup included a newly referenced report", path)
-					}
-					if err := files.Remove(path); err != nil {
-						t.Fatal(err)
+func TestConcurrentReportsDifferentMachinesBothEngines(t *testing.T) {
+	testdb.Engines(t, func(t *testing.T, engine, dsn string) {
+		db, files, _, first, config := reportSetup(t, engine, dsn)
+		peer := testStore(t, engine, dsn)
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		second, err := peer.CreateMachine(ctx, "second")
+		if err != nil {
+			t.Fatal(err)
+		}
+		upload := reportUpload(config.Revision)
+		for _, id := range []string{first.ID, second.ID} {
+			if _, _, err := db.PutConfiguration(ctx, id, "two", parseDesired(t, `{"template":{}}`)); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := publishStoredReport(ctx, db, files, id, "two", upload,
+				func() (string, error) { return files.Write(ctx, upload.Result) }); err != nil {
+				t.Fatal(err)
+			}
+		}
+		type collector struct {
+			store     *reportTestStore
+			machineID string
+		}
+		start, results := make(chan struct{}), make(chan error, 2)
+		for _, target := range []collector{{db, first.ID}, {peer, second.ID}} {
+			go func() {
+				<-start
+				app := testService(target.store.Store, files)
+				for range 8 {
+					next := upload
+					next.ID = uuid.NewString()
+					if _, err := app.publishReport(ctx, target.machineID, "one", next); err != nil {
+						results <- err
+						return
 					}
 				}
-				entries, err := os.ReadDir(root)
-				if err != nil || len(entries) != wantFiles {
-					t.Fatal("old history files were not retired", entries, err)
-				}
-			})
-		})
+				results <- nil
+			}()
+		}
+		close(start)
+		for range 2 {
+			if err := <-results; err != nil {
+				t.Error(err)
+			}
+		}
+		for _, id := range []string{first.ID, second.ID} {
+			page, err := db.ListReports(ctx, id, "", 2)
+			if err != nil || len(page) != 2 || page[0].ConfigurationName != "one" || page[1].ConfigurationName != "two" {
+				t.Fatal("machine publication order changed", page, err)
+			}
+			var sequence int
+			if err := db.DB.QueryRowContext(ctx, "SELECT sequence FROM reports WHERE id = $1", page[0].ID).Scan(&sequence); err != nil || sequence != 9 {
+				t.Fatal("machine sequence advanced incorrectly", sequence, err)
+			}
+		}
+	})
+}
+
+func TestPostgresReportPublicationUsesIndependentMachineLocks(t *testing.T) {
+	dsn := testdb.Postgres(t)
+	db, files, _, first, config := reportSetup(t, "postgres", dsn)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	second, err := db.CreateMachine(ctx, "second")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tx, err := db.DB.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, "SELECT id FROM machines WHERE id = $1 FOR UPDATE", first.ID); err != nil {
+		t.Fatal(err)
+	}
+	app := testService(db.Store, files)
+	if result, err := app.PublishReport(ctx, second.ID, serviceReportBody(config.Revision, uuid.NewString())); err != nil ||
+		result.Outcome != database.MutationCreated {
+		t.Fatal("the locked machine blocked publication to an independent machine", result, err)
 	}
 }

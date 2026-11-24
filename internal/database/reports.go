@@ -25,9 +25,8 @@ type ReportMetadata struct {
 }
 
 type Publication struct {
-	Report       ReportMetadata
-	Outcome      MutationOutcome
-	CleanupPaths []string
+	Report  ReportMetadata
+	Outcome MutationOutcome
 }
 
 const reportColumns = `id,machine_id,name,configuration_revision,received_at,started_at,finished_at,outcome,operation,input_hash,error_kind`
@@ -37,115 +36,101 @@ func (m *ReportMetadata) fields() []any {
 		&m.ReceivedAt, &m.StartedAt, &m.FinishedAt, &m.Outcome, &m.Operation, &m.InputHash, &m.ErrorKind}
 }
 
-var ErrReportChanged = errors.New("report changed during publication")
-
-// FindReportUpload reads a retained upload without acquiring a transaction.
-func (s *Store) FindReportUpload(ctx context.Context, id, name, uploadID string) (existingID, revision, path string, digest []byte, err error) {
-	err = s.DB.QueryRowContext(ctx, `SELECT id,configuration_revision,report_path,result_sha256 FROM reports r
- WHERE machine_id = $1 AND name = $2 AND upload_id = $3
- AND sequence = (SELECT MAX(sequence) FROM reports WHERE machine_id = r.machine_id AND name = r.name)`, id, name, uploadID).Scan(&existingID, &revision, &path, &digest)
-	if errors.Is(err, sql.ErrNoRows) {
-		err = ErrReportNotFound
-	}
-	return
+// ReportCommit carries the result of the locked mutation. LegacyPath requires
+// verification outside the transaction. KeepFile also covers ambiguous commits.
+type ReportCommit struct {
+	Publication
+	LegacyPath string
+	KeepFile   bool
 }
 
-// CommitReport atomically verifies a retry or replaces retained metadata under
-// the machine lock. keepFile is true on success or an ambiguous commit outcome;
-// callers must retain the candidate in either case. No file I/O occurs here.
+// CommitReport applies a new receipt or verifies an idempotent retry. An empty
+// path permits retry verification only. verifiedID proves a legacy file was
+// hashed outside the transaction and still belongs to the same receipt.
 func (s *Store) CommitReport(ctx context.Context, id, name string, upload report.Upload,
-	path string, digest []byte, verifiedID string) (Publication, bool, error) {
+	path string, digest []byte, verifiedID string) (ReportCommit, error) {
 	tx, err := s.begin(ctx, "publish_report")
 	if err != nil {
-		return Publication{}, false, err
+		return ReportCommit{}, err
 	}
 	defer tx.Rollback()
+	// Keep the lock in a separate statement: after waiting for a PostgreSQL
+	// writer, the mutation needs a fresh READ COMMITTED snapshot for MAX.
 	if err := s.lockOwner(ctx, tx.Tx, apikey.Machine, id); err != nil {
-		return Publication{}, false, err
+		return ReportCommit{}, err
 	}
+
+	if path != "" {
+		metadata := ReportMetadata{Summary: upload.Summary, ID: uuid.NewString(), MachineID: id, ConfigurationName: name}
+		metadata.ReceivedAt = timestamp()
+		var publishedID string
+		err = tx.QueryRowContext(ctx, `UPDATE reports SET
+            sequence = (SELECT COALESCE(MAX(sequence),0) + 1 FROM reports WHERE machine_id = $1),
+            id = $3, configuration_revision = $4, received_at = $5, started_at = $6,
+            finished_at = $7, outcome = $8, operation = $9, input_hash = $10, error_kind = $11,
+            report_path = $12, upload_id = $13, result_sha256 = $14
+            WHERE machine_id = $1 AND name = $2 AND upload_id <> $13
+            RETURNING id`, id, name, metadata.ID, upload.ConfigurationRevision, metadata.ReceivedAt,
+			upload.StartedAt, upload.FinishedAt, upload.Outcome, upload.Operation, upload.InputHash,
+			upload.ErrorKind, path, upload.ID, digest).Scan(&publishedID)
+		if err == nil {
+			return commitReceipt(tx, metadata, MutationUpdated)
+		}
+		if !errors.Is(err, sql.ErrNoRows) {
+			return ReportCommit{}, err
+		}
+		err = tx.QueryRowContext(ctx, `INSERT INTO reports
+            (id,machine_id,sequence,name,configuration_revision,received_at,started_at,finished_at,outcome,
+             operation,input_hash,error_kind,report_path,upload_id,result_sha256)
+            VALUES ($1,$2,(SELECT COALESCE(MAX(sequence),0) + 1 FROM reports WHERE machine_id = $2),
+                    $3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+            ON CONFLICT(machine_id,name) DO NOTHING RETURNING id`,
+			metadata.ID, id, name, upload.ConfigurationRevision, metadata.ReceivedAt, upload.StartedAt,
+			upload.FinishedAt, upload.Outcome, upload.Operation, upload.InputHash, upload.ErrorKind, path, upload.ID, digest).
+			Scan(&publishedID)
+		if err == nil {
+			return commitReceipt(tx, metadata, MutationCreated)
+		}
+		if !errors.Is(err, sql.ErrNoRows) {
+			return ReportCommit{}, err
+		}
+	}
+
 	var existing ReportMetadata
+	var existingPath string
 	var storedDigest []byte
-	err = tx.QueryRowContext(ctx, `SELECT `+reportColumns+`,result_sha256 FROM reports r
-		WHERE machine_id = $1 AND name = $2 AND upload_id = $3
-		AND sequence = (SELECT MAX(sequence) FROM reports WHERE machine_id = r.machine_id AND name = r.name)`, id, name, upload.ID).
-		Scan(append(existing.fields(), &storedDigest)...)
+	err = tx.QueryRowContext(ctx, `SELECT `+reportColumns+`,report_path,result_sha256 FROM reports
+        WHERE machine_id = $1 AND name = $2 AND upload_id = $3`, id, name, upload.ID).
+		Scan(append(existing.fields(), &existingPath, &storedDigest)...)
 	if err == nil {
-		if existing.ConfigurationRevision != upload.ConfigurationRevision {
-			return Publication{}, false, ErrUploadConflict
+		if existing.ConfigurationRevision != upload.ConfigurationRevision ||
+			(storedDigest != nil && !bytes.Equal(storedDigest, digest)) {
+			return ReportCommit{}, ErrUploadConflict
 		}
-		backfillDigest := storedDigest == nil
-		if backfillDigest {
-			if existing.ID != verifiedID {
-				return Publication{}, false, ErrReportChanged
-			}
-			storedDigest = digest
+		result := ReportCommit{Publication: Publication{Report: existing, Outcome: MutationUnchanged}}
+		if storedDigest != nil {
+			return result, nil
 		}
-		if !bytes.Equal(storedDigest, digest) {
-			return Publication{}, false, ErrUploadConflict
+		if existing.ID != verifiedID {
+			result.LegacyPath = existingPath
+			return result, nil
 		}
-		if backfillDigest {
-			if _, err := tx.ExecContext(ctx, `UPDATE reports SET result_sha256 = $1
-				WHERE id = $2 AND result_sha256 IS NULL`, digest, existing.ID); err != nil {
-				return Publication{}, false, err
-			}
+		if _, err := tx.ExecContext(ctx, `UPDATE reports SET result_sha256 = $1 WHERE id = $2`, digest, existing.ID); err != nil {
+			return ReportCommit{}, err
 		}
-		return Publication{Report: existing}, false, tx.Commit()
+		return result, tx.Commit()
 	}
 	if !errors.Is(err, sql.ErrNoRows) {
-		return Publication{}, false, err
+		return ReportCommit{}, err
 	}
-	if path == "" {
-		return Publication{}, false, ErrReportChanged
-	}
-	var sequence int64
-	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(sequence),0) + 1 FROM reports WHERE machine_id = $1`, id).
-		Scan(&sequence); err != nil {
-		return Publication{}, false, err
-	}
-	previous, err := reportPaths(ctx, tx.Tx, id, name)
-	if err != nil {
-		return Publication{}, false, err
-	}
-	if _, err := tx.ExecContext(ctx, `DELETE FROM reports WHERE machine_id = $1 AND name = $2`, id, name); err != nil {
-		return Publication{}, false, err
-	}
-	metadata := ReportMetadata{Summary: upload.Summary, ID: uuid.NewString(), MachineID: id, ConfigurationName: name}
-	metadata.ReceivedAt = timestamp()
-	_, err = tx.ExecContext(ctx, `INSERT INTO reports
-		(id,machine_id,sequence,name,configuration_revision,received_at,started_at,finished_at,outcome,
-		 operation,input_hash,error_kind,report_path,upload_id,result_sha256)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`,
-		metadata.ID, id, sequence, name, upload.ConfigurationRevision, metadata.ReceivedAt, upload.StartedAt,
-		upload.FinishedAt, upload.Outcome, upload.Operation, upload.InputHash, upload.ErrorKind, path, upload.ID, digest)
-	if err != nil {
-		return Publication{}, false, err
-	}
-	if err := tx.Commit(); err != nil {
-		return Publication{}, true, err
-	}
-	outcome := MutationCreated
-	if len(previous) != 0 {
-		outcome = MutationUpdated
-	}
-	return Publication{Report: metadata, Outcome: outcome, CleanupPaths: previous}, true, nil
+	return ReportCommit{}, ErrReportNotFound
 }
 
-func reportPaths(ctx context.Context, tx *sql.Tx, id, name string) ([]string, error) {
-	rows, err := tx.QueryContext(ctx, `SELECT DISTINCT report_path FROM reports
-		WHERE machine_id = $1 AND ($2 = '' OR name = $2)`, id, name)
-	if err != nil {
-		return nil, err
+func commitReceipt(tx *transaction, metadata ReportMetadata, outcome MutationOutcome) (ReportCommit, error) {
+	if err := tx.Commit(); err != nil {
+		return ReportCommit{KeepFile: true}, err
 	}
-	defer rows.Close()
-	var paths []string
-	for rows.Next() {
-		var path string
-		if err := rows.Scan(&path); err != nil {
-			return nil, err
-		}
-		paths = append(paths, path)
-	}
-	return paths, rows.Err()
+	return ReportCommit{Publication: Publication{Report: metadata, Outcome: outcome}, KeepFile: true}, nil
 }
 
 func (s *Store) ListReports(ctx context.Context, id, cursor string, limit int) ([]ReportMetadata, error) {
@@ -153,8 +138,7 @@ func (s *Store) ListReports(ctx context.Context, id, cursor string, limit int) (
 	err := s.withOwner(ctx, "read_report_status", apikey.Machine, id, func(tx *sql.Tx) error {
 		var before int64
 		if cursor != "" {
-			err := tx.QueryRowContext(ctx, `SELECT sequence FROM reports r WHERE machine_id = $1 AND id = $2
-				AND sequence = (SELECT MAX(sequence) FROM reports WHERE machine_id = r.machine_id AND name = r.name)`, id, cursor).Scan(&before)
+			err := tx.QueryRowContext(ctx, `SELECT sequence FROM reports WHERE machine_id = $1 AND id = $2`, id, cursor).Scan(&before)
 			if errors.Is(err, sql.ErrNoRows) {
 				return ErrReportCursor
 			}
@@ -162,9 +146,8 @@ func (s *Store) ListReports(ctx context.Context, id, cursor string, limit int) (
 				return err
 			}
 		}
-		rows, err := tx.QueryContext(ctx, `SELECT `+reportColumns+` FROM reports r
+		rows, err := tx.QueryContext(ctx, `SELECT `+reportColumns+` FROM reports
 			WHERE machine_id = $1 AND ($2 = 0 OR sequence < $2)
-			AND sequence = (SELECT MAX(sequence) FROM reports WHERE machine_id = r.machine_id AND name = r.name)
 			ORDER BY sequence DESC LIMIT $3`, id, before, limit)
 		if err != nil {
 			return err
@@ -187,9 +170,8 @@ func (s *Store) GetReport(ctx context.Context, id, reportID string) (ReportMetad
 	var item ReportMetadata
 	var path string
 	err := s.withOwner(ctx, "read_report_status", apikey.Machine, id, func(tx *sql.Tx) error {
-		err := tx.QueryRowContext(ctx, `SELECT `+reportColumns+`,report_path FROM reports r
-			WHERE machine_id = $1 AND id = $2
-			AND sequence = (SELECT MAX(sequence) FROM reports WHERE machine_id = r.machine_id AND name = r.name)`, id, reportID).
+		err := tx.QueryRowContext(ctx, `SELECT `+reportColumns+`,report_path FROM reports
+			WHERE machine_id = $1 AND id = $2`, id, reportID).
 			Scan(append(item.fields(), &path)...)
 		if errors.Is(err, sql.ErrNoRows) {
 			return ErrReportNotFound
@@ -211,10 +193,8 @@ func (s *Store) LatestConfigurationReport(ctx context.Context, id, name string) 
 			}
 			return err
 		}
-		err := tx.QueryRowContext(ctx, `SELECT `+reportColumns+`,report_path FROM reports r
-			WHERE machine_id = $1 AND name = $2 AND configuration_revision = $3
-			AND sequence = (SELECT MAX(sequence) FROM reports WHERE machine_id = r.machine_id AND name = r.name)
-			ORDER BY sequence DESC LIMIT 1`, id, name, revision).
+		err := tx.QueryRowContext(ctx, `SELECT `+reportColumns+`,report_path FROM reports
+			WHERE machine_id = $1 AND name = $2 AND configuration_revision = $3`, id, name, revision).
 			Scan(append(item.fields(), &path)...)
 		if errors.Is(err, sql.ErrNoRows) {
 			return ErrReportNotFound

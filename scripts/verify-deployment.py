@@ -76,6 +76,18 @@ def main():
                 return compose("run", "--rm", "--no-deps", "--entrypoint", "/bin/sh",
                                "api1", "-c", shell, data=data)
 
+            def await_report_cleanup():
+                deadline = time.monotonic() + 45
+                while time.monotonic() < deadline:
+                    empty = compose("exec", "-T", "postgres", "psql", "-U", "registry",
+                                    "-d", "registry", "-Atq", "-v", "ON_ERROR_STOP=1",
+                                    "-c", "SELECT NOT EXISTS (SELECT 1 FROM report_file_cleanup)",
+                                    timeout=10).strip()
+                    if empty == b"t":
+                        return
+                    time.sleep(1)
+                raise RuntimeError("report cleanup outbox did not drain")
+
             def endpoint(service, port, scheme):
                 address = compose("port", service, str(port)).decode().strip()
                 require(address.startswith("127.0.0.1:"), "demo port is not loopback-only")
@@ -179,6 +191,7 @@ def main():
             for _ in range(4):
                 expect(base, upload_path, 200, key=key, method="POST", body=upload)
                 unchanged()
+            await_report_cleanup()
             compose("stop", "-t", "10", "api1")
             for _ in range(4):
                 unchanged()
@@ -228,6 +241,7 @@ def main():
                          "uploadId": str(uuid.uuid4()), "result": later_report})
             require(expect(base, config_path + "/report", 200, key=admin)[2] != original,
                     "post-backup report was not replaced")
+            await_report_cleanup()
             compose("stop", "-t", "20", "api1", "api2")
             compose("exec", "-T", "postgres", "psql", "-U", "registry", "-d", "registry",
                     "-v", "ON_ERROR_STOP=1", data=dump)

@@ -104,6 +104,18 @@ func TestRegistrationUpgradeAndPersistenceBothEngines(t *testing.T) {
 		if engine == "postgres" {
 			version = 5
 		}
+		// Remove the newer cleanup migration as well so the ledger and
+		// schema match the registration migration's upgrade starting point.
+		exec(t, store.DB, "DROP TRIGGER reports_cleanup_delete"+reportTriggerTable(engine))
+		exec(t, store.DB, "DROP TRIGGER reports_cleanup_replace"+reportTriggerTable(engine))
+		if engine == "postgres" {
+			exec(t, store.DB, "DROP FUNCTION enqueue_retired_report()")
+		}
+		exec(t, store.DB, "DROP TABLE report_file_cleanup")
+		exec(t, store.DB, "DROP INDEX reports_configuration")
+		exec(t, store.DB, "CREATE INDEX reports_configuration_latest ON reports(machine_id, name, sequence DESC)")
+		exec(t, store.DB, "CREATE INDEX reports_configuration_revision_latest ON reports(machine_id, name, configuration_revision, sequence DESC)")
+		exec(t, store.DB, "DELETE FROM schema_migrations WHERE version = $1", version+1)
 		// Recreate the previous schema generation and force a DDL collision.
 		exec(t, store.DB, "DROP TABLE registration_tokens")
 		exec(t, store.DB, "DELETE FROM schema_migrations WHERE version = $1", version)
@@ -118,7 +130,7 @@ func TestRegistrationUpgradeAndPersistenceBothEngines(t *testing.T) {
 		}
 		exec(t, store.DB, "DROP TABLE registration_tokens")
 		store = testStore(t, engine, dsn)
-		assertCount(t, store.DB, "schema_migrations", version)
+		assertCount(t, store.DB, "schema_migrations", version+1)
 		token, err := store.CreateRegistrationToken(ctx, DefaultRegistrationTTLSeconds)
 		if err != nil {
 			t.Fatal(err)
@@ -145,6 +157,13 @@ func TestRegistrationUpgradeAndPersistenceBothEngines(t *testing.T) {
 		assertCount(t, store.DB, "machines", 1)
 		assertCount(t, store.DB, "api_keys", 2)
 		assertCount(t, store.DB, "registration_tokens", 1)
-		assertCount(t, store.DB, "schema_migrations", version)
+		assertCount(t, store.DB, "schema_migrations", version+1)
 	})
+}
+
+func reportTriggerTable(engine string) string {
+	if engine == "postgres" {
+		return " ON reports"
+	}
+	return ""
 }

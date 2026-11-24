@@ -168,14 +168,8 @@ func (s *Store) ListConfigurations(ctx context.Context, id, after string, limit 
 }
 
 // DeleteConfiguration returns files to remove only after a successful commit.
-func (s *Store) DeleteConfiguration(ctx context.Context, id, name string) ([]string, error) {
-	var paths []string
-	err := s.withOwner(ctx, "delete_configuration", apikey.Machine, id, func(tx *sql.Tx) error {
-		var err error
-		paths, err = reportPaths(ctx, tx, id, name)
-		if err != nil {
-			return err
-		}
+func (s *Store) DeleteConfiguration(ctx context.Context, id, name string) error {
+	return s.withOwner(ctx, "delete_configuration", apikey.Machine, id, func(tx *sql.Tx) error {
 		result, err := tx.ExecContext(ctx, "DELETE FROM configurations WHERE machine_id = $1 AND name = $2", id, name)
 		if err != nil {
 			return err
@@ -193,10 +187,6 @@ func (s *Store) DeleteConfiguration(ctx context.Context, id, name string) ([]str
 		}
 		return nil
 	})
-	if err != nil {
-		return nil, err
-	}
-	return paths, nil
 }
 
 func (s *Store) ConfigurationRevision(ctx context.Context, id string) (int64, error) {

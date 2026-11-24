@@ -127,6 +127,7 @@ func TestReportOperationsHTTPBothEngines(t *testing.T) {
 						apiRequest(t, handler, admin.Key, "GET", base+"/reports/"+previous.ID, "", 404)
 						apiRequest(t, handler, admin.Key, "GET", base+"/reports/"+previous.ID+"/content", "", 404)
 					}
+					drainHTTPReportFiles(t, db, files, nil, 0)
 					entries, err := os.ReadDir(root)
 					if err != nil || len(entries) != 1 {
 						t.Fatal("replacement or duplicate upload left extra files", entries, err)
@@ -495,11 +496,11 @@ func TestReportHistoryFailuresBothEngines(t *testing.T) {
 		sqlExec(`CREATE TABLE report_fault_parent(id INTEGER PRIMARY KEY)`)
 		sqlExec(`CREATE TABLE report_fault_child(id INTEGER REFERENCES report_fault_parent(id) DEFERRABLE INITIALLY DEFERRED)`)
 		if engine == "sqlite" {
-			sqlExec(`CREATE TRIGGER report_fail_commit AFTER INSERT ON reports BEGIN INSERT INTO report_fault_child VALUES (1); END`)
+			sqlExec(`CREATE TRIGGER report_fail_commit AFTER UPDATE OF report_path ON reports BEGIN INSERT INTO report_fault_child VALUES (1); END`)
 		} else {
 			sqlExec(`CREATE FUNCTION report_fail_commit() RETURNS trigger LANGUAGE plpgsql AS $$
 				BEGIN INSERT INTO report_fault_child VALUES (1); RETURN NEW; END $$`)
-			sqlExec(`CREATE TRIGGER report_fail_commit AFTER INSERT ON reports FOR EACH ROW EXECUTE FUNCTION report_fail_commit()`)
+			sqlExec(`CREATE TRIGGER report_fail_commit AFTER UPDATE OF report_path ON reports FOR EACH ROW EXECUTE FUNCTION report_fail_commit()`)
 		}
 		next := historyBody("docker", first.ConfigurationRevision, uuid.NewString(), rawSuccessReport)
 		apiRequest(t, handler, key.Key, "POST", "/v1/agent/reports", next, 503)

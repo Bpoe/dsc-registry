@@ -138,7 +138,7 @@ func TestAdministrationBothEngines(t *testing.T) {
 		if got, err := store.GetMachine(ctx, first.ID); err != nil || got.ConfigurationRevision != 0 {
 			t.Fatal("credential changes modified configuration revision")
 		}
-		if _, err := store.DeleteMachine(ctx, first.ID); err != nil {
+		if err := store.DeleteMachine(ctx, first.ID); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := store.Authenticate(ctx, activeKey.Key); !errors.Is(err, apikey.ErrInvalid) {
@@ -173,9 +173,9 @@ func TestAdministrationBothEngines(t *testing.T) {
 		if _, err := store.GetMachine(ctx, second.ID); err != nil {
 			t.Fatal("machine did not survive restart")
 		}
-		migrations := 4
+		migrations := 5
 		if engine == "postgres" {
-			migrations = 5
+			migrations = 6
 		}
 		assertCount(t, store.DB, "schema_migrations", migrations)
 	})
@@ -230,7 +230,7 @@ func TestConcurrentBootstrapAndMachineDeletion(t *testing.T) {
 			go func() {
 				defer group.Done()
 				<-start
-				if _, err := second.DeleteMachine(ctx, machine.ID); err != nil {
+				if err := second.DeleteMachine(ctx, machine.ID); err != nil {
 					t.Error(err)
 				}
 			}()
@@ -286,7 +286,7 @@ func TestPostgresMigrationRollbackAndVersion(t *testing.T) {
 	exec(t, raw, "INSERT INTO configurations VALUES ('preserved')")
 	exec(t, raw, "DROP TABLE configurations")
 	store := testStore(t, "postgres", dsn)
-	exec(t, store.DB, "INSERT INTO schema_migrations VALUES (6, 'future')")
+	exec(t, store.DB, "INSERT INTO schema_migrations VALUES (7, 'future')")
 	if db, err := OpenPostgres(ctx, dsn); db != nil || err == nil {
 		t.Fatal("future PostgreSQL schema accepted")
 	}
@@ -323,7 +323,7 @@ func TestSQLitePR1UpgradePreservesAllData(t *testing.T) {
 	for _, table := range []string{"machines", "admins", "api_keys", "configurations", "reports"} {
 		assertCount(t, store.DB, table, 1)
 	}
-	assertCount(t, store.DB, "schema_migrations", 4)
+	assertCount(t, store.DB, "schema_migrations", 5)
 	machine, err := store.GetMachine(context.Background(), id)
 	if err != nil || machine.Name != "preserved" || machine.ConfigurationRevision != 7 {
 		t.Fatal("PR 1 machine changed during upgrade")
@@ -369,7 +369,7 @@ func TestConcurrentPostgresMigration(t *testing.T) {
 			t.Error(result.err)
 			continue
 		}
-		assertCount(t, result.db, "schema_migrations", 5)
+		assertCount(t, result.db, "schema_migrations", 6)
 		if err := result.db.Close(); err != nil {
 			t.Error(err)
 		}

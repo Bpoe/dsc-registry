@@ -111,6 +111,7 @@ func TestReportPathsHTTPBothEngines(t *testing.T) {
 				}
 			})
 		}
+		drainHTTPReportFiles(t, db, files, nil, 0)
 		entries, err := os.ReadDir(root)
 		if err != nil || len(entries) != 1 {
 			t.Fatal("retries or conflicting paths created extra report files", entries, err)
@@ -198,6 +199,7 @@ func TestReportsHTTPBothEngines(t *testing.T) {
 				t.Fatal("summary disclosed report internals", sensitive)
 			}
 		}
+		drainHTTPReportFiles(t, db, files, nil, 0)
 		entries, err := os.ReadDir(root)
 		if err != nil || len(entries) != 2 {
 			t.Fatal("missing current report", entries, err)
@@ -205,6 +207,7 @@ func TestReportsHTTPBothEngines(t *testing.T) {
 		firstName := entries[0].Name()
 		apiRequest(t, handler, key.Key, "POST", agentPath, body, 200)
 		retryStatus := apiRequest(t, handler, admin.Key, "GET", path+"/status", "", 200)
+		drainHTTPReportFiles(t, db, files, nil, 0)
 		entries, err = os.ReadDir(root)
 		if err != nil || len(entries) != 2 || entries[0].Name() != firstName ||
 			!bytes.Equal(retryStatus.Body.Bytes(), status.Body.Bytes()) {
@@ -312,6 +315,7 @@ func TestReportBoundsAndStorageFailureBothEngines(t *testing.T) {
 		apiRequest(t, handler, key.Key, "POST", agentPath+"?machineId="+machine.ID, body, 400)
 		apiRequest(t, handler, admin.Key, "GET", path+"/status?x=1", "", 400)
 		before := apiRequest(t, handler, admin.Key, "GET", path+"/status", "", 200).Body.String()
+		drainHTTPReportFiles(t, db, files, nil, 0)
 		entries, err := os.ReadDir(root)
 		if err != nil || len(entries) != 1 {
 			t.Fatal("unexpected stored files", err)
@@ -412,6 +416,7 @@ func TestReportRestartRecoveryBothEngines(t *testing.T) {
 				t.Fatal("restart lost historical original content")
 			}
 		}
+		drainHTTPReportFiles(t, db, files, nil, 0)
 		entries, err := os.ReadDir(root)
 		if err != nil || len(entries) != 2 {
 			t.Fatal("restart/retry rewrote files or scavenged online", err)

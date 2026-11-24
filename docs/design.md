@@ -62,14 +62,20 @@ model/repository hierarchy. SQL owns queries, constraints, transactions, machine
 locks and atomic mutation outcomes. Report storage owns confined file I/O;
 eventing owns event formatting, admission, transport and shutdown.
 
-Report publication first inspects the retained upload, verifies any legacy
-payload digest outside SQL transactions, and writes/syncs/closes a unique
-candidate if needed. The database commit operation rechecks under the machine
-lock, returning whether the candidate must be retained and which old references
-were retired. The service retries changed references, removes unused candidates
-on ordinary failures, retains both files on uncertain commits, and notifies and
-cleans retired files only after success. Retrieval reselects a missing named
-reference after concurrent retirement, without filesystem I/O under SQL locks.
+Report publication writes, syncs and closes a unique candidate before SQL.
+The database locks the machine and conditionally updates the latest row for a
+different upload ID, selecting the next machine sequence in the update.
+A missing row takes the insert path. Retained upload retries compare revision
+and digest. Legacy digest verification reads the original file outside the
+transaction and rechecks report identity before backfilling.
+
+SQL triggers enqueue retired paths for every report update that changes its
+file reference and for all report deletes. The service wakes its cleanup
+worker after a commit and enqueues known unused candidates. The worker claims
+work with short SQL operations and removes files with its connection released.
+Database time controls lease expiry and per-batch tokens fence stale
+acknowledgements. Readers recheck a storage failure against current metadata
+so concurrent retirement can return the current report or the correct 404.
 Storage failures carry a service sentinel and retain their wrapped cause;
 persistence not-found/conflict errors remain stable sentinels. HTTP never
 inspects SQL driver errors or filesystem errors.
@@ -105,12 +111,13 @@ The relational schema, expressed conceptually (use SQL types appropriate to each
 | --- | --- | --- |
 | `machines` | `id UUID`, `name`, internal `name_folded`, `configuration_revision BIGINT`, `created_at` | PK id; unique required name_folded |
 | `configurations` | `machine_id`, `name`, `revision UUID`, `template_json`, nullable `parameters_json`, `content_sha256`, `updated_at` | PK(machine_id,name), FK machines |
-| `reports` | server UUID `id`, `machine_id`, acceptance `sequence`, `name`, `configuration_revision`, `received_at`, `started_at`, `finished_at`, `outcome`, nullable `operation`, `input_hash`, `error_kind`, relative `report_path`, `upload_id`, `result_sha256` | PK id; FK machine only; unique(machine_id,sequence); unique(machine_id,name,upload_id); indexes for latest per name, latest per name/revision, and file references |
+| `reports` | server UUID `id`, `machine_id`, acceptance `sequence`, `name`, `configuration_revision`, `received_at`, `started_at`, `finished_at`, `outcome`, nullable `operation`, `input_hash`, `error_kind`, relative `report_path`, `upload_id`, `result_sha256` | PK on id, FK on machine, unique machine/sequence and machine/name, index on file reference |
+| `report_file_cleanup` | relative `path`, `enqueued_at`, `available_at`, `claim_token`, `attempts` | PK on path, index for due work |
 | `admins` | `id UUID`, `name`, `created_at` | PK id |
 | `api_keys` | `key_id`, `owner_type` (`admin`/`machine`), `owner_id`, `secret_hash`, `created_at`, nullable `revoked_at`, nullable `description` | PK key_id; no plaintext secrets |
 | `registration_tokens` | `token_hash` (SHA-256), `expires_at` | PK token_hash; no plaintext, owner association or usage tracking |
 
-Use a DB transaction for configuration CRUD plus machine collection-revision updates. Configuration deletion increments the collection revision and deletes that name's report records. Machine deletion cascades to configurations/reports/keys. Collect only file paths inside these transactions and delete the files after successful commit. A later upload for a removed configuration name is accepted as a new retained report.
+Use a DB transaction for configuration CRUD plus machine collection-revision updates. Configuration deletion increments the collection revision and deletes that name's report records. Machine deletion cascades to configurations/reports/keys. Report retirement triggers record paths in the same transaction, and the cleanup worker removes committed retirements asynchronously. A later upload for a removed configuration name is accepted as a new retained report.
 
 SQLite migration 3 and PostgreSQL migration 4 copy existing `configuration_status` entries into `reports`, generate server report IDs, preserve original file references/summary fields/upload IDs, then drop the old status table. These follow the existing machine-name migrations without changing their versions. Existing received timestamps order the migrated records, with name as a deterministic tie-breaker. Original discarded reports cannot be reconstructed. Migrated records initially have no payload digest; their first matching retry reads and hashes the original file before persisting the digest. Upgrades are transactional; stop all API instances before upgrading and do not mix schema generations.
 
@@ -157,7 +164,7 @@ and the authenticated machine identify a report's
 configuration. Embedded paths never select database records, authorize access,
 or determine server filesystem paths.
 
-The service accepts retries safely, avoids reinterpreting raw report content, and bounds request body size and processing time. The machine-row lock serializes acceptance and deletion across replicas. Each new upload replaces all previous reports for that machine/name in one transaction. Latest means server acceptance order, never machine wall-clock ordering. Current execution status requires the retained report's revision to match desired state. A delayed historical upload replaces the prior current result and makes status stale/unknown, not a result for the current revision. Stronger agent-side sequencing is not implemented. Retrying the retained upload does not reorder it or change its timestamps; conflicting reuse of that upload ID returns a conflict. Superseded/deleted upload identities are forgotten, and replaying them creates new reports.
+The service accepts retries safely, avoids reinterpreting raw report content, and bounds request body size and processing time. The machine-row lock serializes acceptance and deletion across replicas. Each new upload replaces the latest report for that machine and name in one transaction. Latest means server acceptance order, never machine wall-clock ordering. Current execution status requires the retained report's revision to match desired state. A delayed historical upload replaces the prior current result and makes status stale/unknown, not a result for the current revision. Stronger agent-side sequencing is not implemented. Retrying the retained upload does not reorder it or change its timestamps; conflicting reuse of that upload ID returns a conflict. Superseded/deleted upload identities are forgotten, and replaying them creates new reports.
 
 Machine status is computed from retained reports and current desired configurations in a machine-locked transaction, not an independently maintained status table. `latestReport` and `lastExecutionAt` describe current-revision execution; `latestReceivedReport` and `lastReportReceivedAt` describe retained receipts independently. Per-name status is current when the latest report matches the desired revision, stale when it does not, unreported when no report exists, and removed when no desired configuration exists. Aggregate outcome covers current desired revisions only: failed takes precedence over canceled, then unknown for missing current executions, then succeeded. A machine without retained reports is never_reported; one with reports but no desired names is unknown. Removed names reported after deletion remain inspectable through their latest received report. No outcome implies online health or compliance.
 
@@ -165,9 +172,22 @@ Machine status is computed from retained reports and current desired configurati
 
 **Report storage:** V1 supports a single configured filesystem root. Store each report's path relative to that root.
 
-Write each report directly to a new, uniquely named file under the configured storage root. Complete, sync and close it before opening the publication transaction. The transaction captures previous paths, replaces the report rows, and commits the complete file's relative reference. Only after successful commit remove the superseded files. Clean up unused concurrent-retry candidates and new files after pre-commit SQL failures. A commit error has uncertain outcome: retain both old and new files. Partial-write cleanup closes the file first. Cleanup warnings include path/error but never fail a committed operation or mask its original error; missing files are harmless.
+Write each report directly to a new, uniquely named file under the report root.
+The server syncs and closes it before SQL can publish the relative reference.
+A successful replacement atomically updates metadata and enqueues the retired
+path. SQLite migration 5 and PostgreSQL migration 6 enforce one retained row
+per machine and name, preserving the exposed receipt and sequence. The same
+migration enqueues hidden history for deletion.
 
-No report filesystem I/O, including reads or legacy digest backfills, occurs inside database transactions. Named reads reselect the latest report if concurrent cleanup removed the selected file; a genuinely missing referenced file remains a storage error. Obsolete IDs return not found. Existing history needs no schema migration: latest-only reads hide older records, and each name's next replacement/deletion retires all its previous records/files. There is no global sweep or retention worker. Crashes, uncertain commits and cleanup failures can leave orphans; bounded offline cleanup must consult all `reports` references with all replicas stopped and never delete a referenced file.
+The worker leases bounded batches using a single claim statement. PostgreSQL
+skips locked queue rows. SQLite serializes the write. Claims exclude paths
+still referenced by reports. Report keys are immutable and are never reused.
+An expired lease can be reclaimed, and a stale worker cannot acknowledge a
+new lease. A worker can retry a deletion after an interruption because a missing
+file counts as success. SQL and files can diverge if a candidate was written
+and the process crashed before it could publish or enqueue it. A bounded offline
+sweep with all replicas stopped checks every candidate against all committed
+report references. [Offline orphan cleanup](../README.md#bounded-offline-orphan-cleanup)
 
 Filesystem paths must not be constructed from untrusted machine names or raw user-supplied filenames. Use UUIDs and server-generated keys. Resolve the operator-configured report root to a canonical path at startup, allowing trusted symlinked roots and parents, and constrain file operations to the opened directory with `os.Root`. Changing the original symlink must not redirect active storage; health endpoints do not check for replacement of the canonical root. Keep the canonical root and its parents under trusted operator control, and reject traversal outside the storage boundary. Reports may contain secrets emitted by DSC resources: protect at rest, restrict access, and never log or return reports outside authorized admin endpoints.
 

@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"os"
 	"reflect"
 	"testing"
 	"time"
@@ -28,7 +29,7 @@ func testReportHistoryUpgrade(t *testing.T, engine, dsn string, machineNames boo
 	t.Helper()
 	ctx := context.Background()
 	raw, version := machineNamesOldDatabase(t, engine, dsn)
-	finalVersion := version + 3
+	finalVersion := version + 4
 	files, err := reportstore.Open(ctx, t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -116,20 +117,19 @@ func testReportHistoryUpgrade(t *testing.T, engine, dsn string, machineNames boo
 		if err != nil {
 			t.Fatal(err)
 		}
-		noWrite := func() (string, error) {
-			t.Error("migrated retry wrote another file")
-			return "", errors.New("unexpected write")
+		unavailable := func() (string, error) {
+			return "", errors.New("candidate storage unavailable")
 		}
 		conflict := upload
 		conflict.Result = []byte(`{"different":true}`)
-		if _, err := store.PublishReport(ctx, machineID, item.ConfigurationName, conflict, noWrite, reportReader(ctx, files)); !errors.Is(err, ErrUploadConflict) {
+		if _, err := store.PublishReport(ctx, machineID, item.ConfigurationName, conflict, unavailable, reportReader(ctx, files)); !errors.Is(err, ErrUploadConflict) {
 			t.Fatal("migrated payload conflict accepted", err)
 		}
-		got, err := store.PublishReport(ctx, machineID, item.ConfigurationName, upload, noWrite, reportReader(ctx, files))
+		got, err := store.PublishReport(ctx, machineID, item.ConfigurationName, upload, unavailable, reportReader(ctx, files))
 		if err != nil || got.Outcome != MutationUnchanged || !reflect.DeepEqual(got.Report, item) {
 			t.Fatal("migrated retry changed metadata", got, err)
 		}
-		_, err = store.PublishReport(ctx, machineID, item.ConfigurationName, upload, noWrite, func(string) ([]byte, error) {
+		_, err = store.PublishReport(ctx, machineID, item.ConfigurationName, upload, unavailable, func(string) ([]byte, error) {
 			t.Error("digest was not persisted")
 			return nil, errors.New("unexpected read")
 		})
@@ -146,4 +146,88 @@ func testReportHistoryUpgrade(t *testing.T, engine, dsn string, machineNames boo
 	if err != nil || !reflect.DeepEqual(after, items) {
 		t.Fatal("restart remigrated report identities", after, err)
 	}
+}
+
+func TestCleanupMigrationRetiresOnlyHiddenHistoryBothEngines(t *testing.T) {
+	testdb.Engines(t, func(t *testing.T, engine, dsn string) {
+		ctx := context.Background()
+		raw, version := machineNamesOldDatabase(t, engine, dsn)
+		names, history, registration := migrations.SQLiteMachineNames, migrations.SQLiteReportHistory, migrations.SQLiteRegistrationTokens
+		if engine == "postgres" {
+			names, history, registration = migrations.PostgresMachineNames, migrations.PostgresReportHistory, migrations.PostgresRegistrationTokens
+		}
+		id := uuid.NewString()
+		exec(t, raw, "INSERT INTO machines VALUES ($1,'host',7,'2026-10-18T00:00:00Z')", id)
+		exec(t, raw, names)
+		exec(t, raw, "UPDATE machines SET name_folded = 'host'")
+		if engine == "postgres" {
+			exec(t, raw, "ALTER TABLE machines VALIDATE CONSTRAINT machines_name_folded_required")
+		}
+		exec(t, raw, history)
+		exec(t, raw, registration)
+		for i := range 3 {
+			exec(t, raw, "INSERT INTO schema_migrations VALUES ($1, 'original')", version+i+1)
+		}
+		files, err := reportstore.Open(ctx, t.TempDir())
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer files.Close()
+		write := func() string {
+			t.Helper()
+			path, err := files.Write(ctx, []byte("{}"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			return path
+		}
+		old, shared, latest := write(), write(), write()
+		obsoleteID, latestID, otherID := uuid.NewString(), uuid.NewString(), uuid.NewString()
+		revision := uuid.NewString()
+		insert := func(reportID string, sequence int, name, path string) {
+			t.Helper()
+			exec(t, raw, `INSERT INTO reports
+                (id,machine_id,sequence,name,configuration_revision,received_at,started_at,finished_at,outcome,report_path,upload_id)
+                VALUES ($1,$2,$3,$4,$5,'then','then','then','succeeded',$6,$7)`,
+				reportID, id, sequence, name, revision, path, uuid.NewString())
+		}
+		insert(obsoleteID, 1, "one", old)
+		insert(otherID, 2, "two", shared)
+		insert(uuid.NewString(), 3, "one", shared)
+		insert(latestID, 4, "one", latest)
+
+		db := testStore(t, engine, dsn)
+		assertCount(t, db.DB, "reports", 2)
+		assertCount(t, db.DB, "report_file_cleanup", 2)
+		page, err := db.ListReports(ctx, id, "", 1)
+		if err != nil || len(page) != 1 || page[0].ID != latestID {
+			t.Fatal("upgrade changed the newest receipt", page, err)
+		}
+		page, err = db.ListReports(ctx, id, latestID, 1)
+		if err != nil || len(page) != 1 || page[0].ID != otherID {
+			t.Fatal("upgrade changed cursor ordering", page, err)
+		}
+		if _, err := db.ListReports(ctx, id, obsoleteID, 1); !errors.Is(err, ErrReportCursor) {
+			t.Fatal("upgrade exposed an obsolete cursor", err)
+		}
+		if err := drainReportFiles(ctx, db.Store, files); err != nil {
+			t.Fatal(err)
+		}
+		assertCount(t, db.DB, "report_file_cleanup", 1)
+		if _, err := files.Read(ctx, old, 4096); !errors.Is(err, os.ErrNotExist) {
+			t.Fatal("hidden history file was not removed", err)
+		}
+		for _, path := range []string{shared, latest} {
+			if _, err := files.Read(ctx, path, 4096); err != nil {
+				t.Fatal("upgrade cleaned a committed reference", err)
+			}
+		}
+		if err := db.DeleteMachine(ctx, id); err != nil {
+			t.Fatal(err)
+		}
+		if err := drainReportFiles(ctx, db.Store, files); err != nil {
+			t.Fatal(err)
+		}
+		assertCount(t, db.DB, "report_file_cleanup", 0)
+	})
 }

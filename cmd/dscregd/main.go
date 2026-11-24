@@ -142,6 +142,12 @@ func runWithReady(ctx context.Context, settings config.Settings, logger *slog.Lo
 		dispatcher = worker
 	}
 	app := service.New(db, reports, dispatcher, settings.MaxReportBytes, serverLogger)
+	cleanupCtx, stopCleanup := context.WithCancel(context.WithoutCancel(ctx))
+	cleanupDone := make(chan struct{})
+	go func() {
+		defer close(cleanupDone)
+		app.RunReportCleanup(cleanupCtx)
+	}()
 	server.Handler = httpapi.New(app, settings.ReadTimeout, settings.PollMaxAge, settings.MaxRequestBytes, settings.MaxReportBytes, serverLogger)
 	if settings.TLS == nil {
 		serverLogger.Warn("HTTP transport is unencrypted; API keys and registration tokens may be exposed in transit")
@@ -151,6 +157,9 @@ func runWithReady(ctx context.Context, settings config.Settings, logger *slog.Lo
 		ready()
 	}
 	err = serve(ctx, server, listener, settings, serverLogger)
+	stopCleanup()
+	cleanupDeadline := time.NewTimer(settings.ShutdownTimeout)
+	defer cleanupDeadline.Stop()
 	if worker != nil {
 		shutdown, cancel := context.WithTimeout(context.Background(), settings.Eventing.ShutdownTimeout)
 		defer cancel()
@@ -158,6 +167,12 @@ func runWithReady(ctx context.Context, settings config.Settings, logger *slog.Lo
 			serverLogger.Warn("event worker shutdown incomplete", "reason", "best_effort_event_loss")
 		}
 	}
+	select {
+	case <-cleanupDone:
+	case <-cleanupDeadline.C:
+		serverLogger.Warn("report cleanup worker shutdown incomplete")
+	}
+
 	return err
 }
 

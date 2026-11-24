@@ -28,3 +28,9 @@ var PostgresReportHistory string
 
 //go:embed postgres/005_registration_tokens.sql
 var PostgresRegistrationTokens string
+
+//go:embed sqlite/005_report_cleanup.sql
+var SQLiteReportCleanup string
+
+//go:embed postgres/006_report_cleanup.sql
+var PostgresReportCleanup string

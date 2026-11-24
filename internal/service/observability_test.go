@@ -46,7 +46,7 @@ func TestReportTelemetryBothEngines(t *testing.T) {
 				sizeSum += int64(len(upload.Result))
 			}
 		}
-		// A parsed attempt failing storage still contributes size, publication lookup,
+		// A parsed attempt failing storage still contributes size, database verification,
 		// and exactly one failed ingestion. SQL failure likewise remains an attempt.
 		_ = files.Close()
 		body := serviceReportBody(config.Revision, uuid.NewString())
@@ -108,7 +108,7 @@ func TestReportTelemetryBothEngines(t *testing.T) {
 				sqlChildren++
 			}
 		}
-		if serviceSpans != 7 || storageSpans != 3 || sqlChildren == 0 || failed != 4 {
+		if serviceSpans != 7 || storageSpans != 6 || sqlChildren == 0 || failed != 4 {
 			t.Fatalf("service=%d storage=%d sql=%d failed=%d", serviceSpans, storageSpans, sqlChildren, failed)
 		}
 	})
@@ -169,7 +169,7 @@ func TestPublicationRetryRecordsOneLogicalMeasurement(t *testing.T) {
 			t.Fatal(err)
 		}
 		digest := sha256.Sum256(upload.Result)
-		if _, _, err := db.CommitReport(ctx, machine.ID, upload.Name, upload, key, digest[:], ""); err != nil {
+		if _, err := db.CommitReport(ctx, machine.ID, upload.Name, upload, key, digest[:], ""); err != nil {
 			t.Fatal(err)
 		}
 		exec(t, db.DB, "UPDATE reports SET result_sha256 = NULL WHERE machine_id = $1", machine.ID)
@@ -181,14 +181,12 @@ func TestPublicationRetryRecordsOneLogicalMeasurement(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			result, _, err := db.CommitReport(ctx, machine.ID, replacement.Name, replacement, next, digest[:], "")
+			_, err = db.CommitReport(ctx, machine.ID, replacement.Name, replacement, next, digest[:], "")
 			if err != nil {
 				t.Fatal(err)
 			}
-			for _, path := range result.CleanupPaths {
-				if err := files.Remove(path); err != nil {
-					t.Fatal(err)
-				}
+			if err := drainReportFiles(ctx, db.Store, files); err != nil {
+				t.Fatal(err)
 			}
 		}}
 		if result, err := app.PublishReport(ctx, machine.ID, body); err != nil || result.Outcome != database.MutationUpdated {
@@ -200,6 +198,10 @@ func TestPublicationRetryRecordsOneLogicalMeasurement(t *testing.T) {
 			if len(histogram.DataPoints) != 1 || histogram.DataPoints[0].Count != 1 {
 				t.Fatal("retry recorded multiple logical attempts", name, histogram)
 			}
+		}
+		retryMetric := metrics["dscreg.report.publish.retries"].Data.(metricdata.Sum[int64]).DataPoints[0]
+		if retryMetric.Value != 1 || retryMetric.Attributes.Len() != 0 {
+			t.Fatal("incorrect publication retry metric", retryMetric)
 		}
 		retries := 0
 		for _, span := range capture.Spans.Ended() {

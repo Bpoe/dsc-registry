@@ -165,14 +165,8 @@ func (s *Store) ListMachines(ctx context.Context, after string, limit int) ([]Ma
 }
 
 // DeleteMachine returns files to remove only after a successful commit.
-func (s *Store) DeleteMachine(ctx context.Context, id string) ([]string, error) {
-	var paths []string
-	err := s.withOwner(ctx, "delete_machine", apikey.Machine, id, func(tx *sql.Tx) error {
-		var err error
-		paths, err = reportPaths(ctx, tx, id, "")
-		if err != nil {
-			return err
-		}
+func (s *Store) DeleteMachine(ctx context.Context, id string) error {
+	return s.withOwner(ctx, "delete_machine", apikey.Machine, id, func(tx *sql.Tx) error {
 		result, err := tx.ExecContext(ctx, "DELETE FROM machines WHERE id = $1", id)
 		if err != nil {
 			return err
@@ -184,10 +178,6 @@ func (s *Store) DeleteMachine(ctx context.Context, id string) ([]string, error) 
 		}
 		return nil
 	})
-	if err != nil {
-		return nil, err
-	}
-	return paths, nil
 }
 
 func (s *Store) lockOwner(ctx context.Context, tx *sql.Tx, role, id string) error {

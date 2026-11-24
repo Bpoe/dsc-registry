@@ -33,8 +33,7 @@ func (s *Store) MachineReportSnapshot(ctx context.Context, id string) (MachineRe
 			      UNION SELECT name FROM reports WHERE machine_id = $1) names
 			LEFT JOIN configurations c ON c.machine_id = $1 AND c.name = names.name
 			LEFT JOIN reports r ON r.machine_id = $1 AND r.name = names.name
-				AND r.sequence = (SELECT MAX(sequence) FROM reports WHERE machine_id = $1 AND name = names.name)
-			ORDER BY names.name,r.sequence`, id)
+			ORDER BY names.name`, id)
 		if err != nil {
 			return err
 		}

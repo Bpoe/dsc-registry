@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"sync/atomic"
 
 	"github.com/Bpoe/dsc-registry/internal/config"
 	"github.com/Bpoe/dsc-registry/internal/database"
@@ -30,20 +31,22 @@ type reportFiles interface {
 }
 
 type Service struct {
-	db             *database.Store
-	files          reportFiles
-	events         eventing.Dispatcher
-	maxReportBytes int64
-	logger         *slog.Logger
-	metrics        reportMetrics
-	tracer         trace.Tracer
+	db                 *database.Store
+	files              reportFiles
+	events             eventing.Dispatcher
+	maxReportBytes     int64
+	logger             *slog.Logger
+	metrics            reportMetrics
+	tracer             trace.Tracer
+	cleanupWake        chan struct{}
+	cleanupLastWarning atomic.Int64
 }
 
 func New(db *database.Store, files *reportstore.Store, events eventing.Dispatcher, maxReportBytes int64, logger *slog.Logger) *Service {
 	if events == nil {
 		events = eventing.Noop{}
 	}
-	return &Service{db: db, files: files, events: events, maxReportBytes: maxReportBytes, logger: logger, metrics: newReportMetrics(), tracer: otel.Tracer("github.com/Bpoe/dsc-registry/internal/service")}
+	return &Service{db: db, files: files, events: events, maxReportBytes: maxReportBytes, logger: logger, cleanupWake: make(chan struct{}, 1), metrics: newReportMetrics(), tracer: otel.Tracer("github.com/Bpoe/dsc-registry/internal/service")}
 }
 
 func (s *Service) CreateMachine(ctx context.Context, name string) (database.Machine, error) {
@@ -69,10 +72,10 @@ func (s *Service) CreateMachineWithKey(ctx context.Context, name string) (databa
 }
 
 func (s *Service) DeleteMachine(ctx context.Context, id string) error {
-	paths, err := s.db.DeleteMachine(ctx, id)
+	err := s.db.DeleteMachine(ctx, id)
 	if err == nil {
 		s.events.Notify(eventing.MachineDeleted, eventing.Identifiers{MachineID: id})
-		s.removeReportFiles(ctx, paths)
+		s.wakeReportCleanup()
 	}
 	return err
 }
@@ -101,11 +104,11 @@ func (s *Service) PutConfiguration(ctx context.Context, id, name string, body []
 }
 
 func (s *Service) DeleteConfiguration(ctx context.Context, id, name string) error {
-	paths, err := s.db.DeleteConfiguration(ctx, id, name)
+	err := s.db.DeleteConfiguration(ctx, id, name)
 	if err == nil {
 		s.events.Notify(eventing.ConfigurationDeleted, eventing.Identifiers{MachineID: id, ConfigurationName: name})
 		s.events.Notify(eventing.MachineUpdated, eventing.Identifiers{MachineID: id})
-		s.removeReportFiles(ctx, paths)
+		s.wakeReportCleanup()
 	}
 	return err
 }

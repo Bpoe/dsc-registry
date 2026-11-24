@@ -1,22 +1,18 @@
 package service
 
 import (
-	"bytes"
 	"context"
 	"crypto/sha256"
 	"errors"
 	"fmt"
-	"os"
 	"time"
 
 	"github.com/Bpoe/dsc-registry/internal/database"
 	"github.com/Bpoe/dsc-registry/internal/eventing"
 	"github.com/Bpoe/dsc-registry/internal/report"
-	"github.com/Bpoe/dsc-registry/internal/reportstore"
 	"github.com/Bpoe/dsc-registry/internal/telemetry"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
-	"go.opentelemetry.io/otel/trace"
 )
 
 // ErrReportStorage lets callers classify storage failures without inspecting
@@ -60,29 +56,7 @@ func (s *Service) PublishReport(ctx context.Context, id string, body []byte) (pu
 			s.events.Notify(eventing.ReportUpdated, data)
 		}
 	}
-	if len(publication.CleanupPaths) != 0 {
-		cleanupCtx, cleanupSpan := s.tracer.Start(ctx, "Cleanup retired reports")
-		s.removeReportFiles(cleanupCtx, publication.CleanupPaths)
-		cleanupSpan.End()
-	}
 	return publication, err
-}
-
-func (s *Service) removeReportFiles(ctx context.Context, paths []string) {
-	for _, path := range paths {
-		if err := s.files.Remove(path); err != nil {
-			s.logger.WarnContext(ctx, "report file cleanup failed", "path", path, "error", err)
-		}
-	}
-}
-
-func (s *Service) writeContent(ctx context.Context, content []byte) (string, error) {
-	path, err := s.files.Write(ctx, content)
-	var cleanupErr *reportstore.CleanupError
-	if errors.As(err, &cleanupErr) {
-		s.logger.WarnContext(ctx, "report file cleanup failed", "path", cleanupErr.Path, "error", cleanupErr.Err)
-	}
-	return path, storageError(err)
 }
 
 func (s *Service) readContent(ctx context.Context, path string) ([]byte, error) {
@@ -90,15 +64,15 @@ func (s *Service) readContent(ctx context.Context, path string) ([]byte, error) 
 	return content, storageError(err)
 }
 
-// GetReport rechecks missing content after concurrent retirement. A retired ID
-// is not found; an unchanged reference with missing content is a storage error.
+// GetReport rechecks metadata after a storage error. This also handles a
+// network filesystem invalidating an open handle during concurrent retirement.
 func (s *Service) GetReport(ctx context.Context, id, reportID string, full bool) (database.ReportMetadata, []byte, error) {
 	item, path, err := s.db.GetReport(ctx, id, reportID)
 	if err != nil || !full {
 		return item, nil, err
 	}
 	content, err := s.readContent(ctx, path)
-	if errors.Is(err, os.ErrNotExist) {
+	if err != nil {
 		if _, _, lookupErr := s.db.GetReport(ctx, id, reportID); lookupErr != nil {
 			return item, nil, lookupErr
 		}
@@ -107,93 +81,87 @@ func (s *Service) GetReport(ctx context.Context, id, reportID string, full bool)
 }
 
 func (s *Service) ReadReport(ctx context.Context, id, name string) ([]byte, error) {
-	var missingID string
-	var missingErr error
+	var failedID string
+	var readErr error
 	for {
 		item, path, err := s.db.LatestConfigurationReport(ctx, id, name)
 		if err != nil {
 			return nil, err
 		}
-		if item.ID == missingID {
-			return nil, missingErr
+		if item.ID == failedID {
+			return nil, readErr
 		}
 		content, err := s.readContent(ctx, path)
-		if !errors.Is(err, os.ErrNotExist) {
-			return content, err
+		if err == nil {
+			return content, nil
 		}
-		missingID, missingErr = item.ID, err
+		failedID, readErr = item.ID, err
 	}
 }
 
-func (s *Service) publishReport(ctx context.Context, id, name string, upload report.Upload) (publication database.Publication, err error) {
-	var unused []string
+func (s *Service) publishReport(ctx context.Context, id, name string, upload report.Upload) (database.Publication, error) {
 	var publicationTime time.Duration
 	defer func() { s.metrics.publish.Record(ctx, publicationTime.Seconds()) }()
-	defer func() { publication.CleanupPaths = append(publication.CleanupPaths, unused...) }()
+
 	digest := sha256.Sum256(upload.Result)
-	for {
-		lookupCtx, lookupSpan, lookupStart := s.databasePhase(ctx, "Find existing upload")
-		existingID, revision, existingPath, storedDigest, err := s.db.FindReportUpload(lookupCtx, id, name, upload.ID)
-		lookupErr := err
-		if errors.Is(lookupErr, database.ErrReportNotFound) {
-			lookupErr = nil
-		}
-		finishDatabasePhase(lookupSpan, lookupStart, &publicationTime, lookupErr)
-		path := ""
-		switch {
-		case err == nil:
-			if revision != upload.ConfigurationRevision {
-				return database.Publication{}, database.ErrUploadConflict
-			}
-			if storedDigest == nil {
-				content, err := s.readContent(ctx, existingPath)
-				if errors.Is(err, os.ErrNotExist) {
-					recheckCtx, recheckSpan, recheckStart := s.databasePhase(ctx, "Find existing upload")
-					currentID, _, _, _, lookupErr := s.db.FindReportUpload(recheckCtx, id, name, upload.ID)
-					phaseErr := lookupErr
-					if errors.Is(phaseErr, database.ErrReportNotFound) {
-						phaseErr = nil
-					}
-					finishDatabasePhase(recheckSpan, recheckStart, &publicationTime, phaseErr)
-					if lookupErr != nil && !errors.Is(lookupErr, database.ErrReportNotFound) {
-						return database.Publication{}, lookupErr
-					}
-					if currentID != existingID {
-						traceRetry(ctx)
-						continue
-					}
-				}
-				if err != nil {
-					return database.Publication{}, err
-				}
-				oldDigest := sha256.Sum256(content)
-				storedDigest = oldDigest[:]
-			}
-			if !bytes.Equal(storedDigest, digest[:]) {
-				return database.Publication{}, database.ErrUploadConflict
-			}
-		case errors.Is(err, database.ErrReportNotFound):
-			path, err = s.writeContent(ctx, upload.Result)
+	candidate, writeErr := s.files.Write(ctx, upload.Result)
+	path := candidate
+	if writeErr != nil {
+		path = ""
+	}
+	var keepFile bool
+	defer func() {
+		if candidate != "" && !keepFile {
+			// A canceled request must still record its unpublished file. Bound
+			// the attempt if the database is unavailable.
+			cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), time.Second)
+			defer cancel()
+			phaseCtx, span, start := s.databasePhase(cleanupCtx, "Enqueue unused report file")
+			err := s.db.EnqueueReportCleanup(phaseCtx, candidate)
+			finishDatabasePhase(span, start, &publicationTime, err)
 			if err != nil {
-				return database.Publication{}, err
+				s.warnReportCleanup(phaseCtx, "enqueue unused report file failed", "path", candidate, "error", err)
+			} else {
+				s.wakeReportCleanup()
 			}
-		default:
+		}
+	}()
+
+	var verifiedID, failedReadID string
+	var readErr error
+	for {
+		commitCtx, span, start := s.databasePhase(ctx, "Publish metadata")
+		result, err := s.db.CommitReport(commitCtx, id, name, upload, path, digest[:], verifiedID)
+		keepFile = result.KeepFile
+		phaseErr := err
+		if writeErr != nil && errors.Is(err, database.ErrReportNotFound) {
+			phaseErr = nil
+			err = storageError(writeErr)
+		}
+		finishDatabasePhase(span, start, &publicationTime, phaseErr)
+		if err != nil {
 			return database.Publication{}, err
 		}
-		commitCtx, commitSpan, commitStart := s.databasePhase(ctx, "Publish metadata")
-		publication, keepFile, err := s.db.CommitReport(commitCtx, id, name, upload, path, digest[:], existingID)
-		finishDatabasePhase(commitSpan, commitStart, &publicationTime, err)
-		if path != "" && !keepFile {
-			unused = append(unused, path)
+		if result.LegacyPath == "" {
+			if result.Outcome == database.MutationUpdated {
+				s.wakeReportCleanup()
+			}
+			return result.Publication, nil
 		}
-		if errors.Is(err, database.ErrReportChanged) {
-			// A retry's report was replaced after the preliminary lookup.
-			// Recheck it without holding a transaction during file I/O.
-			traceRetry(ctx)
-			continue
+
+		if result.Report.ID == failedReadID {
+			return database.Publication{}, readErr
 		}
-		return publication, err
+		content, err := s.readContent(ctx, result.LegacyPath)
+		if err != nil {
+			// The legacy receipt may have retired while storage was being read.
+			failedReadID, readErr = result.Report.ID, err
+		} else {
+			if sha256.Sum256(content) != digest {
+				return database.Publication{}, database.ErrUploadConflict
+			}
+			verifiedID = result.Report.ID
+		}
+		s.tracePublicationRetry(ctx)
 	}
 }
-
-func traceRetry(ctx context.Context) { trace.SpanFromContext(ctx).AddEvent("Report publication retry") }
