@@ -449,16 +449,20 @@ and SQL acknowledgements must be honored by the storage/server; the application
 does not provide a distributed DB/filesystem transaction or certify power-loss
 durability of a particular NFS server.
 
-File-before-SQL publication is retained; no report file I/O holds SQL transactions.
-Storage retains only the latest accepted report per name, with idempotency for
-that retained upload. Replacement/configuration/machine deletion removes files
-after successful commit. Cleanup failures log relative path/error without
-failing committed operations. Pre-commit failures clean unused files; uncertain
-commit outcomes retain both files conservatively. Existing history is hidden
-and retired on that name's next replacement/deletion, not swept on startup.
-Do not run an age-based online report cleaner. For remaining orphans use the
-[bounded offline cleanup procedure](../README.md#bounded-offline-orphan-cleanup)
-with **all replicas stopped**, checking every candidate against SQL.
+File writes complete before SQL publication. Replacement, configuration
+deletion and machine deletion enqueue retired paths in the same SQL
+transaction. The server's cleanup worker wakes on local commits and checks
+the outbox on startup and every 15 seconds. It processes up to 64 records at a
+time with a five-minute lease. PostgreSQL workers skip each other's locked
+records. Unlinks run with the SQL connection returned to its pool. Failed
+deletions retry with exponential backoff and rate-limited warnings. Claims
+left by an interrupted shutdown become eligible after the lease expires.
+Hidden report history is queued for retirement during migration.
+
+Known unpublished candidates are queued when SQL is available. A crash
+before publication or enqueue can leave an untracked file. Use the bounded
+offline cleanup procedure with **all replicas stopped** so a candidate cannot
+still be in flight. [Offline orphan cleanup](../README.md#bounded-offline-orphan-cleanup)
 
 ## HTTP, HTTPS and health
 
@@ -916,32 +920,35 @@ configuration; legacy GC pause/count instruments require its deprecated runtime
 mode, which is not enabled by DSC Registry because it also duplicates memory and
 goroutine signals. There is no custom runtime, CPU, or host polling.
 
-### Four report histograms
+### Report and cleanup metrics
 
-These are the only custom metric instruments. They have no identifiers, names,
-paths, or payload labels. Duration buckets span 1 ms through 60 s (storage also
+These instruments use bounded dimensions. Duration buckets span 1 ms through 60 s (storage also
 includes 100 and 500 microseconds); size buckets span 1 KiB through 1 GiB,
 including the default 16 MiB maximum, with an overflow bucket above that.
 
 | Name | Type / unit | Attributes and recording boundary |
 | --- | --- | --- |
-| `dscreg.report.ingest.duration` | Float64Histogram / `s` | Exactly once on return from `Service.PublishReport`, including parse/validation, hashing, all retries, file I/O, SQL publication, notification admission, and synchronous cleanup. `dscreg.report.ingest.outcome=created|duplicate|failed`. Both database `MutationCreated` and `MutationUpdated` are `created` (a new accepted report); `MutationUnchanged` is `duplicate`; any returned error is `failed`. A valid DSC execution failure can still be a successfully created ingestion. |
+| `dscreg.report.ingest.duration` | Float64Histogram / `s` | Exactly once on return from `Service.PublishReport`, including parse/validation, hashing, all retries, file I/O, SQL publication, and notification admission. Background file deletion is excluded. `dscreg.report.ingest.outcome=created\|duplicate\|failed`. Both database `MutationCreated` and `MutationUpdated` are `created` (a new accepted report); `MutationUnchanged` is `duplicate`; any returned error is `failed`. A valid DSC execution failure can still be a successfully created ingestion. |
 | `dscreg.report.size` | Int64Histogram / `By` | Once after successful parsing, using `len(upload.Result)`: exact original result envelope bytes, excluding upload wrapper and HTTP overhead. Includes duplicates/conflicts and subsequent storage/database failures. No attributes. |
-| `dscreg.report.publish.duration` | Float64Histogram / `s` | Once per parsed attempt entering database publication: the sum of wall time spent in all service-orchestrated `FindReportUpload` calls/rechecks and `CommitReport` calls across retries. Includes existing-upload detection and metadata/backfill transactions, even on failure; excludes hashing, legacy file reads, file writes, notification scheduling, and cleanup. This is cumulative phase time, not a single contiguous span or the entire interval between first query and last commit. No attributes. |
-| `dscreg.report.storage.operation.duration` | Float64Histogram / `s` | Once per attempted filesystem operation. `dscreg.storage.operation=open|write|sync|close|stat|read|delete`; failures add bounded `error.type=canceled|timeout|not_found|permission_denied|already_exists|short_write|other`. Write measures OpenFile, Write (including short-write detection), Sync, and Close individually. Read measures open, the existing `file.Stat()` call as `stat`, bounded reading as `read`, and close. Stat timing/classification reflects the syscall itself; subsequent regular-file/size validation remains in the parent span, and a rejected read records no `read` operation. Delete measures the actual remove syscall, including cleanup. No measurements for calls skipped after earlier failures/cancellation/path rejection. Startup/health probes are excluded. |
+| `dscreg.report.publish.duration` | Float64Histogram / `s` | Once per parsed attempt entering database publication: the sum of metadata transactions, legacy digest rechecks, and any enqueue of an unused candidate. It includes connection and lock waits. Hashing, report filesystem I/O and background cleanup are excluded. No attributes. |
+| `dscreg.report.storage.operation.duration` | Float64Histogram / `s` | Once per attempted filesystem operation. `dscreg.storage.operation=open\|write\|sync\|close\|stat\|read\|delete`; failures add bounded `error.type=canceled\|timeout\|not_found\|permission_denied\|already_exists\|short_write\|other`. Write measures OpenFile, Write (including short-write detection), Sync, and Close individually. Read measures open, the existing `file.Stat()` call as `stat`, bounded reading as `read`, and close. Stat timing/classification reflects the syscall itself; subsequent regular-file/size validation remains in the parent span, and a rejected read records no `read` operation. Delete measures the actual remove syscall, including cleanup. No measurements for calls skipped after earlier failures/cancellation/path rejection. Startup/health probes are excluded. |
+| `dscreg.report.publish.retries` | Int64Counter | Publication rechecks after legacy file verification. No attributes. |
+| `dscreg.report.cleanup.attempts` | Int64Counter | File deletion attempts with `dscreg.report.cleanup.outcome=success\|failure`. Missing files count as successes. |
+| `dscreg.report.cleanup.duration` | Float64Histogram / `s` | Wall time to claim and process a nonempty batch, including filesystem I/O and acknowledgement. No attributes. |
+| `dscreg.report.cleanup.pending` | Int64Gauge | Outstanding records, including claimed or deferred work. Each replica reports the shared database value. Use the maximum across replicas for one database. |
+| `dscreg.report.cleanup.oldest.age` | Float64Gauge / `s` | Age of the oldest outstanding record, or zero when the outbox is empty. Use the maximum across replicas for one database. |
 
 Storage measurements include time blocked inside the actual system calls.
-Exclusive UUID-file creation, original bytes, `os.Root` confinement, explicit
-Sync, closing, failure cleanup, and retention on uncertain SQL commits remain
-unchanged. A missing-file delete remains idempotently successful and is measured
-without `error.type`; genuine removal failures retain bounded error classification.
+A missing-file delete counts as successful. Genuine removal failures carry a
+bounded error classification.
 The existing Remove API has no context parameter; its metric records without a trace exemplar.
 No additional filesystem calls are made for telemetry.
 
-Report traces contain `Service.PublishReport`, `Find existing upload`,
-`Report storage write`/`Report storage read`, `Publish metadata`, and
-`Cleanup retired reports` when cleanup is needed. Individual SQL spans nest
-under lookup/publication phases. Filesystem calls have metrics within the
+Publication traces contain `Service.PublishReport`, `Report storage write` or
+`Report storage read`, `Publish metadata` and, on unused candidates,
+`Enqueue unused report file`. Cleanup has a separate
+`Process report file cleanup` span. Individual SQL spans nest under the phase
+that issued them. Filesystem calls have metrics within the
 storage span, not four more spans per report. Retried publication adds a
 `Report publication retry` event. Filesystem/service errors are sanitized before
 trace error events/status are recorded. HTTP rejections before the service
@@ -959,7 +966,7 @@ HTTP measurements, not duplicate ingestion measurements.
    successful calls. Compare with externally collected Azure Files latency,
    throughput/IOPS, throttling, and client mount diagnostics. Keep Sync enabled.
 3. Compare the cumulative publication histogram with storage and ingestion.
-   Inspect sampled traces for retry events, lookup/recheck spans, transactions,
+   Inspect sampled traces for retry events, publication spans, transactions,
    and SQL calls. Publication includes pool/lock waits but no filesystem time.
    Check the pool statistics above and PostgreSQL monitoring for contention.
 4. Use allocation rate, GC goal/memory usage, goroutine count, and scheduling
@@ -1000,9 +1007,23 @@ server metrics, and NFS kernel metrics are collected externally, not by DSC
 Registry. Observability does not constitute an Azure Files/NFS capacity test.
 
 Alert on sustained non-health 5xx, commit/begin errors, increased ingestion or
-filesystem duration/failure counts, pool waits, and replica availability. Retained
-report growth still requires bounded **offline** maintenance, never deletion by
-age while replicas run. Health endpoints do not certify dependency availability.
+filesystem duration/failure counts, pool waits, and replica availability. Use
+the oldest cleanup age and pending count together to identify a sustained
+backlog. Health endpoints do not certify dependency availability.
+
+For a focused PostgreSQL comparison, run the same workload and pool settings
+before and after the change. The replacement path uses two application SQL
+statements plus transaction control. Use the benchmark with a disposable
+database and local report storage to compare service throughput and pool wait.
+
+```sh
+go test ./internal/service -run '^$' -bench 'BenchmarkReportReplacement/postgres' -cpu 16 -count 3
+```
+
+Set `DSCREGISTRY_TEST_POSTGRES_DSN` for this benchmark. For production tail
+latency, repeat the mixed 50,000-machine HTTP workload with identical request
+mix, report sizes, pool limits, tracing and NFS settings. Compare upload
+P95/P99, DB publication time, pool wait, and cleanup backlog under sustained load.
 
 ## Repeatable two-replica verification
 

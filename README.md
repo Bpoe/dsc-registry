@@ -673,9 +673,10 @@ The existing `/configurations/{name}/status` and `/report` admin reads remain
 available for desired names and select only the current desired revision.
 Until that revision has a report they return `404`
 (`report_not_found`); after desired deletion they return `configuration_not_found`.
-Configuration deletion removes its report metadata and file. Recreating a name does not inherit an
-old revision's execution status. All report/status responses are
-`no-store`. Machine deletion cascades to all report metadata and cleans its files.
+Configuration deletion removes its report metadata and schedules file cleanup.
+A recreated name starts with fresh execution status. All report and status
+responses are `no-store`. Machine deletion cascades to all report metadata and
+schedules cleanup for its files.
 An upload accepted after configuration deletion creates a new retained report
 for that removed name; machine deletion always prevents further uploads.
 
@@ -688,40 +689,40 @@ uncommitted files have no accessible report record. Machine locks serialize
 SQL publication and deletion across API replicas. No report file I/O runs
 inside a database transaction. Named reads reselect after a concurrent cleanup
 removes their selected file; reads by an obsolete report ID return `404`.
-After a successful replacement/deletion commit, the old files are removed.
-Missing files are harmless during cleanup; other cleanup failures log a warning
-with the relative path and error, without failing the committed operation.
-SQL stores summary fields, relative paths and a
-payload digest, not full report JSON.
-Write/sync/close failures leave the previous valid status/file intact.
-SQL errors before commit roll back without changing the previous reference and
-remove the new file. Commit errors conservatively retain both files, because a
-lost acknowledgement might mean the new reference actually committed. Retry
-with the same upload ID to resolve that uncertainty. Partial writes are removed
-after closing the file. Cleanup errors never mask the original failure.
+Replacement and deletion commit their retired file paths to a durable SQL
+outbox. Each server runs a cleanup worker that wakes on local commits and polls
+the shared outbox on startup and periodically. Workers lease bounded batches,
+release their SQL connections before removing files, and retry storage errors
+with backoff. Deleting a missing file counts as success. Cleanup runs outside
+upload and deletion requests.
 
-Existing settings remain `-report-root` (one local/shared filesystem root) and
-`-max-report-bytes` (default 16 MiB, bounding the whole upload independently of
-the general request limit). There is no new service, worker or storage provider.
-There is no report history, retention setting, or periodic cleaner.
+SQL stores summary fields, relative paths and a payload digest. Each attempt
+writes a candidate before publication. An exact retry returns the retained
+receipt, including when the candidate write fails and the digest is already
+known. A candidate that loses an idempotency check or fails before commit is
+queued for cleanup when SQL is available. A commit error can indicate a lost
+acknowledgement. Retry with the same upload ID to resolve the receipt. SQL
+references protect a committed candidate, and its superseded file is already
+in the outbox.
 
-Stop all API instances before upgrading. SQLite migration 3 / PostgreSQL
-migration 4 preserve existing latest report references and assign server report
-IDs, then remove the independently maintained status table. Old discarded
-reports cannot be recovered. Migrated records acquire a retry digest by reading
-the existing file on their first matching retry; that first retry needs working
-report storage. Later retries need only SQL. Do not run old and new schema
-generations together; back up SQL and report storage as a pair before upgrading.
-The latest-only change needs no schema migration: old history is hidden by
-latest-only queries and retired on the next replacement or deletion of that
-name. Untouched names' old files remain until then; this is not a global sweep.
+The existing `-report-root` and `-max-report-bytes` settings apply. The cleanup
+worker uses the configured SQL database and report root.
+
+Stop all API instances and back up SQL and report storage as a pair before
+upgrading. SQLite migration 3 and PostgreSQL migration 4 migrate the original
+status records. The first matching retry of a migrated receipt reads its
+original file to verify and backfill the digest. SQLite migration 5 and
+PostgreSQL migration 6 preserve the visible latest receipt and order per
+machine and configuration. They retire previously hidden history and queue
+its files for cleanup.
 
 ### Bounded offline orphan cleanup
 
-V1 deliberately has **no online age-based scavenger**: an unreferenced file may
-belong to a pending upload on another replica. Cleanup failures, uncertain
-commits, or a crash between file and database operations may
-leave orphaned files. Perform bounded maintenance as follows:
+A crash before SQL publication or before an unpublished candidate can be
+queued may leave an untracked file. The same can happen after an ambiguous
+commit that did not take effect or while the database is unavailable. An
+unreferenced file could still belong to an active upload. Use this bounded
+offline maintenance procedure for untracked files.
 
 1. Stop **all** API instances sharing the database/root, and keep them stopped
    through cleanup. Do not merely stop one replica or rely on file age.

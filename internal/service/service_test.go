@@ -148,6 +148,9 @@ func TestServiceMutationsBothEngines(t *testing.T) {
 		if err != nil || string(content) != serviceResult {
 			t.Fatal("original bytes changed", err)
 		}
+		if _, err := app.processReportCleanup(ctx); err != nil {
+			t.Fatal(err)
+		}
 		if entries, err := os.ReadDir(root); err != nil || len(entries) != 1 {
 			t.Fatal("replacement leaked files", entries, err)
 		}
@@ -159,6 +162,9 @@ func TestServiceMutationsBothEngines(t *testing.T) {
 			t.Fatal(err)
 		}
 		events.expect(t)
+		if _, err := app.processReportCleanup(ctx); err != nil {
+			t.Fatal(err)
+		}
 		if entries, err := os.ReadDir(root); err != nil || len(entries) != 0 {
 			t.Fatal("deletion leaked files", entries, err)
 		}

@@ -198,7 +198,7 @@ func TestAgentConfigurationPollingFailuresBothEngines(t *testing.T) {
 					queries = append(queries, query)
 					if query == test.query {
 						if test.removeMachine {
-							_, err := store.DeleteMachine(ctx, machine.ID)
+							err := store.DeleteMachine(ctx, machine.ID)
 							return err
 						}
 						return test.failure
@@ -268,7 +268,7 @@ func TestAgentConfigurationMutationBetweenReadsBothEngines(t *testing.T) {
 						t.Fatal("mutation must happen after the revision read and before the sole snapshot read")
 					}
 					if mutation == "delete" {
-						_, err = store.DeleteConfiguration(ctx, machine.ID, "one")
+						err = store.DeleteConfiguration(ctx, machine.ID, "one")
 					} else {
 						name := "one"
 						if mutation == "create" {

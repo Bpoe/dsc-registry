@@ -559,7 +559,7 @@ computed Boolean, not a storage key. Its `/report` sibling returns the original
 dscd JSON object. Both select only reports matching the configuration's current
 desired content revision and return `404` (`report_not_found`) until that revision
 has a retained report. After configuration deletion they return `configuration_not_found`;
-the deletion also removes that name's report records and files. Recreating a name does not inherit an old
+the deletion also removes that name's report records and schedules file cleanup. Recreating a name does not inherit an old
 revision's result. Neither endpoint exposes internal filenames.
 
 ### Latest reports and machine status
@@ -721,24 +721,21 @@ wrapper. SQL stores only metadata, relative file references and a SHA-256
 digest for retry comparison, never full JSON. File writes/sync/close must finish
 before SQL commit. Dependencies
 return `503` (`database_unavailable` or `report_storage_unavailable`), without
-paths or underlying diagnostics. Failed writes and pre-commit SQL failures
-preserve the previous report and clean up the new file. A commit error has an
-uncertain outcome: retain both old and new files; never risk deleting a
-potentially committed reference. Cleanup errors do not mask the original error.
-See the
-[storage and orphan maintenance contract](../README.md#latest-reports-and-execution-status)
-for cross-instance reader protection, ambiguous commit acknowledgements and
-bounded offline cleanup. The existing `-report-root` and `-max-report-bytes`
-settings apply; no new settings or infrastructure are required. SQLite migration 3 / PostgreSQL migration 4 retain
-existing latest reports and remove the separate status table. The first retry
-of a migrated record reads its original file to verify/backfill its payload
-digest outside any transaction; later retries need no filesystem access.
-If replacement removes that file during backfill, the retry rechecks SQL and
-restarts publication. A missing file still referenced by the retained report
-remains a storage error.
-Latest-only storage needs no schema change. Older history already in SQL is
-hidden from reads and removed, with its files, on the next replacement/deletion
-for that name. No periodic or startup sweep is added.
+paths or underlying diagnostics. A failed file write or rolled-back SQL
+transaction preserves the previous receipt and file. A metadata replacement
+or deletion transaction records retired files in a cleanup outbox. A background
+worker removes them after commit. Failures retry independently of the HTTP
+operation, and a missing retired file counts as cleaned up.
+
+On a commit error, retry with the same upload ID to resolve the receipt. The
+server uses the retained digest for exact retry verification. A migrated
+receipt with no digest requires reading the original file outside the SQL
+transaction. If concurrent replacement retires that receipt during the read,
+publication rechecks the current receipt. A missing file still referenced by
+a retained report remains a storage error. Hidden history from older schemas
+is durably retired during upgrade. See the storage and orphan maintenance
+contract for offline recovery of untracked candidates.
+[Report storage and orphan maintenance](../README.md#latest-reports-and-execution-status)
 
 ### Optional change notifications
 

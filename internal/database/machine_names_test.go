@@ -121,7 +121,7 @@ func TestMachineNamesBothEngines(t *testing.T) {
 		if _, err := store.DB.Exec("INSERT INTO machines(id, name, created_at) VALUES ($1, 'missing key', 'then')", uuid.NewString()); err == nil {
 			t.Fatal("omitted name key accepted")
 		}
-		if _, err := store.DeleteMachine(ctx, machine.ID); err != nil {
+		if err := store.DeleteMachine(ctx, machine.ID); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := store.GetMachineByName(ctx, "INDEPENDENT"); !errors.Is(err, ErrNotFound) {
@@ -182,7 +182,7 @@ func TestMachineNameMigrationBothEngines(t *testing.T) {
 		}
 		for range 2 {
 			store := testStore(t, engine, dsn)
-			assertCount(t, store.DB, "schema_migrations", version+3)
+			assertCount(t, store.DB, "schema_migrations", version+4)
 			for i, machine := range machines {
 				got, err := store.GetMachineByName(context.Background(), fmt.Sprintf("HOST-%03d-\u00e9", i))
 				if err != nil || got != machine {

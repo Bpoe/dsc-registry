@@ -3,7 +3,6 @@ package reportstore
 import (
 	"context"
 	"errors"
-	"fmt"
 	"io"
 	"math"
 	"os"
@@ -22,17 +21,8 @@ type reportFile interface {
 	Close() error
 }
 
-// CleanupError identifies a failed removal without obscuring the write failure.
-type CleanupError struct {
-	Path string
-	Err  error
-}
-
-func (e *CleanupError) Error() string {
-	return fmt.Sprintf("remove partial report %s: %v", e.Path, e.Err)
-}
-func (e *CleanupError) Unwrap() error { return e.Err }
-
+// Write creates an immutable candidate. Once created, its key is returned even
+// on a write, sync or close failure so the caller can schedule its cleanup.
 func (s *Store) Write(ctx context.Context, content []byte) (string, error) {
 	return s.write(ctx, content, func(name string) (reportFile, error) {
 		return s.root.OpenFile(name, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
@@ -68,13 +58,7 @@ func (s *Store) write(ctx context.Context, content []byte, create func(string) (
 	closeErr := file.Close()
 	s.recordOperation(ctx, "close", start, closeErr)
 	err = errors.Join(err, closeErr, ctx.Err())
-	if err != nil {
-		if cleanupErr := s.Remove(name); cleanupErr != nil {
-			err = errors.Join(err, &CleanupError{Path: name, Err: cleanupErr})
-		}
-		return "", err
-	}
-	return name, nil
+	return name, err
 }
 
 func validPath(name string) bool {

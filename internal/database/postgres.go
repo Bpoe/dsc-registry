@@ -50,7 +50,7 @@ func initializePostgres(ctx context.Context, db *sql.DB) error {
 		Scan(&count, &version); err != nil {
 		return err
 	}
-	if count != version || version < 0 || version > 5 {
+	if count != version || version < 0 || version > 6 {
 		return errors.New("unsupported PostgreSQL schema version or migration ledger")
 	}
 	if version == 0 {
@@ -101,6 +101,15 @@ func initializePostgres(ctx context.Context, db *sql.DB) error {
 		}
 		if _, err := tx.ExecContext(ctx, "INSERT INTO schema_migrations VALUES ($1, $2)",
 			5, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
+			return err
+		}
+	}
+	if version < 6 {
+		if _, err := tx.ExecContext(ctx, migrations.PostgresReportCleanup); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, "INSERT INTO schema_migrations VALUES ($1, $2)",
+			6, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
 			return err
 		}
 	}

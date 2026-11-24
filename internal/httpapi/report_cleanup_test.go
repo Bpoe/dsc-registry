@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql/driver"
 	"errors"
+	"io"
 	"log/slog"
 	"net/http/httptest"
 	"os"
@@ -40,6 +41,44 @@ func storedReportPaths(t *testing.T, db *database.Store, machineID string) []str
 		t.Fatal(err)
 	}
 	return paths
+}
+
+// Run a fresh worker so test assertions do not depend on production scheduling.
+func drainHTTPReportFiles(t *testing.T, db *database.Store, files *reportstore.Store, logger *slog.Logger, failed int) {
+	t.Helper()
+	if logger == nil {
+		logger = slog.New(slog.NewTextHandler(io.Discard, nil))
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	app := service.New(db, files, nil, 4096, logger)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		app.RunReportCleanup(ctx)
+	}()
+	defer func() {
+		cancel()
+		<-done
+	}()
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		var count, failures int
+		err := db.DB.QueryRowContext(ctx, `SELECT COUNT(*),
+            COUNT(CASE WHEN attempts > 0 AND claim_token IS NULL THEN 1 END)
+            FROM report_file_cleanup`).Scan(&count, &failures)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if count == failed && failures == failed {
+			return
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatalf("cleanup pending=%d failed=%d, want %d failures", count, failures, failed)
+		case <-ticker.C:
+		}
+	}
 }
 
 func TestReportFileCleanupBothEngines(t *testing.T) {
@@ -127,6 +166,11 @@ func testReportFileCleanup(t *testing.T, engine, dsn, operation, state string) {
 	} else if len(current) != 0 {
 		t.Fatal("deletion retained report records", current)
 	}
+	wantFailed := 0
+	if state == "blocked" {
+		wantFailed = 1
+	}
+	drainHTTPReportFiles(t, db, files, slog.New(slog.NewJSONHandler(&logs, nil)), wantFailed)
 	for i, path := range paths {
 		_, err := os.Stat(filepath.Join(root, path))
 		if state == "blocked" && i == 0 {
@@ -175,7 +219,7 @@ func TestReportCleanupRollbackBothEngines(t *testing.T) {
 							historyBody("docker", config.Revision, uuid.NewString(), rawSuccessReport), 201))
 					oldPath := storedReportPaths(t, db, machine.ID)[0]
 					recorder.items = nil
-					table, event := "reports", "INSERT"
+					table, event := "reports", "UPDATE OF report_path"
 					if operation == "configuration" {
 						table, event = "configurations", "DELETE"
 					} else if operation == "machine" {
@@ -222,6 +266,11 @@ func TestReportCleanupRollbackBothEngines(t *testing.T) {
 					if got := apiRequest(t, handler, admin.Key, "GET", base+"/reports/"+first.ID+"/content", "", 200); got.Body.String() != rawSuccessReport {
 						t.Fatal("failed operation corrupted previous report")
 					}
+					var retired bool
+					if err := db.DB.QueryRow(`SELECT EXISTS (SELECT 1 FROM report_file_cleanup WHERE path = $1)`, oldPath).Scan(&retired); err != nil || retired {
+						t.Fatal("rollback published cleanup for the retained file", retired, err)
+					}
+					drainHTTPReportFiles(t, db, files, nil, 0)
 					entries, err := os.ReadDir(root)
 					want := 1
 					if operation == "replace" && failure == "commit" {
@@ -256,7 +305,7 @@ func TestFailedPersistenceCleanupWarningPreservesErrorBothEngines(t *testing.T) 
 			})}
 
 		result, persistenceErr := service.New(failed, files, nil, 4096, slog.New(slog.NewJSONHandler(&logs, nil))).PublishReport(context.Background(), machine.ID, []byte(historyBody("docker", uuid.NewString(), uuid.NewString(), rawSuccessReport)))
-		if !errors.Is(persistenceErr, injected) || len(result.CleanupPaths) != 1 {
+		if !errors.Is(persistenceErr, injected) || result.Outcome != database.MutationUnchanged {
 			t.Fatal("original persistence error lost", result, persistenceErr)
 		}
 		api := &adminAPI{logger: slog.New(slog.NewJSONHandler(&logs, nil))}
@@ -266,8 +315,13 @@ func TestFailedPersistenceCleanupWarningPreservesErrorBothEngines(t *testing.T) 
 			!errors.Is(persistenceErr, injected) {
 			t.Fatal("cleanup failure masked original database failure", response.Body)
 		}
+		var candidate string
+		if err := store.DB.QueryRow("SELECT path FROM report_file_cleanup").Scan(&candidate); err != nil {
+			t.Fatal("unpublished candidate was not durably queued", err)
+		}
+		drainHTTPReportFiles(t, store, files, slog.New(slog.NewJSONHandler(&logs, nil)), 1)
 		if !strings.Contains(logs.String(), `"msg":"report file cleanup failed"`) ||
-			!strings.Contains(logs.String(), `"path":"`+result.CleanupPaths[0]+`"`) ||
+			!strings.Contains(logs.String(), `"path":"`+candidate+`"`) ||
 			!strings.Contains(logs.String(), `"error":`) {
 			t.Fatal("cleanup failure not logged with path and error")
 		}

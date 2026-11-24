@@ -15,9 +15,14 @@ import (
 var durationBuckets = []float64{.001, .0025, .005, .01, .025, .05, .1, .25, .5, 1, 2.5, 5, 10, 30, 60}
 
 type reportMetrics struct {
-	ingest  metric.Float64Histogram
-	size    metric.Int64Histogram
-	publish metric.Float64Histogram
+	ingest          metric.Float64Histogram
+	size            metric.Int64Histogram
+	publish         metric.Float64Histogram
+	retries         metric.Int64Counter
+	cleanupAttempts metric.Int64Counter
+	cleanupDuration metric.Float64Histogram
+	cleanupPending  metric.Int64Gauge
+	cleanupOldest   metric.Float64Gauge
 }
 
 func newReportMetrics() reportMetrics {
@@ -34,7 +39,28 @@ func newReportMetrics() reportMetrics {
 	if err != nil {
 		otel.Handle(err)
 	}
-	return reportMetrics{ingest: ingest, size: size, publish: publish}
+	retries, err := meter.Int64Counter("dscreg.report.publish.retries", metric.WithDescription("Publication rechecks after reading a legacy report"))
+	if err != nil {
+		otel.Handle(err)
+	}
+	attempts, err := meter.Int64Counter("dscreg.report.cleanup.attempts", metric.WithDescription("Report file deletion attempts by outcome"))
+	if err != nil {
+		otel.Handle(err)
+	}
+	duration, err := meter.Float64Histogram("dscreg.report.cleanup.duration", metric.WithUnit("s"), metric.WithDescription("Processing time for a nonempty cleanup batch"), metric.WithExplicitBucketBoundaries(durationBuckets...))
+	if err != nil {
+		otel.Handle(err)
+	}
+	pending, err := meter.Int64Gauge("dscreg.report.cleanup.pending", metric.WithDescription("Outstanding report file cleanup records in the shared database"))
+	if err != nil {
+		otel.Handle(err)
+	}
+	oldest, err := meter.Float64Gauge("dscreg.report.cleanup.oldest.age", metric.WithUnit("s"), metric.WithDescription("Age of the oldest outstanding report file cleanup record"))
+	if err != nil {
+		otel.Handle(err)
+	}
+	return reportMetrics{ingest: ingest, size: size, publish: publish, retries: retries,
+		cleanupAttempts: attempts, cleanupDuration: duration, cleanupPending: pending, cleanupOldest: oldest}
 }
 
 // databasePhase measures only service-orchestrated database work. Each retry
@@ -48,4 +74,9 @@ func finishDatabasePhase(span trace.Span, start time.Time, total *time.Duration,
 	*total += time.Since(start)
 	telemetry.RecordError(span, err)
 	span.End()
+}
+
+func (s *Service) tracePublicationRetry(ctx context.Context) {
+	s.metrics.retries.Add(ctx, 1)
+	trace.SpanFromContext(ctx).AddEvent("Report publication retry")
 }

@@ -57,15 +57,9 @@ type faultyFile struct {
 	*os.File
 	stage       string
 	closeCalled bool
-	writeErr    error
-	afterClose  func() error
 }
 
 func (f *faultyFile) Write(data []byte) (int, error) {
-	if f.writeErr != nil {
-		n, _ := f.File.Write(data[:len(data)/2])
-		return n, f.writeErr
-	}
 	if f.stage == "write" {
 		n, _ := f.File.Write(data[:len(data)/2])
 		return n, errors.New("injected partial write")
@@ -86,45 +80,10 @@ func (f *faultyFile) Sync() error {
 func (f *faultyFile) Close() error {
 	f.closeCalled = true
 	err := f.File.Close()
-	if f.afterClose != nil {
-		err = errors.Join(err, f.afterClose())
-	}
 	if f.stage == "close" {
 		return errors.Join(err, errors.New("injected close failure"))
 	}
 	return err
-}
-
-func TestPartialWriteCleanupFailure(t *testing.T) {
-	root := t.TempDir()
-	store, err := Open(context.Background(), root)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer store.Close()
-	writeErr := errors.New("injected write failure")
-	var path string
-	key, err := store.write(context.Background(), []byte(`{"private":"report"}`), func(name string) (reportFile, error) {
-		path = name
-		file, err := store.root.OpenFile(name, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
-		if err != nil {
-			return nil, err
-		}
-		return &faultyFile{File: file, writeErr: writeErr, afterClose: func() error {
-			if err := store.root.Remove(name); err != nil {
-				return err
-			}
-			if err := store.root.Mkdir(name, 0o700); err != nil {
-				return err
-			}
-			return os.WriteFile(filepath.Join(root, name, "blocker"), nil, 0o600)
-		}}, nil
-	})
-	var cleanupErr *CleanupError
-	if key != "" || !errors.Is(err, writeErr) || !errors.As(err, &cleanupErr) ||
-		cleanupErr.Path != path || cleanupErr.Err == nil {
-		t.Fatal("cleanup failure masked original write failure or lost path", key, err)
-	}
 }
 
 func TestDirectWriteFaults(t *testing.T) {
@@ -155,12 +114,12 @@ func TestDirectWriteFaults(t *testing.T) {
 				}
 				return file, nil
 			})
-			if err == nil || key != "" || file == nil || !file.closeCalled {
-				t.Fatal("failed file exposed for publication or not closed", key, err)
+			if err == nil || !validPath(key) || file == nil || !file.closeCalled {
+				t.Fatal("failed file key missing or file not closed", key, err)
 			}
 			files, err := os.ReadDir(root)
-			if err != nil || len(files) != 0 {
-				t.Fatal("failed write not reclaimed", files, err)
+			if err != nil || len(files) != 1 || files[0].Name() != key {
+				t.Fatal("failed write is unavailable for cleanup", files, err)
 			}
 		})
 	}

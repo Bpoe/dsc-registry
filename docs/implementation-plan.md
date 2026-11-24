@@ -138,17 +138,15 @@ Tests cover file and SQL-commit faults, interrupted-write orphans, concurrency,
 role/machine isolation, historical/deleted configurations, pagination,
 migration/rollback, restart, conflicting retries, delayed historical failures
 and successes, and desired ETag invariance.
-The latest-only lifecycle follow-up cleans unused files after pre-commit SQL
-failure or concurrent retries, keeps both files on uncertain commit outcomes,
-and removes configuration/machine report files only after deletion commits.
-Cleanup warnings never fail committed operations. Reads reselect after concurrent
-retirement instead of holding SQL locks during filesystem I/O. Replaced/deleted
-report IDs return not found, and obsolete upload identities are forgotten.
-No schema change is needed: existing history is hidden from reads and retired
-when that name is next replaced/deleted, without a startup or periodic sweep.
-Bounded **offline** orphan maintenance requires all replicas stopped; see the
-[procedure](../README.md#bounded-offline-orphan-cleanup). No online scavenger,
-retention policy, DSC execution or sync-agent implementation is included.
+The report publication and cleanup follow-up uses a conditional replacement
+under the existing machine lock. SQLite and PostgreSQL migrations retain the
+visible receipt per name and queue hidden history for deletion. Replacement,
+configuration deletion, and machine deletion enqueue retired files in the same
+transaction. A per-replica worker processes leased batches after commit,
+retries failures, and recovers abandoned work on restart. Named reads recheck
+after concurrent retirement and obsolete report IDs return not found. For
+untracked candidates, see the bounded offline cleanup procedure.
+[Offline orphan cleanup](../README.md#bounded-offline-orphan-cleanup)
 
 ## PR 5 — production readiness
 
@@ -254,9 +252,9 @@ See [COPILOT_KICKOFF.md](../COPILOT_KICKOFF.md). Require Copilot to **plan and i
 HTTP instrumentation uses otelhttp ServeMux patterns; both database engines use
 otelsql for spans, operation durations, and pool observations. Official runtime
 instrumentation and autoexport integrate with standard OTEL environment
-variables. Service ingestion/publication and reportstore syscall durations use
-exactly four custom histograms, with in-memory SDK tests covering outcomes,
-retry aggregation, phase separation, safe dimensions, and error paths. OTLP
+variables. Application instruments cover ingestion, publication, reportstore
+syscalls, and cleanup attempts, latency and backlog. In-memory SDK tests cover
+outcomes, retry aggregation, phase separation, safe dimensions and error paths. OTLP
 HTTP/gRPC tests use in-process receivers; ordinary tests need no Collector.
 The [operations runbook](operations.md#structured-observability) documents
 configuration, sampling, shutdown, and Azure Files latency investigation.

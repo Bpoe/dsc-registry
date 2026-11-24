@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"os"
-	"path/filepath"
 	"testing"
 	"time"
 
@@ -14,7 +13,7 @@ import (
 )
 
 func TestStorageOperationMeasurements(t *testing.T) {
-	for _, stage := range []string{"success", "open", "write", "short", "sync", "close", "cleanup"} {
+	for _, stage := range []string{"success", "open", "write", "short", "sync", "close"} {
 		t.Run(stage, func(t *testing.T) {
 			capture := testotel.Setup(t)
 			root := t.TempDir()
@@ -31,20 +30,7 @@ func TestStorageOperationMeasurements(t *testing.T) {
 				if err != nil {
 					return nil, err
 				}
-				f := &faultyFile{File: actual, stage: stage}
-				if stage == "cleanup" {
-					f.stage = "write"
-					f.afterClose = func() error {
-						if err := store.root.Remove(name); err != nil {
-							return err
-						}
-						if err := store.root.Mkdir(name, 0700); err != nil {
-							return err
-						}
-						return os.WriteFile(filepath.Join(root, name, "blocker"), nil, 0600)
-					}
-				}
-				return f, nil
+				return &faultyFile{File: actual, stage: stage}, nil
 			})
 			if (err == nil) != (stage == "success") {
 				t.Fatalf("wrong outcome: %v", err)
@@ -70,11 +56,8 @@ func TestStorageOperationMeasurements(t *testing.T) {
 			want := map[string]uint64{"open": 1}
 			if stage != "open" {
 				want["write"], want["close"] = 1, 1
-				if stage != "write" && stage != "short" && stage != "cleanup" {
+				if stage != "write" && stage != "short" {
 					want["sync"] = 1
-				}
-				if stage != "success" {
-					want["delete"] = 1
 				}
 			}
 			if len(counts) != len(want) {
@@ -90,9 +73,6 @@ func TestStorageOperationMeasurements(t *testing.T) {
 			}
 			if stage == "short" && failures["write"] != "short_write" {
 				t.Fatal("short write not classified")
-			}
-			if stage == "cleanup" && failures["delete"] == "" {
-				t.Fatal("cleanup failure not measured")
 			}
 			spans := capture.Spans.Ended()
 			if len(spans) != 1 || spans[0].Name() != "Report storage write" {
