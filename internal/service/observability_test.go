@@ -13,10 +13,12 @@ import (
 	"github.com/Bpoe/dsc-registry/internal/database"
 	"github.com/Bpoe/dsc-registry/internal/report"
 	"github.com/Bpoe/dsc-registry/internal/reportstore"
+	"github.com/Bpoe/dsc-registry/internal/telemetry"
 	"github.com/Bpoe/dsc-registry/internal/testdb"
 	"github.com/Bpoe/dsc-registry/internal/testotel"
 	"github.com/google/uuid"
 	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 )
@@ -147,9 +149,9 @@ type retiringFiles struct {
 	beforeRead func()
 }
 
-func (f retiringFiles) Read(ctx context.Context, key string, limit int64) ([]byte, error) {
+func (f retiringFiles) Read(ctx context.Context, key string, limit int64, attrs ...attribute.KeyValue) ([]byte, error) {
 	f.beforeRead()
-	return f.Store.Read(ctx, key, limit)
+	return f.Store.Read(ctx, key, limit, attrs...)
 }
 
 func TestPublicationRetryRecordsOneLogicalMeasurement(t *testing.T) {
@@ -169,7 +171,8 @@ func TestPublicationRetryRecordsOneLogicalMeasurement(t *testing.T) {
 			t.Fatal(err)
 		}
 		digest := sha256.Sum256(upload.Result)
-		if _, err := db.CommitReport(ctx, machine.ID, upload.Name, upload, key, digest[:], ""); err != nil {
+		original, err := db.CommitReport(ctx, machine.ID, upload.Name, upload, key, digest[:], "")
+		if err != nil {
 			t.Fatal(err)
 		}
 		exec(t, db.DB, "UPDATE reports SET result_sha256 = NULL WHERE machine_id = $1", machine.ID)
@@ -189,7 +192,8 @@ func TestPublicationRetryRecordsOneLogicalMeasurement(t *testing.T) {
 				t.Fatal(err)
 			}
 		}}
-		if result, err := app.PublishReport(ctx, machine.ID, body); err != nil || result.Outcome != database.MutationUpdated {
+		result, err := app.PublishReport(ctx, machine.ID, body)
+		if err != nil || result.Outcome != database.MutationUpdated {
 			t.Fatalf("retry failed: %+v, %v", result, err)
 		}
 		metrics := capture.Collect(t)
@@ -203,9 +207,21 @@ func TestPublicationRetryRecordsOneLogicalMeasurement(t *testing.T) {
 		if retryMetric.Value != 1 || retryMetric.Attributes.Len() != 0 {
 			t.Fatal("incorrect publication retry metric", retryMetric)
 		}
-		retries := 0
+		retries, failedReads := 0, 0
 		for _, span := range capture.Spans.Ended() {
+			attrs := attribute.NewSet(span.Attributes()...)
+			reportID, _ := attrs.Value(telemetry.ReportID)
+			if span.Name() == "Report storage read" {
+				failedReads++
+				path, _ := attrs.Value(telemetry.ReportPath)
+				if span.Status().Code != codes.Error || reportID.AsString() != original.Report.ID || path.AsString() != key {
+					t.Fatal("failed legacy read lost the retired report context", attrs)
+				}
+			}
 			if span.Name() == "Service.PublishReport" {
+				if reportID.AsString() != result.Report.ID {
+					t.Fatal("publication did not retain the final report ID", attrs)
+				}
 				for _, event := range span.Events() {
 					if event.Name == "Report publication retry" {
 						retries++
@@ -213,8 +229,8 @@ func TestPublicationRetryRecordsOneLogicalMeasurement(t *testing.T) {
 				}
 			}
 		}
-		if retries != 1 {
-			t.Fatalf("retry events = %d", retries)
+		if retries != 1 || failedReads != 1 {
+			t.Fatalf("retry events = %d, failed reads = %d", retries, failedReads)
 		}
 	})
 }

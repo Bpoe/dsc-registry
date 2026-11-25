@@ -7,7 +7,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Bpoe/dsc-registry/internal/telemetry"
 	"github.com/Bpoe/dsc-registry/internal/testotel"
+	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 )
@@ -22,7 +24,9 @@ func TestStorageOperationMeasurements(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer store.Close()
+			var attemptedPath string
 			_, err = store.write(context.Background(), []byte(`{"sensitive":"private-content"}`), func(name string) (reportFile, error) {
+				attemptedPath = name
 				if stage == "open" {
 					return nil, os.ErrPermission
 				}
@@ -80,6 +84,11 @@ func TestStorageOperationMeasurements(t *testing.T) {
 			}
 			if stage != "success" && spans[0].Status().Code != codes.Error {
 				t.Fatal("storage span missing error status")
+			}
+			attrs := attribute.NewSet(spans[0].Attributes()...)
+			path, _ := attrs.Value(telemetry.ReportPath)
+			if path.AsString() != attemptedPath || !validPath(path.AsString()) {
+				t.Fatalf("storage span path = %q, want %q", path.AsString(), attemptedPath)
 			}
 			for _, event := range spans[0].Events() {
 				for _, attr := range event.Attributes {

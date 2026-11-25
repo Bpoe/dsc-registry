@@ -14,6 +14,7 @@ import (
 	"github.com/Bpoe/dsc-registry/internal/eventing"
 	"github.com/Bpoe/dsc-registry/internal/reportstore"
 	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 )
 
@@ -26,7 +27,7 @@ var (
 // concurrent retirement. Production uses the confined filesystem store.
 type reportFiles interface {
 	Write(context.Context, []byte) (string, error)
-	Read(context.Context, string, int64) ([]byte, error)
+	Read(context.Context, string, int64, ...attribute.KeyValue) ([]byte, error)
 	Remove(string) error
 }
 

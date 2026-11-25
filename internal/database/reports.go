@@ -38,6 +38,7 @@ func (m *ReportMetadata) fields() []any {
 
 // ReportCommit carries the result of the locked mutation. LegacyPath requires
 // verification outside the transaction. KeepFile also covers ambiguous commits.
+// Report may be populated on error when the affected receipt is known.
 type ReportCommit struct {
 	Publication
 	LegacyPath string
@@ -103,11 +104,11 @@ func (s *Store) CommitReport(ctx context.Context, id, name string, upload report
         WHERE machine_id = $1 AND name = $2 AND upload_id = $3`, id, name, upload.ID).
 		Scan(append(existing.fields(), &existingPath, &storedDigest)...)
 	if err == nil {
+		result := ReportCommit{Publication: Publication{Report: existing, Outcome: MutationUnchanged}}
 		if existing.ConfigurationRevision != upload.ConfigurationRevision ||
 			(storedDigest != nil && !bytes.Equal(storedDigest, digest)) {
-			return ReportCommit{}, ErrUploadConflict
+			return result, ErrUploadConflict
 		}
-		result := ReportCommit{Publication: Publication{Report: existing, Outcome: MutationUnchanged}}
 		if storedDigest != nil {
 			return result, nil
 		}
@@ -116,7 +117,7 @@ func (s *Store) CommitReport(ctx context.Context, id, name string, upload report
 			return result, nil
 		}
 		if _, err := tx.ExecContext(ctx, `UPDATE reports SET result_sha256 = $1 WHERE id = $2`, digest, existing.ID); err != nil {
-			return ReportCommit{}, err
+			return result, err
 		}
 		return result, tx.Commit()
 	}
@@ -128,7 +129,7 @@ func (s *Store) CommitReport(ctx context.Context, id, name string, upload report
 
 func commitReceipt(tx *transaction, metadata ReportMetadata, outcome MutationOutcome) (ReportCommit, error) {
 	if err := tx.Commit(); err != nil {
-		return ReportCommit{KeepFile: true}, err
+		return ReportCommit{Publication: Publication{Report: metadata}, KeepFile: true}, err
 	}
 	return ReportCommit{Publication: Publication{Report: metadata, Outcome: outcome}, KeepFile: true}, nil
 }
