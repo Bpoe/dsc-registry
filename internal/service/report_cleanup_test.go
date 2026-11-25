@@ -16,6 +16,7 @@ import (
 	"github.com/Bpoe/dsc-registry/internal/testotel"
 	"github.com/google/uuid"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
+	"go.opentelemetry.io/otel/trace"
 )
 
 type cleanupFiles struct {
@@ -39,7 +40,7 @@ func TestReplacementPublicationStatementsBothEngines(t *testing.T) {
 			})}
 		app := testService(observed, files)
 		upload.ID = uuid.NewString()
-		result, err := app.publishReport(ctx, machine.ID, "one", upload)
+		result, err := app.publishReport(ctx, trace.SpanFromContext(ctx), machine.ID, upload)
 		if err != nil || result.Outcome != database.MutationUpdated {
 			t.Fatal("replacement failed", result, err)
 		}

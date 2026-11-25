@@ -8,6 +8,8 @@ import (
 	"github.com/Bpoe/dsc-registry/internal/database"
 	"github.com/Bpoe/dsc-registry/internal/report"
 	"github.com/Bpoe/dsc-registry/internal/service"
+	"github.com/Bpoe/dsc-registry/internal/telemetry"
+	"go.opentelemetry.io/otel/trace"
 )
 
 func (a *adminAPI) uploadReport(w http.ResponseWriter, r *http.Request) {
@@ -92,6 +94,9 @@ func (a *adminAPI) configurationStatus(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		a.reportError(r.Context(), w, err)
 		return
+	}
+	if span := trace.SpanFromContext(r.Context()); span.IsRecording() {
+		span.SetAttributes(telemetry.ReportID.String(status.ReportID))
 	}
 	writeJSON(w, http.StatusOK, status)
 }

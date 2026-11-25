@@ -40,6 +40,7 @@ func (a *adminAPI) createMachine(w http.ResponseWriter, r *http.Request) {
 		a.machineCreationError(r.Context(), w, err)
 		return
 	}
+	recordMachine(r.Context(), machine.ID, machine.Name)
 	w.Header().Set("Location", "/v1/machines/"+machine.ID)
 	writeJSON(w, http.StatusCreated, machine)
 }
@@ -64,6 +65,7 @@ func (a *adminAPI) listMachines(w http.ResponseWriter, r *http.Request) {
 			a.resourceError(r.Context(), w, err, apikey.Machine)
 			return
 		}
+		recordMachine(r.Context(), machine.ID, machine.Name)
 		writeJSON(w, http.StatusOK, machine)
 		return
 	}
@@ -93,6 +95,7 @@ func (a *adminAPI) getMachine(w http.ResponseWriter, r *http.Request) {
 		a.resourceError(r.Context(), w, err, apikey.Machine)
 		return
 	}
+	recordMachine(r.Context(), machine.ID, machine.Name)
 	writeJSON(w, http.StatusOK, machine)
 }
 

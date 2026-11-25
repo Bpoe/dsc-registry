@@ -14,6 +14,8 @@ import (
 	"github.com/Bpoe/dsc-registry/internal/report"
 	"github.com/Bpoe/dsc-registry/migrations"
 	"github.com/google/uuid"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // The adapter preserves the existing workflow fault-injection tests while
@@ -28,7 +30,7 @@ type callbackFiles struct {
 }
 
 func (f callbackFiles) Write(context.Context, []byte) (string, error) { return f.write() }
-func (f callbackFiles) Read(_ context.Context, path string, _ int64) ([]byte, error) {
+func (f callbackFiles) Read(_ context.Context, path string, _ int64, _ ...attribute.KeyValue) ([]byte, error) {
 	return f.read(path)
 }
 func (callbackFiles) Remove(string) error { panic("unexpected cleanup in workflow adapter") }
@@ -38,7 +40,8 @@ func testService(db *database.Store, files reportFiles) *Service {
 	return app
 }
 func (s *reportTestStore) PublishReport(ctx context.Context, id, name string, upload report.Upload, write func() (string, error), read func(string) ([]byte, error)) (database.Publication, error) {
-	return testService(s.Store, callbackFiles{write: write, read: read}).publishReport(ctx, id, name, upload)
+	upload.Name = name
+	return testService(s.Store, callbackFiles{write: write, read: read}).publishReport(ctx, trace.SpanFromContext(ctx), id, upload)
 }
 func (s *reportTestStore) ReadReport(ctx context.Context, id, name string, read func(string) error) error {
 	_, err := testService(s.Store, callbackFiles{read: func(path string) ([]byte, error) { return nil, read(path) }}).ReadReport(ctx, id, name)

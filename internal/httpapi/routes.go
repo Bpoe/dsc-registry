@@ -8,6 +8,8 @@ import (
 
 	"github.com/Bpoe/dsc-registry/internal/apikey"
 	"github.com/Bpoe/dsc-registry/internal/desired"
+	"github.com/Bpoe/dsc-registry/internal/telemetry"
+	"go.opentelemetry.io/otel/trace"
 )
 
 func (a *adminAPI) registerRoutes(mux *http.ServeMux) {
@@ -92,6 +94,20 @@ func (a *adminAPI) authorize(role string, next http.HandlerFunc) http.HandlerFun
 		}
 		if role == apikey.Machine {
 			ctx = context.WithValue(ctx, machineIDContextKey{}, principal.OwnerID)
+		}
+		if span := trace.SpanFromContext(ctx); span.IsRecording() {
+			switch {
+			case role == apikey.Machine:
+				span.SetAttributes(telemetry.MachineID.String(principal.OwnerID))
+			case strings.HasPrefix(routeLabel(r.Pattern), "/v1/machines/"):
+				span.SetAttributes(telemetry.MachineID.String(r.PathValue("id")))
+				if name := r.PathValue("name"); name != "" {
+					span.SetAttributes(telemetry.ConfigurationName.String(name))
+				}
+				if id := r.PathValue("reportId"); id != "" {
+					span.SetAttributes(telemetry.ReportID.String(id))
+				}
+			}
 		}
 		next(w, r.WithContext(ctx))
 	}

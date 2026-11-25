@@ -81,6 +81,7 @@ func (a *adminAPI) registerMachine(w http.ResponseWriter, r *http.Request) {
 		a.machineCreationError(r.Context(), w, err)
 		return
 	}
+	recordMachine(r.Context(), machine.ID, machine.Name)
 	w.Header().Set("Location", "/v1/machines/"+machine.ID)
 	writeJSON(w, http.StatusCreated, machine)
 }

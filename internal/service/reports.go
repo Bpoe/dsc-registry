@@ -13,6 +13,7 @@ import (
 	"github.com/Bpoe/dsc-registry/internal/telemetry"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // ErrReportStorage lets callers classify storage failures without inspecting
@@ -27,9 +28,13 @@ func storageError(err error) error {
 }
 
 func (s *Service) PublishReport(ctx context.Context, id string, body []byte) (publication database.Publication, err error) {
+	requestSpan := trace.SpanFromContext(ctx)
 	ctx, span := s.tracer.Start(ctx, "Service.PublishReport")
 	defer span.End()
 	start := time.Now()
+	if span.IsRecording() {
+		span.SetAttributes(telemetry.MachineID.String(id))
+	}
 	defer func() {
 		outcome := "failed"
 		if err == nil {
@@ -45,8 +50,14 @@ func (s *Service) PublishReport(ctx context.Context, id string, body []byte) (pu
 	if err != nil {
 		return database.Publication{}, err
 	}
+	if requestSpan.IsRecording() {
+		requestSpan.SetAttributes(telemetry.ConfigurationName.String(upload.Name))
+	}
+	if span.IsRecording() {
+		span.SetAttributes(telemetry.ConfigurationName.String(upload.Name))
+	}
 	s.metrics.size.Record(ctx, int64(len(upload.Result)))
-	publication, err = s.publishReport(ctx, id, upload.Name, upload)
+	publication, err = s.publishReport(ctx, requestSpan, id, upload)
 	if err == nil {
 		data := eventing.Identifiers{MachineID: id, ConfigurationName: upload.Name, ReportID: publication.Report.ID}
 		switch publication.Outcome {
@@ -59,8 +70,11 @@ func (s *Service) PublishReport(ctx context.Context, id string, body []byte) (pu
 	return publication, err
 }
 
-func (s *Service) readContent(ctx context.Context, path string) ([]byte, error) {
-	content, err := s.files.Read(ctx, path, s.maxReportBytes)
+func (s *Service) readContent(ctx context.Context, item database.ReportMetadata, path string) ([]byte, error) {
+	content, err := s.files.Read(ctx, path, s.maxReportBytes,
+		telemetry.MachineID.String(item.MachineID),
+		telemetry.ConfigurationName.String(item.ConfigurationName),
+		telemetry.ReportID.String(item.ID))
 	return content, storageError(err)
 }
 
@@ -68,10 +82,16 @@ func (s *Service) readContent(ctx context.Context, path string) ([]byte, error) 
 // network filesystem invalidating an open handle during concurrent retirement.
 func (s *Service) GetReport(ctx context.Context, id, reportID string, full bool) (database.ReportMetadata, []byte, error) {
 	item, path, err := s.db.GetReport(ctx, id, reportID)
-	if err != nil || !full {
+	if err != nil {
 		return item, nil, err
 	}
-	content, err := s.readContent(ctx, path)
+	if span := trace.SpanFromContext(ctx); span.IsRecording() {
+		span.SetAttributes(telemetry.ConfigurationName.String(item.ConfigurationName))
+	}
+	if !full {
+		return item, nil, nil
+	}
+	content, err := s.readContent(ctx, item, path)
 	if err != nil {
 		if _, _, lookupErr := s.db.GetReport(ctx, id, reportID); lookupErr != nil {
 			return item, nil, lookupErr
@@ -81,6 +101,7 @@ func (s *Service) GetReport(ctx context.Context, id, reportID string, full bool)
 }
 
 func (s *Service) ReadReport(ctx context.Context, id, name string) ([]byte, error) {
+	span := trace.SpanFromContext(ctx)
 	var failedID string
 	var readErr error
 	for {
@@ -91,7 +112,10 @@ func (s *Service) ReadReport(ctx context.Context, id, name string) ([]byte, erro
 		if item.ID == failedID {
 			return nil, readErr
 		}
-		content, err := s.readContent(ctx, path)
+		if span.IsRecording() {
+			span.SetAttributes(telemetry.ReportID.String(item.ID))
+		}
+		content, err := s.readContent(ctx, item, path)
 		if err == nil {
 			return content, nil
 		}
@@ -99,7 +123,8 @@ func (s *Service) ReadReport(ctx context.Context, id, name string) ([]byte, erro
 	}
 }
 
-func (s *Service) publishReport(ctx context.Context, id, name string, upload report.Upload) (database.Publication, error) {
+func (s *Service) publishReport(ctx context.Context, requestSpan trace.Span, id string, upload report.Upload) (database.Publication, error) {
+	publicationSpan := trace.SpanFromContext(ctx)
 	var publicationTime time.Duration
 	defer func() { s.metrics.publish.Record(ctx, publicationTime.Seconds()) }()
 
@@ -131,7 +156,22 @@ func (s *Service) publishReport(ctx context.Context, id, name string, upload rep
 	var readErr error
 	for {
 		commitCtx, span, start := s.databasePhase(ctx, "Publish metadata")
-		result, err := s.db.CommitReport(commitCtx, id, name, upload, path, digest[:], verifiedID)
+		result, err := s.db.CommitReport(commitCtx, id, upload.Name, upload, path, digest[:], verifiedID)
+		if span.IsRecording() {
+			span.SetAttributes(telemetry.MachineID.String(id), telemetry.ConfigurationName.String(upload.Name))
+		}
+		if result.Report.ID != "" {
+			reportID := telemetry.ReportID.String(result.Report.ID)
+			if span.IsRecording() {
+				span.SetAttributes(reportID)
+			}
+			if publicationSpan.IsRecording() {
+				publicationSpan.SetAttributes(reportID)
+			}
+			if requestSpan.IsRecording() {
+				requestSpan.SetAttributes(reportID)
+			}
+		}
 		keepFile = result.KeepFile
 		phaseErr := err
 		if writeErr != nil && errors.Is(err, database.ErrReportNotFound) {
@@ -152,7 +192,7 @@ func (s *Service) publishReport(ctx context.Context, id, name string, upload rep
 		if result.Report.ID == failedReadID {
 			return database.Publication{}, readErr
 		}
-		content, err := s.readContent(ctx, result.LegacyPath)
+		content, err := s.readContent(ctx, result.Report, result.LegacyPath)
 		if err != nil {
 			// The legacy receipt may have retired while storage was being read.
 			failedReadID, readErr = result.Report.ID, err

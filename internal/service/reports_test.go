@@ -20,6 +20,7 @@ import (
 	"github.com/Bpoe/dsc-registry/internal/reportstore"
 	"github.com/Bpoe/dsc-registry/internal/testdb"
 	"github.com/google/uuid"
+	"go.opentelemetry.io/otel/trace"
 )
 
 func reportUpload(revision string) report.Upload {
@@ -27,7 +28,7 @@ func reportUpload(revision string) report.Upload {
 	return report.Upload{
 		Summary: report.Summary{ConfigurationRevision: revision, StartedAt: "2026-10-18T12:00:00Z",
 			FinishedAt: "2026-10-18T12:00:00.005Z", Outcome: "succeeded", Operation: &op},
-		ID: uuid.NewString(), Result: []byte(`{"opaque":9007199254740993123456789}`),
+		ID: uuid.NewString(), Name: "one", Result: []byte(`{"opaque":9007199254740993123456789}`),
 	}
 }
 
@@ -754,7 +755,7 @@ func TestConcurrentReportsDifferentMachinesBothEngines(t *testing.T) {
 				for range 8 {
 					next := upload
 					next.ID = uuid.NewString()
-					if _, err := app.publishReport(ctx, target.machineID, "one", next); err != nil {
+					if _, err := app.publishReport(ctx, trace.SpanFromContext(ctx), target.machineID, next); err != nil {
 						results <- err
 						return
 					}

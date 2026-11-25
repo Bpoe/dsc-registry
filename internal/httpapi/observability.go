@@ -1,9 +1,19 @@
 package httpapi
 
 import (
+	"context"
 	"net/http"
 	"strings"
+
+	"github.com/Bpoe/dsc-registry/internal/telemetry"
+	"go.opentelemetry.io/otel/trace"
 )
+
+func recordMachine(ctx context.Context, id, name string) {
+	if span := trace.SpanFromContext(ctx); span.IsRecording() {
+		span.SetAttributes(telemetry.MachineID.String(id), telemetry.MachineName.String(name))
+	}
+}
 
 func methodLabel(method string) string {
 	switch method {

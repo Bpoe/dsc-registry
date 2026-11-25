@@ -11,6 +11,7 @@ import (
 
 	"github.com/Bpoe/dsc-registry/internal/telemetry"
 	"github.com/google/uuid"
+	"go.opentelemetry.io/otel/attribute"
 )
 
 // The file seam exercises partial writes, sync and close failures without
@@ -36,6 +37,9 @@ func (s *Store) write(ctx context.Context, content []byte, create func(string) (
 		return "", err
 	}
 	name := uuid.NewString() + ".json"
+	if span.IsRecording() {
+		span.SetAttributes(telemetry.ReportPath.String(name))
+	}
 	start := time.Now()
 	file, err := create(name)
 	s.recordOperation(ctx, "open", start, err)
@@ -67,16 +71,22 @@ func validPath(name string) bool {
 	return ok && err == nil && id.String() == stem
 }
 
-func (s *Store) Read(ctx context.Context, name string, limit int64) ([]byte, error) {
-	return s.read(ctx, name, limit, s.root.Open)
+func (s *Store) Read(ctx context.Context, name string, limit int64, traceAttrs ...attribute.KeyValue) ([]byte, error) {
+	return s.read(ctx, name, limit, s.root.Open, traceAttrs...)
 }
 
 // The opener seam permits Stat failure tests using an already-closed file.
-func (s *Store) read(ctx context.Context, name string, limit int64, open func(string) (*os.File, error)) (content []byte, err error) {
+func (s *Store) read(ctx context.Context, name string, limit int64, open func(string) (*os.File, error), traceAttrs ...attribute.KeyValue) (content []byte, err error) {
 	ctx, span := s.tracer.Start(ctx, "Report storage read")
 	defer func() { telemetry.RecordError(span, err); span.End() }()
+	if span.IsRecording() {
+		span.SetAttributes(traceAttrs...)
+	}
 	if !validPath(name) {
 		return nil, errors.New("invalid report storage key")
+	}
+	if span.IsRecording() {
+		span.SetAttributes(telemetry.ReportPath.String(name))
 	}
 	if err := ctx.Err(); err != nil {
 		return nil, err

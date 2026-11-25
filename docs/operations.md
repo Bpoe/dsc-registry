@@ -872,6 +872,10 @@ such as `/v1/machines/{id}`; span names include the method, e.g.
 `POST /v1/agent/reports`. Tests verify Go ServeMux `Request.Pattern` handling,
 including HEAD, unmatched routes, and authorization failures. Raw paths are
 suppressed at span creation, and completed span paths are replaced by templates.
+Search sampled spans by `dscreg.machine.id` to follow operations for one machine.
+Relevant spans also carry `dscreg.machine.name`, `dscreg.configuration.name`, or
+`dscreg.report.id` as those values become available. Report storage read and
+write spans include the relative file key as `dscreg.report.path`.
 No identifiers or raw URLs become metric dimensions.
 
 The selected otelhttp release does **not** expose
